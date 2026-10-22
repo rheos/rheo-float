@@ -26,6 +26,10 @@ commit messages or PR text.
   module prints or writes to stdout or stderr. U+2014 never gets through it.
 - A module that calls `operations.register` adds its dotted name to `catalogue.MODULES` in the
   same change, so the invariant tests load every operation.
+- `rheo_finance.parsers.docextract_adapter` is the only module that imports `docextract`, and
+  only the names its docstring lists (never `docextract.extractor` or `monitor`). A parser takes
+  extracted text, never a path. A module that calls `parsers.registry.register_parser` is
+  listed in `parsers.registry.PARSER_MODULES`.
 - Migration revisions are frozen. Each revision file is pinned by the sha256 of its bytes in
   `tests/guards/test_frozen_views.py`; a view's SQL lives in its revision's `VIEWS` dict and
   must match what the code compiles. Change a rule by adding a revision, not by editing one.

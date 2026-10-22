@@ -1,0 +1,124 @@
+                                                                        JANUARY 11, 2026
+
+
+
+
+                                                                        99999999
+                                                                        99999999
+           VANAS11000_0000000 E D 00000   00000
+           SAMPLE, ALEX
+           PO BOX 1                                                     MAIN STREET
+           ANYTOWN BC V0A 0A0                                           100 MAIN ST.
+                                                                        ANYTOWN BC V0A 0A0
+                                                                        T 604 000 0000 TOLL-FREE 1 888 VANCITY
+                                                                        vancity.com
+
+
+
+
+ACCOUNT OWNERS: SAMPLE, ALEX
+STATEMENT PERIOD: 11 DEC 2025 to 10 JAN 2026
+
+
+
+
+DAILY BANKING                                           OPENING                                         CLOSING
+                                                    BALANCE ON           TOTAL           TOTAL      BALANCE ON
+ACCOUNT SUMMARY
+                                                     11 DEC 2025   WITHDRAWALS        DEPOSITS       10 JAN 2026
+
+SHARED SUCCESS PATRONAGE #999000000011                      0.00            0.00             0.00           0.00
+
+PLAN 24 SAVINGS #999000000033                               0.00            0.00             0.00           0.00
+
+VANCITY ESSENTIAL CHEQUING #999000000022                  150.00          779.55           642.00          12.45
+
+TOTAL NUMBER OF CHEQUES 0
+
+
+
+
+SHARED SUCCESS PATRONAGE #999000000011
+
+DATE     DESCRIPTION                                                WITHDRAWALS       DEPOSITS         BALANCE
+
+         OPENING BALANCE                                                                                   0.00
+
+
+
+
+VANCITY ESSENTIAL CHEQUING #999000000022
+
+DATE     DESCRIPTION                                                WITHDRAWALS       DEPOSITS         BALANCE
+
+         OPENING BALANCE                                                                                 150.00
+
+11 DEC   PREAUTHORIZED CREDIT (EMPLOYER INC)                                               480.00        630.00
+
+12 DEC   POINT OF SALE (CORNER GROCERY ANYTOWN
+         BCCA)                                                             52.30                         577.70
+
+15 DEC   ATM WD ($80.00) (1 MAIN ST ANYTOWN BCCA)                          80.00                         497.70
+
+
+
+
+                                                                                                       PAGE 1 OF 3
+                                 VANAS11000_0000000_001 - 0000000 HRI- -02-01-22--    000001
+VANCITY ESSENTIAL CHEQUING #999000000022 (CONT.)
+
+
+DATE     DESCRIPTION                                                                          WITHDRAWALS               DEPOSITS     BALANCE
+
+
+20 DEC    BILL PAYMENT-ONLINE (HYDRO CO #0001)                                                         310.00                          187.70
+
+31 DEC    CHARGES APPLIED TO ACCOUNT (PERIODIC FLAT FEE)                                                  9.75                         177.95
+
+31 DEC    CHARGES APPLIED TO ACCOUNT (PER ITEM FEES)                                                      2.50                         175.45
+
+02 JAN    PREAUTHORIZED PAYMENT (STREAMING CO)                                                         220.00                           44.55- OD
+
+02 JAN    CHARGES APPLIED TO ACCOUNT (OVERDRAFT FEE)                                                      5.00                          49.55- OD
+
+05 JAN    ETRANSFER CREDIT (FRIEND)                                                                                        150.00      100.45
+
+06 JAN    POINT OF SALE RETURN (CORNER GROCERY ANYTOWN
+          BCCA)                                                                                                             12.00      112.45
+
+10 JAN    ETRANSFER DEBIT (LANDLORD)                                                                    100.00                          12.45
+
+
+Please be advised that you have overdrawn your account and will be charged 21% on the overdrawn portion of your daily balance.
+
+
+
+PLAN 24 SAVINGS #999000000033
+
+DATE     DESCRIPTION                                                                          WITHDRAWALS               DEPOSITS     BALANCE
+
+          OPENING BALANCE                                                                                                                0.00
+
+
+
+
+                                                                                                                                     PAGE 2 OF 3
+                                                                       VANAS11000_0000000_001 - 0000000 - 000002
+SHARES
+DATE     DESCRIPTION                                                                WITHDRAWALS            DEPOSITS            BALANCE
+
+         CLASS B MEMBERSHIP SHARES #999000000044
+         OPENING BALANCE                                                                                                            5.00
+
+28 DEC SHARED SUCCESS DIVIDENDS                                                                               0.02                 5.02
+
+         Note: Shares are not insured by the Credit Union Deposit Insurance Corporation.
+
+Please review your statement and report any errors or omissions to us within 30 days of the statement date. If we don't hear from you within
+30 days, this statement will be considered correct.
+
+
+
+
+                                                                                                                                PAGE 3 OF 3
+                                   VANAS11000_0000000_001 - 0000000 HRI- -02-02-23--                        000003

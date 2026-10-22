@@ -22,7 +22,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from rheo_finance.storage.tiers import register_column
 from rheo_finance.tier import Tier
@@ -302,3 +302,118 @@ archive_skip = Table(
     Column("count", Integer, nullable=False),
 )
 _tiers(archive_skip, {"directory": P, "reason": P, "count": P})
+
+# --- the parse cache and events (derived, stage 1; migration 0009) --------------------
+# The account keys are deferred to commit (see the revision): stage 2 rewrites
+# ``account`` in the transaction that reparses.
+
+
+def _account_fk() -> ForeignKey:
+    return ForeignKey("finance.account.id", deferrable=True, initially="DEFERRED")
+
+
+statement_period = Table(
+    "statement_period",
+    metadata,
+    Column("document_id", Uuid, ForeignKey("finance.document.id"), primary_key=True),
+    Column("account_id", Uuid, _account_fk(), primary_key=True),
+    Column("currency", Text, primary_key=True),
+    Column("period_start", Date, nullable=False),
+    Column("period_end", Date, nullable=False),
+    Column("opening", Numeric),
+    Column("closing", Numeric),
+    Column("total_debits", Numeric),
+    Column("total_credits", Numeric),
+    Column("total_payments", Numeric),
+    Column("balance_due", Numeric),
+    Column("minimum_due", Numeric),
+    Column("due_date", Date),
+    Column("control_kind", Text, nullable=False),
+    Column("tied_out", Boolean, nullable=False),
+)
+_tiers(
+    statement_period,
+    {
+        "document_id": P, "account_id": P, "currency": P, "period_start": P,
+        "period_end": P, "opening": R, "closing": R, "total_debits": R,
+        "total_credits": R, "total_payments": R, "balance_due": R, "minimum_due": R,
+        "due_date": P, "control_kind": P, "tied_out": P,
+    },
+)  # fmt: skip
+
+document_line = Table(
+    "document_line",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("document_id", Uuid, ForeignKey("finance.document.id"), nullable=False),
+    Column("line_no", Integer, nullable=False),
+    Column("page", Integer),
+    Column("line_kind", Text, nullable=False),
+    Column("account_id", Uuid, _account_fk()),
+    Column("posting_date", Date),
+    Column("txn_date", Date),
+    Column("occurred_at", DateTime(timezone=True)),
+    Column("amount", Numeric),
+    Column("currency", Text),
+    Column("asset_identifier", Text),
+    Column("original_amount", Numeric),
+    Column("original_currency", Text),
+    Column("stated_cad", Numeric(20, 2)),
+    Column("stated_cad_price", Numeric),
+    Column("description_raw", Text),
+    Column("description_norm", Text),
+    Column("counterparty", Text),
+    Column("txid", Text),
+    Column("from_address", Text),
+    Column("to_address", Text),
+    Column("source_type", Text),
+    Column("is_fake", Boolean, nullable=False, server_default="false"),
+    Column("fee_stated", Boolean, nullable=False, server_default="false"),
+    Column("running_balance", Numeric),
+    Column("fee_type", Text),
+    Column("transfer_hint", Boolean, nullable=False, server_default="false"),
+    Column("reversal_hint", Boolean, nullable=False, server_default="false"),
+    Column("conversion_hint", Boolean, nullable=False, server_default="false"),
+    Column("etransfer_hint", Boolean, nullable=False, server_default="false"),
+    Column("hint_account_slug", Text),
+    Column("trade_ref", Text),
+    Column("instrument", Text),
+    Column("result", Numeric),
+    Column("trading_fee", Numeric),
+    Column("funding_fee", Numeric),
+    Column("line_key_id", Uuid),
+)
+# SPEC Data Models marks asset_identifier internal; it is restricted here because its
+# name is an identifier's, and the tier guard restricts every such column.
+_tiers(
+    document_line,
+    {
+        "id": P, "document_id": P, "line_no": P, "page": P, "line_kind": P,
+        "account_id": P, "posting_date": P, "txn_date": P, "occurred_at": P,
+        "amount": R, "currency": P, "asset_identifier": R, "original_amount": R,
+        "original_currency": P, "stated_cad": R, "stated_cad_price": R,
+        "description_raw": R, "description_norm": R, "counterparty": R, "txid": R,
+        "from_address": R, "to_address": R, "source_type": Tier.INTERNAL,
+        "is_fake": P, "fee_stated": P, "running_balance": R, "fee_type": P,
+        "transfer_hint": P, "reversal_hint": P, "conversion_hint": P,
+        "etransfer_hint": P, "hint_account_slug": P, "trade_ref": P,
+        "instrument": Tier.INTERNAL, "result": R, "trading_fee": R,
+        "funding_fee": R, "line_key_id": P,
+    },
+)  # fmt: skip
+
+# ``data`` is public as a column: each event type's model in an ``EVENT_MODELS``
+# registry tiers its fields, and the tier guard keeps restricted ones out of it.
+event = Table(
+    "event",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("type", Text, nullable=False),
+    Column("subject_ref", Text, nullable=False),
+    Column("occurred_on", Date, nullable=False),
+    Column("data", JSONB, nullable=False),
+)
+_tiers(
+    event,
+    {"id": P, "type": P, "subject_ref": P, "occurred_on": P, "data": P},
+)

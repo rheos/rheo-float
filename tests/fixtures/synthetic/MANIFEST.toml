@@ -10,3 +10,13 @@
 path = "tests/fixtures/synthetic/statement_layout.txt"
 synthetic = true
 description = "Tiny bank statement layout with fake values, so the check has a fixture to pass."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_statement_2020.txt"
+synthetic = true
+description = "Vancity statement layout text (pdftotext -layout), older chequing name, a nicknamed (SIDE FUND) account closed in the period, a two-page account; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_statement_2026.txt"
+synthetic = true
+description = "Vancity statement layout text, the same chequing number under its later name, an overdrawn spell and three fee types; fake values."

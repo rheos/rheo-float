@@ -80,6 +80,7 @@ SHAPES: dict[str, re.Pattern[str]] = {
     ),
 }
 REQUIRED: dict[str, frozenset[str]] = {
+    "event": frozenset({"finance.document.rejected"}),
     "setting": frozenset(
         {f"finance.sinks.{sink}.enabled" for sink in settings.SINKS}
         | {

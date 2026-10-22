@@ -50,6 +50,9 @@ PINNED = {
     "0008_archive_skip_unreadable.py": (
         "6efcdf6ff35187de0e550654fc1f492dfbb68f24617800b90b11e3dc7de9ec37"
     ),
+    "0009_parse_cache.py": (
+        "241b99575f19c5892cabd1b0610dec391ab7de086ba1bef2bb89c026b9ff4dd0"
+    ),
 }
 
 

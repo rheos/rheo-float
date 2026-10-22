@@ -1,0 +1,128 @@
+                                                                           MARCH 11, 2020
+
+
+
+
+                                                                           99999999
+                                                                           99999999
+           VANAS11000_0000000 E D 00000
+
+           SAMPLE, ALEX
+           PO BOX 1                                                        MAIN STREET
+           ANYTOWN BC V0A 0A0                                              100 MAIN ST.
+                                                                           ANYTOWN BC V0A 0A0
+                                                                           T 604 000 0000 TOLL-FREE 1 888 VANCITY
+                                                                           vancity.com
+
+
+
+
+ACCOUNT OWNERS: SAMPLE, ALEX
+STATEMENT PERIOD: 11 FEB 2020 to 10 MAR 2020
+
+
+
+
+DAILY BANKING                                            OPENING                                           CLOSING
+                                                     BALANCE ON              TOTAL          TOTAL       BALANCE ON
+ACCOUNT SUMMARY
+                                                      11 FEB 2020      WITHDRAWALS       DEPOSITS       10 MAR 2020
+
+SHARED SUCCESS PATRONAGE #999000000011                         0.00             0.00             0.00           0.00
+
+PLAN 24 SAVINGS #999000000033                                  0.00            40.00            40.00           0.00
+
+E PACKAGE CHEQUING #999000000022                             612.40            61.35           467.75       1,018.80
+
+PAY AS YOU GO CHEQUING #999000000055 (SIDE FUND)               2.75             2.75             0.00           0.00
+
+TOTAL NUMBER OF CHEQUES 0
+
+
+
+
+SHARED SUCCESS PATRONAGE #999000000011
+
+DATE     DESCRIPTION                                                   WITHDRAWALS          DEPOSITS       BALANCE
+
+         OPENING BALANCE                                                                                       0.00
+
+
+
+
+E PACKAGE CHEQUING #999000000022
+
+DATE     DESCRIPTION                                                   WITHDRAWALS          DEPOSITS       BALANCE
+
+         OPENING BALANCE                                                                                     612.40
+
+18 FEB   PREAUTHORIZED PAYMENT (STREAMING CO)                                 13.60                          598.80
+
+21 FEB   ATM DEPOSIT (1 MAIN ST ANYTOWN BCCA)                                                 425.00       1,023.80
+
+29 FEB   CHARGES APPLIED TO ACCOUNT                                            7.75                        1,016.05
+
+
+
+
+                                                                                                           PAGE 1 OF 2
+                                 VANAS11000_0000000_001 - 0000000 HRI- -01-01-31--       000001
+E PACKAGE CHEQUING #999000000022 (CONT.)
+
+
+DATE     DESCRIPTION                                                                 WITHDRAWALS            DEPOSITS            BALANCE
+
+
+02 MAR    FUNDS TRANSFER-ONLINE TO #999000000033 ($40.00)                                      40.00                              976.05
+
+06 MAR    FUNDS TRANSFER-ONLINE FROM #999000000033 ($40.00)                                                        40.00            1,016.05
+
+09 MAR    FUNDS TRANSFER FROM #999000000055 ($2.75)                                                                 2.75            1,018.80
+
+
+
+
+PAY AS YOU GO CHEQUING #999000000055 (SIDE FUND)
+
+DATE     DESCRIPTION                                                                 WITHDRAWALS            DEPOSITS            BALANCE
+
+          OPENING BALANCE                                                                                                            2.75
+
+02 MAR    INTEREST RATE CHANGE (INTEREST RATE CHANGE TO 0)                                                                           2.75
+
+09 MAR    ACCOUNT CLOSURE DEBIT                                                                 2.75
+
+
+
+
+PLAN 24 SAVINGS #999000000033
+
+DATE     DESCRIPTION                                                                 WITHDRAWALS            DEPOSITS            BALANCE
+
+          OPENING BALANCE                                                                                                            0.00
+
+02 MAR    FUNDS TRANSFER-ONLINE FROM #999000000022 ($40.00)                                                        40.00               40.00
+
+06 MAR    FUNDS TRANSFER-ONLINE TO #999000000022 ($40.00)                                      40.00
+
+08 MAR    INTEREST RATE CHANGE (INTEREST RATE CHANGE TO 0.01%)
+
+
+
+
+SHARES
+DATE     DESCRIPTION                                                                WITHDRAWALS            DEPOSITS            BALANCE
+
+         CLASS B MEMBERSHIP SHARES #999000000044
+         OPENING BALANCE                                                                                                            5.02
+
+         Note: Shares are not insured by the Credit Union Deposit Insurance Corporation.
+
+Please review your statement and report any errors or omissions to us within 30 days of the statement date. If we don't hear from you within
+30 days, this statement will be considered correct.
+
+
+
+
+                                                                                                                                PAGE 2 OF 2
+                                                                 VANAS11000_0000000_001 - 0000000 - 000002

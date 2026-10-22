@@ -236,6 +236,17 @@ def test_cli_help_and_usage_errors_are_guarded(
     assert EM not in err
 
 
+def test_cli_help_to_a_closed_stream_exits_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ClosedPipe(io.StringIO):
+        def write(self, text: str, /) -> int:
+            raise BrokenPipeError("the reader went away")
+
+    monkeypatch.setattr(sys, "stdout", ClosedPipe())
+    assert cli_main.main(["--help"]) == 0
+
+
 def test_no_module_prints_around_the_choke_point() -> None:
     """Only ``render`` writes to stdout or stderr; everything else calls ``emit``."""
     offenders: list[str] = []

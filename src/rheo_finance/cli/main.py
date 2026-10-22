@@ -30,14 +30,18 @@ class GuardedParser(argparse.ArgumentParser):
     """An ArgumentParser whose help, usage and error text goes through ``render.emit``.
 
     argparse writes every message through ``_print_message``; subparsers inherit this
-    class, so ``finance <command> --help`` is guarded too.
+    class, so ``finance <command> --help`` is guarded too. Like argparse, it ignores
+    an OSError from a closed stream (``finance --help | head -1``).
     """
 
     def _print_message(
         self, message: str, file: SupportsWrite[str] | None = None
     ) -> None:
         if message:
-            emit(message, file or sys.stderr)
+            try:
+                emit(message, file or sys.stderr)
+            except OSError:
+                pass
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -54,6 +54,8 @@ stops a plain Bash-tool call. A Claude session can open a terminal (terminal too
 `expect`, a pseudo-terminal), so the check cannot tell the owner from a session that chose to open
 one. What keeps sessions off these commands is the process: every first live use of a sink is an
 external-action checkpoint cleared with the owner, plus the permission deny rules in
-`.claude/settings.json`. The code guarantees the role and the record (no job, sink, model step or
+`.claude/settings.json`. Those rules cover the `finance`, `uv run finance`, `.venv/bin/finance`,
+`python -m rheo_finance.cli.main` and `uv run python -m rheo_finance.cli.main` forms; they are
+prefix matches, so they back up the process and do not replace it. The code guarantees the role and the record (no job, sink, model step or
 import path reaches the approval, and every approval is a decision row). It does not guarantee who
 sat at the terminal.

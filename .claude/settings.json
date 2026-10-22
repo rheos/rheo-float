@@ -3,8 +3,14 @@
     "deny": [
       "Bash(finance sink approve:*)",
       "Bash(uv run finance sink approve:*)",
+      "Bash(.venv/bin/finance sink approve:*)",
+      "Bash(python -m rheo_finance.cli.main sink approve:*)",
+      "Bash(uv run python -m rheo_finance.cli.main sink approve:*)",
       "Bash(finance confirm bulk:*)",
-      "Bash(uv run finance confirm bulk:*)"
+      "Bash(uv run finance confirm bulk:*)",
+      "Bash(.venv/bin/finance confirm bulk:*)",
+      "Bash(python -m rheo_finance.cli.main confirm bulk:*)",
+      "Bash(uv run python -m rheo_finance.cli.main confirm bulk:*)"
     ]
   }
 }

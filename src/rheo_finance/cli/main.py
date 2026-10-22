@@ -34,7 +34,10 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     except SystemExit as exc:
         # argparse exits 0 after --help and 2 on a usage error; return the code
-        # so callers (and tests) get it without a raised SystemExit.
+        # so callers (and tests) get it without a raised SystemExit. A None code
+        # means success, as it does for sys.exit().
+        if exc.code is None:
+            return 0
         return exc.code if isinstance(exc.code, int) else 2
     handler: Handler | None = getattr(args, "handler", None)
     if handler is None:

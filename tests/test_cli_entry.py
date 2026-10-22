@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
+from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -29,9 +32,23 @@ def test_unknown_subcommand_exits_with_usage_error(
     assert "invalid choice" in err
 
 
-def test_console_script_exit_codes() -> None:
+def test_exit_with_no_code_counts_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def exit_without_code(*_args: object, **_kwargs: object) -> NoReturn:
+        raise SystemExit(None)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", exit_without_code)
+    assert main([]) == 0
+
+
+def test_installed_console_script_exit_codes() -> None:
+    # The script uv installed from [project.scripts], so a wrong target fails here.
+    script = Path(sys.executable).parent / "finance"
+    assert script.is_file()
+
     ok = subprocess.run(
-        [sys.executable, "-m", "rheo_finance.cli.main", "--help"],
+        [str(script), "--help"],
         capture_output=True,
         text=True,
         check=False,
@@ -40,7 +57,7 @@ def test_console_script_exit_codes() -> None:
     assert HEADLINE in ok.stdout
 
     bad = subprocess.run(
-        [sys.executable, "-m", "rheo_finance.cli.main", "no-such-command"],
+        [str(script), "no-such-command"],
         capture_output=True,
         text=True,
         check=False,

@@ -1,0 +1,8 @@
+SYNTHETIC STATEMENT LAYOUT (every value is fake)
+Account 99900012345
+Period 20260101 to 20260131
+Date      Description               Amount (CAD)
+20260105  COFFEE SHOP               -4.50
+20260112  PAYROLL DEPOSIT           1250.00
+20260120  TRANSFER REF 99900067890  -200.00
+Closing balance                     1045.50

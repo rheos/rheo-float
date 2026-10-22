@@ -1,5 +1,12 @@
 # Financial data never enters this repo: statements, exports, ledger dumps, keys.
-data/
+# The data folders are anchored to the repo root (leading slash): an unanchored `packs/`
+# would also ignore source such as src/rheo_finance/packs/ and tests/packs/.
+/data/
+/dumps/
+/packs/
+/staging/
+/mail-inbox/
+/logs/
 *.pdf
 *.csv
 *.qfx
@@ -7,11 +14,29 @@ data/
 *.jsonl
 *.sqlite
 *.db
+*.eml
+*.dump
+*.sql
+*.heic
+*.jpg
+*.jpeg
+*.png
+*.xlsx
+*.xls
+*.zip
 .env*
 .venv/
 __pycache__/
-.bureau/
+# Bureau run data stays local. The standing gate runner, .bureau/regression/run.sh, is
+# tracked; scripts/repo_check.py refuses any other path under .bureau/.
+/.bureau/runs/
+/.bureau/archive/
 
 # Local-only context: describes the owner's real accounts and setup. Never committed.
 project-context.md
 HANDOFF.md
+
+# Synthetic fixtures (fake values, each listed in MANIFEST.toml) stay trackable even with
+# statement-like names; scripts/repo_check.py guards what goes in.
+!tests/fixtures/synthetic/
+!tests/fixtures/synthetic/**

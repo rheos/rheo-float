@@ -1,0 +1,30 @@
+# The finance ledger's Postgres. Start it with `uv run finance db up`, which resolves
+# FINANCE_DATA_DIR (default ~/Finances) and writes db.env there first; compose itself does
+# not expand `~`.
+#
+# The project, container and volume names are pinned, so every checkout of this repo (the
+# primary clone and any worktree) drives the same one container and the same data volume.
+# Without the pins compose would name them after the checkout's directory and give each
+# checkout an empty database of its own.
+name: rheo-finance
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    container_name: rheo-finance-postgres
+    env_file:
+      - ${FINANCE_DATA_DIR:?run `uv run finance db up`, which sets FINANCE_DATA_DIR}/db.env
+    ports:
+      - "127.0.0.1:55440:5432"
+    volumes:
+      - finance-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  finance-pgdata:
+    name: finance-pgdata

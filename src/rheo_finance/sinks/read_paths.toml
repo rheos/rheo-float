@@ -1,0 +1,28 @@
+# The reviewed table of vendor-documented request paths (FR-44, AC-45a, AC-45b).
+#
+# Every request a sink declares in its SinkSpec, and every entry in a connector's read
+# allowlist, must be a row here, or tests/guards/test_outbound_static.py fails. A
+# prompt that adds an allowlist entry adds its row in the same change, and the row is
+# reviewed with it.
+#
+# One [[read_path]] table per request:
+#
+#   sink       a sink name from finance.sinks (mot, telegram, imap, rates, ...)
+#   method     the HTTP method, upper case
+#   path       the path template exactly as the RequestTemplate declares it
+#              (a segment ":name" matches one segment)
+#   docs       the vendor documentation URL for this path; never empty
+#   why        one line saying why the request is read-only (or, for an exception,
+#              what it writes and why that is allowed)
+#   exception  optional, default false. Only a sink's own write requests carry it, and
+#              only sinks mot and telegram may: the M.O.T. POST and PATCH, and
+#              Telegram's POST to M.O.T.'s /api/mcp. Any other non-GET row fails.
+#
+# Example (not a row):
+#
+#   [[read_path]]
+#   sink = "rates"
+#   method = "GET"
+#   path = "/valet/observations/:series/json"
+#   docs = "https://example.invalid/valet-api-docs"
+#   why = "Reads published exchange-rate observations; the endpoint has no write verb."

@@ -3,23 +3,32 @@ transaction.
 
 Every test registers its own specs into an empty registry (the ``empty_registry``
 fixture) and runs them against ``finance_test``.
+
+The one exception to the rolled-back-transaction rule: ``dispatch`` commits for real, so
+the tests that prove a commit (or its absence) write to a scratch table that
+``probe_table`` creates committed. Its finalizer is registered before the table is
+created and drops it whether the test passes, fails or errors, so nothing a test
+commits outlives it.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
+from dataclasses import fields, replace
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Connection, Engine, text
+from sqlalchemy.engine import URL
 
 from rheo_finance.context import ConnectionName, FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass
 from rheo_finance.operations import (
     HandlerEndedTransaction,
     InputInvalid,
+    NoDatabases,
     OperationNotFound,
     OperationSpec,
     OutputInvalid,
@@ -72,14 +81,18 @@ def current_user(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
 
 
 @pytest.fixture
-def probe_table(owner_engine: Engine) -> Iterator[str]:
-    """A committed scratch table in ``finance``, dropped after the test."""
+def probe_table(request: pytest.FixtureRequest, owner_engine: Engine) -> str:
+    """A committed scratch table in ``finance``, dropped however the test ends."""
     table = f"finance.dispatch_probe_{uuid.uuid4().hex[:8]}"
+
+    def drop() -> None:
+        with owner_engine.begin() as connection:
+            connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+
+    request.addfinalizer(drop)
     with owner_engine.begin() as connection:
         connection.execute(text(f"CREATE TABLE {table} (label text NOT NULL)"))
-    yield table
-    with owner_engine.begin() as connection:
-        connection.execute(text(f"DROP TABLE {table}"))
+    return table
 
 
 def probe_rows(engine: Engine, table: str) -> int:
@@ -299,12 +312,16 @@ def test_a_handler_cannot_commit_through_its_unit_of_work(
     assert probe_rows(owner_engine, probe_table) == 0
 
 
-def test_a_unit_of_work_offers_no_way_to_end_its_transaction(
+def test_a_unit_of_work_offers_three_methods_of_its_own(
     owner_conn: Connection,
 ) -> None:
     uow = UnitOfWork(owner_conn)
-    for name in ("commit", "rollback", "close", "begin", "connection"):
-        assert not hasattr(uow, name), name
+    public = sorted(name for name in dir(uow) if not name.startswith("_"))
+    assert public == ["execute", "scalar", "scalars"]
+    for name in public:
+        # Bound to the unit of work, not to the raw connection behind it.
+        assert getattr(uow, name).__self__ is uow, name
+    assert uow.scalar(text("SELECT 1")) == 1
 
 
 def test_a_commit_statement_from_a_handler_is_detected(
@@ -327,3 +344,55 @@ def test_a_commit_statement_from_a_handler_is_detected(
         dispatch(
             "finance.probe.sql_commit", {}, Role.OWNER, ctx=make_context(Role.OWNER)
         )
+
+
+# --- the DSNs stay out of a handler's reach -----------------------------------------
+
+
+def test_a_context_without_databases_is_refused(
+    empty_registry: dict[str, OperationSpec], make_context: MakeContext
+) -> None:
+    register(make_spec("finance.probe.who", current_user))
+    bare = replace(make_context(Role.OWNER), _databases=None)
+    with pytest.raises(NoDatabases):
+        dispatch("finance.probe.who", {}, Role.OWNER, ctx=bare)
+
+
+def test_a_handler_context_carries_no_dsn_or_engine(
+    empty_registry: dict[str, OperationSpec], make_context: MakeContext
+) -> None:
+    def inspect(ctx: FinanceContext, _uow: UnitOfWork, _data: Probe) -> Answer:
+        for item in fields(ctx):
+            value = getattr(ctx, item.name)
+            assert not isinstance(value, (Engine, URL, Connection)), item.name
+            assert type(value).__name__ != "_Databases", item.name
+        return Answer(value="clean")
+
+    register(make_spec("finance.probe.inspect", inspect))
+    out = dispatch(
+        "finance.probe.inspect", {}, Role.OWNER, ctx=make_context(Role.OWNER)
+    )
+    assert out == Answer(value="clean")
+
+
+def test_a_handler_cannot_dispatch_again(
+    empty_registry: dict[str, OperationSpec],
+    make_context: MakeContext,
+    owner_engine: Engine,
+    probe_table: str,
+) -> None:
+    # A nested dispatch would open a second connection outside this transaction.
+    def nested(ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
+        return dispatch("finance.probe.inner", {}, Role.OWNER, ctx=ctx)  # type: ignore[return-value]
+
+    def inner(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('b')"))
+        return Answer(value="inner")
+
+    mutate = SafetyClass.MUTATE
+    register(make_spec("finance.probe.outer", nested, safety_class=mutate))
+    register(make_spec("finance.probe.inner", inner, safety_class=mutate))
+    with pytest.raises(NoDatabases):
+        dispatch("finance.probe.outer", {}, Role.OWNER, ctx=make_context(Role.OWNER))
+    assert probe_rows(owner_engine, probe_table) == 0

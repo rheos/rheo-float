@@ -10,20 +10,21 @@ transaction itself.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Connection, Engine, create_engine
-from sqlalchemy.engine import URL
-from sqlalchemy.pool import NullPool
+from sqlalchemy import Connection, CursorResult, Executable, ScalarResult
 
 from rheo_finance.clock import Clock
 from rheo_finance.contracts import Role
 from rheo_finance.settings import Settings
+
+if TYPE_CHECKING:
+    from rheo_finance.operations import _Databases
 
 ConnectionName = Literal["owner", "reader"]
 
@@ -43,22 +44,37 @@ class LineSnapshot(BaseModel):
     posted_on: dt.date
 
 
+_Params = Mapping[str, Any] | Sequence[Mapping[str, Any]]
+
+
 class UnitOfWork:
     """The one transaction ``dispatch`` opened for an operation, as a handler sees it.
 
-    It offers the connection's ``execute``, ``scalar`` and ``scalars`` and nothing else,
-    so a handler has no ``commit``, ``rollback`` or ``close`` to end the transaction
-    with: ending it is dispatch's job. A ``COMMIT`` sent as SQL cannot be stopped from
-    here; dispatch detects it and raises.
+    It offers ``execute``, ``scalar`` and ``scalars`` on that transaction's connection
+    and nothing else, so a handler has no ``commit``, ``rollback`` or ``close`` to end
+    the transaction with: ending it is dispatch's job. A ``COMMIT`` sent as SQL cannot
+    be stopped from here; dispatch detects it and raises.
     """
 
-    __slots__ = ("execute", "scalar", "scalars")
+    __slots__ = ("_connection",)
 
     def __init__(self, connection: Connection) -> None:
-        # The bound methods keep SQLAlchemy's typed overloads.
-        self.execute = connection.execute
-        self.scalar = connection.scalar
-        self.scalars = connection.scalars
+        self._connection = connection
+
+    def execute(
+        self, statement: Executable, parameters: _Params | None = None
+    ) -> CursorResult[*tuple[Any, ...]]:
+        return self._connection.execute(statement, parameters)
+
+    def scalar(
+        self, statement: Executable, parameters: Mapping[str, Any] | None = None
+    ) -> Any:
+        return self._connection.scalar(statement, parameters)
+
+    def scalars(
+        self, statement: Executable, parameters: _Params | None = None
+    ) -> ScalarResult[Any]:
+        return self._connection.scalars(statement, parameters)
 
 
 # A line reference to its snapshot, or None when no current line has that reference.
@@ -73,46 +89,21 @@ class FinancePaths:
     data: Path
 
 
-class Databases:
-    """The owner and reader DSNs, one engine per DSN, created on first use."""
-
-    def __init__(self, owner_url: URL, reader_url: URL) -> None:
-        self._urls: dict[ConnectionName, URL] = {
-            "owner": owner_url,
-            "reader": reader_url,
-        }
-        self._engines: dict[ConnectionName, Engine] = {}
-
-    def url(self, name: ConnectionName) -> URL:
-        return self._urls[name]
-
-    def engine(self, name: ConnectionName) -> Engine:
-        engine = self._engines.get(name)
-        if engine is None:
-            # NullPool: a CLI call or a job tick opens few connections, and a pooled
-            # connection would outlive the role and grant state it was opened under.
-            engine = create_engine(self._urls[name], poolclass=NullPool)
-            self._engines[name] = engine
-        return engine
-
-    def dispose(self) -> None:
-        for engine in self._engines.values():
-            engine.dispose()
-        self._engines.clear()
-
-
 @dataclass(frozen=True)
 class FinanceContext:
     """Everything a handler may use besides its input and its unit of work.
 
     ``role`` is the actor the context was built for; ``dispatch`` refuses a call made
-    for a different role.
+    for a different role. The DSNs are not a handler's to use:
+    ``operations.with_databases`` puts them in ``_databases``, which only ``dispatch``
+    reads, and the context a handler receives has it cleared, so a handler can neither
+    open another connection nor dispatch again.
     """
 
     settings: Settings
     clock: Clock
     paths: FinancePaths
     role: Role
-    databases: Databases
     snapshot_provider: SnapshotProvider
     model_client: ModelClient | None = field(default=None)
+    _databases: _Databases | None = field(default=None, repr=False, compare=False)

@@ -20,12 +20,16 @@ Outbound pushes (M.O.T., Telegram) are sink adapters, never registered operation
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Self
 
 import psycopg
 from psycopg import pq
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, Engine, create_engine, text
+from sqlalchemy.engine import URL
+from sqlalchemy.pool import NullPool
 
 from rheo_finance.context import (
     ConnectionName,
@@ -66,6 +70,45 @@ class HandlerEndedTransaction(OperationError):
     pass
 
 
+class NoDatabases(OperationError):
+    pass
+
+
+class _Databases:
+    """The owner and reader DSNs, one engine per DSN, created on first use.
+
+    Only this module touches it: a guard test fails on any other module under
+    ``src/rheo_finance`` that names it, ``_databases`` or ``with_databases``.
+    """
+
+    def __init__(self, owner_url: URL, reader_url: URL) -> None:
+        self._urls: dict[ConnectionName, URL] = {
+            "owner": owner_url,
+            "reader": reader_url,
+        }
+        self._engines: dict[ConnectionName, Engine] = {}
+
+    def engine(self, name: ConnectionName) -> Engine:
+        engine = self._engines.get(name)
+        if engine is None:
+            # NullPool: a CLI call or a job tick opens few connections, and a pooled
+            # connection would outlive the role and grant state it was opened under.
+            engine = create_engine(self._urls[name], poolclass=NullPool)
+            self._engines[name] = engine
+        return engine
+
+
+def with_databases(
+    ctx: FinanceContext, *, owner_url: URL, reader_url: URL
+) -> FinanceContext:
+    """``ctx`` carrying the owner and reader DSNs that ``dispatch`` opens.
+
+    For the composition roots (the CLI, jobs, tests) only. A handler receives a context
+    without them.
+    """
+    return replace(ctx, _databases=_Databases(owner_url, reader_url))
+
+
 class OperationSpec(BaseModel):
     """One registered operation."""
 
@@ -74,10 +117,10 @@ class OperationSpec(BaseModel):
     name: str
     input_model: type[BaseModel]
     output_model: type[BaseModel]
-    # Any: each handler takes its own input model, and Callable parameters are
-    # contravariant, so no narrower type admits them all. dispatch passes it only an
-    # instance of input_model and checks the result against output_model.
-    handler: Any
+    # Callable[..., ...]: each handler takes its own input model, and Callable
+    # parameters are contravariant, so no fixed parameter list admits them all.
+    # dispatch passes it only an instance of input_model and checks the result.
+    handler: Callable[..., BaseModel]
     safety_class: SafetyClass
     roles: frozenset[Role]
     connection: ConnectionName
@@ -88,8 +131,6 @@ class OperationSpec(BaseModel):
     def _check(self) -> Self:
         if not NAME_SHAPE.fullmatch(self.name):
             raise ValueError(f"{self.name!r} is not finance.<noun>.<verb>")
-        if not callable(self.handler):
-            raise ValueError(f"{self.name}: the handler is not callable")
         if not self.roles:
             raise ValueError(f"{self.name}: lists no role")
         if not self.description.strip():
@@ -169,7 +210,8 @@ def dispatch(
     """Run operation ``name`` as ``role`` and return its output.
 
     Refuses an unknown name, a role the spec does not list, a context built for another
-    role and an input its model rejects, all before any connection is opened. Then it
+    role, an input its model rejects and a context with no databases (a handler's own
+    context is one), all before any connection is opened. Then it
     opens the DSN the spec's ``connection`` names and runs the handler in one
     transaction: committed when the handler returns its output model, rolled back on any
     error, which is re-raised.
@@ -184,14 +226,19 @@ def dispatch(
             f"{name}: called as {role.value} with a context for {ctx.role.value}"
         )
     data = _validated(spec, payload)
+    databases = ctx._databases
+    if databases is None:
+        # Also what a handler gets if it tries to dispatch from inside its operation.
+        raise NoDatabases(f"{name}: the context carries no databases")
+    handler_ctx = replace(ctx, _databases=None)
 
-    with ctx.databases.engine(spec.connection).connect() as connection:
+    with databases.engine(spec.connection).connect() as connection:
         transaction = connection.begin()
         try:
             # psycopg sends BEGIN with the first statement: open the server transaction
             # now, so an idle server after the handler means the handler ended it.
             connection.execute(text("SELECT 1"))
-            result = spec.handler(ctx, UnitOfWork(connection), data)
+            result = spec.handler(handler_ctx, UnitOfWork(connection), data)
             if not transaction.is_active or not _server_in_transaction(connection):
                 raise HandlerEndedTransaction(
                     f"{name}: the handler ended its transaction"

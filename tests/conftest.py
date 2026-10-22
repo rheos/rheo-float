@@ -24,7 +24,6 @@ from sqlalchemy.pool import NullPool
 from rheo_finance import db, operations
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import (
-    Databases,
     FinanceContext,
     FinancePaths,
     LineSnapshot,
@@ -110,27 +109,23 @@ def no_snapshot(_uow: UnitOfWork, _ref: str) -> LineSnapshot | None:
 
 
 @pytest.fixture
-def test_databases(test_database: DatabaseUnderTest) -> Iterator[Databases]:
-    """The ``finance_test`` owner and reader DSNs, as ``dispatch`` opens them."""
-    databases = Databases(test_database.owner_url, test_database.reader_url)
-    yield databases
-    databases.dispose()
-
-
-@pytest.fixture
 def make_context(
-    test_databases: Databases, tmp_path: Path
+    test_database: DatabaseUnderTest, tmp_path: Path
 ) -> Callable[[Role], FinanceContext]:
     """A ``FinanceContext`` for a role over ``finance_test``, with a fake clock."""
 
     def build(role: Role) -> FinanceContext:
-        return FinanceContext(
+        ctx = FinanceContext(
             settings=default_settings(),
             clock=FakeClock(dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)),
             paths=FinancePaths(data=tmp_path),
             role=role,
-            databases=test_databases,
             snapshot_provider=no_snapshot,
+        )
+        return operations.with_databases(
+            ctx,
+            owner_url=test_database.owner_url,
+            reader_url=test_database.reader_url,
         )
 
     return build

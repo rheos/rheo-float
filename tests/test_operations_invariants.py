@@ -8,8 +8,10 @@ by a spec that reaches ``SPECS`` anyway.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -18,7 +20,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
-from rheo_finance import operations
+from rheo_finance import catalogue, operations
 from rheo_finance.context import ConnectionName, FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass
 from rheo_finance.operations import (
@@ -119,7 +121,7 @@ def registry(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[list[OperationSpec]]:
     if request.param == "installed":
-        yield list(operations.SPECS.values())
+        yield list(catalogue.load_all().values())
         return
     monkeypatch.setattr(operations, "SPECS", {})
     if request.param == "fixture":
@@ -321,3 +323,87 @@ def test_the_same_read_on_the_owner_connection_succeeds(
         "finance.fixture.base_read", {}, Role.OWNER, ctx=make_context(Role.OWNER)
     )
     assert out == Rows(count=1)
+
+
+# --- the catalogue and the DSN boundary, over the source tree -----------------------
+
+SRC = Path(operations.__file__).resolve().parent
+
+
+def _modules() -> Iterator[tuple[str, ast.Module]]:
+    for path in sorted(SRC.rglob("*.py")):
+        relative = path.relative_to(SRC.parent).with_suffix("")
+        dotted = ".".join(relative.parts).removesuffix(".__init__")
+        yield dotted, ast.parse(path.read_text(encoding="utf-8"))
+
+
+def _names(tree: ast.Module) -> set[str]:
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, ast.alias):
+            found.add(node.name.rsplit(".", 1)[-1])
+        elif isinstance(node, ast.keyword) and node.arg:
+            found.add(node.arg)
+    return found
+
+
+# Who may name the DSN holder: operations (it owns it) and context (it declares the
+# field dispatch reads). A composition root that builds contexts (the CLI, jobs) joins
+# this list in the change that adds it.
+HOLDER_NAMES = {"_Databases", "_databases", "with_databases"}
+HOLDER_ALLOWED = {"rheo_finance.operations", "rheo_finance.context"}
+# Who may make an engine: dispatch, and the migration path.
+ENGINE_ALLOWED = {
+    "rheo_finance.operations",
+    "rheo_finance.db",
+    "rheo_finance.migrations.env",
+}
+
+
+def test_only_operations_reaches_the_dsn_holder() -> None:
+    offenders = sorted(
+        f"{module}: {', '.join(sorted(_names(tree) & HOLDER_NAMES))}"
+        for module, tree in _modules()
+        if module not in HOLDER_ALLOWED and _names(tree) & HOLDER_NAMES
+    )
+    assert offenders == []
+
+
+def test_only_dispatch_and_migrations_create_engines() -> None:
+    offenders = sorted(
+        module
+        for module, tree in _modules()
+        if module not in ENGINE_ALLOWED and "create_engine" in _names(tree)
+    )
+    assert offenders == []
+
+
+def test_every_module_that_registers_is_in_the_catalogue() -> None:
+    registering = {
+        module
+        for module, tree in _modules()
+        if module != "rheo_finance.operations"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "register")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "register")
+        )
+    }
+    assert registering <= set(catalogue.MODULES)
+    assert len(set(catalogue.MODULES)) == len(catalogue.MODULES)
+
+
+def test_a_handler_that_is_not_callable_is_refused() -> None:
+    with pytest.raises(ValidationError, match="callable"):
+        make_spec(
+            "finance.fixture.bad",
+            safety_class=SafetyClass.READ,
+            roles=OWNER_ONLY,
+            connection="owner",
+            handler=42,  # type: ignore[arg-type]
+        )

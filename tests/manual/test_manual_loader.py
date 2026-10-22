@@ -66,6 +66,27 @@ def test_a_row_spanning_lines_reports_the_line_it_starts_on(tmp_path: Path) -> N
     assert [(e.line_no, e.reason.split(":")[0]) for e in result.errors] == [(3, "kind")]
 
 
+def test_a_row_that_is_not_valid_csv_is_an_error_and_the_next_row_loads(
+    tmp_path: Path,
+) -> None:
+    path = write(
+        tmp_path,
+        HEADER
+        + "test-a,9991234,number,,\n"
+        + '"test-b"x,9995678,number,,\n'  # a stray character after a closing quote
+        + "test-c,9998765,number,,\n"
+        + '"test-d,9994321,number,,\n'  # an unclosed quote runs to the end
+        + "test-e,9993456,number,,\n",
+    )
+    result = load_csv(path, AccountIdentifierRow)
+
+    assert [row.account for row in result.rows] == ["test-a", "test-c"]
+    assert result.errors == [
+        RowError(NAME, 3, "the row is not valid CSV"),
+        RowError(NAME, 5, "the row is not valid CSV"),
+    ]
+
+
 def test_a_row_with_the_wrong_cell_count_is_an_error(tmp_path: Path) -> None:
     path = write(tmp_path, HEADER + "test-a,9991234,number\ntest-b,9995678,number,,\n")
     result = load_csv(path, AccountIdentifierRow)

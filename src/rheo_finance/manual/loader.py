@@ -8,7 +8,9 @@ file-level error on line 1 and no row loads.
 
 Cells are stripped; a blank cell is left out, so the model's default applies (or the
 field is reported missing). A list cell holds its values separated by ``;``
-(``split_list``). A blank line is skipped. A row's line number is the physical line it
+(``split_list``). A blank line is skipped. A row that is not valid CSV (a stray
+quote) is an error and the next row still loads; an unclosed quote runs to the end of
+the file, so that row is the last. A row's line number is the physical line it
 starts on, so a quoted cell spanning lines still points at its row.
 
 A reason names the column and what is wrong with it, never the cell's value: a cell
@@ -107,7 +109,10 @@ def load_csv[T: BaseModel](path: Path, row_model: type[T]) -> LoadResult[T]:
             cells = next(reader, None)
         except csv.Error:
             result.errors.append(RowError(name, start, "the row is not valid CSV"))
-            break  # the reader cannot resume past a broken quote
+            if reader.line_num < start:
+                break  # no line consumed: nothing left to resume from
+            # The reader resumes on the next line; an unclosed quote runs to the end.
+            continue
         if cells is None:
             break
         values = [cell.strip() for cell in cells]

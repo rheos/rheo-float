@@ -7,9 +7,11 @@ involved:
 - a slug used by two account rows, or the built-in account's slug;
 - an identifier row naming no loaded account (the ``account`` column holds a slug);
 - one identifier (same kind, same text) on two rows;
-- two ``number`` identifiers of different accounts at one institution (compared
-  case-insensitively) that end in the same four digits: the reused Vancity parser
-  matches an account on its number's last four only (Key decision 1);
+- two last-four identifiers (``LAST_FOUR_KINDS``: ``number`` and ``masked_card``) of
+  different accounts at one institution that end in the same four digits, the
+  institution compared by ``institution_key`` (casefolded, whitespace collapsed,
+  otherwise exact): the reused Vancity parser matches an account on its last four only
+  (Key decision 1), and the Vancity adapter matches with these same two functions;
 - an account left with no identifier row (AC-1), checked after the rules above.
 
 The built-in account "Paid outside recorded accounts" (kind ``wallet``, identifier
@@ -138,6 +140,16 @@ INTERNAL_IDENTIFIER: Final = AccountIdentifierRow(
 _LAST_FOUR = re.compile(r"(\d)\D*(\d)\D*(\d)\D*(\d)\D*$")
 
 
+# The identifier kinds a parser may match by last four digits.
+LAST_FOUR_KINDS: Final[frozenset[str]] = frozenset({"number", "masked_card"})
+
+
+def institution_key(institution: str) -> str:
+    """``institution`` as the last-four rule compares it: casefolded, runs of
+    whitespace collapsed to one space, ends trimmed; nothing else is normalized."""
+    return " ".join(institution.split()).casefold()
+
+
 def last_four(identifier: str) -> str | None:
     """The last four digits of ``identifier`` (separators ignored), or None."""
     match = _LAST_FOUR.search(identifier)
@@ -198,22 +210,23 @@ def build_registry(
         reject(IDENTIFIERS_FILE, line, "identifier: another row has the same one")
     bad_identifiers |= repeated
 
-    # Two accounts at one institution whose numbers share their last four.
+    # Two accounts at one institution whose last-four identifiers share them.
     by_four: dict[tuple[str, str], list[tuple[int, str]]] = defaultdict(list)
     for line, ident in identifier_rows:
         account = by_slug.get(ident.account)
         four = last_four(ident.identifier)
-        if account is None or ident.kind != "number" or four is None:
+        if account is None or ident.kind not in LAST_FOUR_KINDS or four is None:
             continue
-        by_four[(account.institution.casefold(), four)].append((line, account.slug))
+        key = (institution_key(account.institution), four)
+        by_four[key].append((line, account.slug))
     for group in by_four.values():
         if len({slug for _, slug in group}) > 1:
             for line, _ in group:
                 reject(
                     IDENTIFIERS_FILE,
                     line,
-                    "identifier: another account at this institution has a number"
-                    " with the same last four digits",
+                    "identifier: another account at this institution has an"
+                    " identifier with the same last four digits",
                 )
                 bad_identifiers.add(line)
 

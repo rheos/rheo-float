@@ -205,6 +205,54 @@ def test_a_shared_last_four_at_one_institution_is_an_error_on_both_rows(
     assert [row.slug for row in registry.accounts] == ["paid-outside", "test-card"]
 
 
+# The same institution as CHEQUING, spelled with other case and spacing.
+VISA = "test-visa,Test visa,test  credit   UNION,credit_card,CAD,monthly,,,,,,,,,"
+# Punctuation is not normalized: another institution.
+OTHER = "test-other,Test other,Test Credit Union.,savings,CAD,monthly,,,,,,,,,"
+
+
+@pytest.mark.parametrize(
+    ("identifiers", "clashing"),
+    [
+        # A number and a masked card of two accounts at one institution.
+        (
+            [
+                "test-chequing,9991234,number,,",
+                "test-visa,9999 99** **** 1234,masked_card,,",
+            ],
+            [2, 3],
+        ),
+        # Two masked cards.
+        (
+            [
+                "test-chequing,9999 88** **** 1234,masked_card,,",
+                "test-visa,9999 99** **** 1234,masked_card,,",
+            ],
+            [2, 3],
+        ),
+        # A file token is not matched by last four, so it never clashes.
+        (["test-chequing,9991234,number,,", "test-visa,stmt-1234,file_token,,"], []),
+        # Punctuation makes another institution.
+        (["test-chequing,9991234,number,,", "test-other,9995551234,number,,"], []),
+    ],
+)
+def test_the_last_four_rule_covers_numbers_and_masked_cards(
+    owner_conn: Connection,
+    tmp_path: Path,
+    identifiers: list[str],
+    clashing: list[int],
+) -> None:
+    write(tmp_path, [CHEQUING, VISA, OTHER], identifiers)
+    load_accounts(UnitOfWork(owner_conn), tmp_path)
+
+    shared = [
+        line
+        for file, line, reason in errors(owner_conn)
+        if file == IDENTIFIERS_FILE and "last four" in reason
+    ]
+    assert shared == clashing
+
+
 @pytest.mark.parametrize(
     ("accounts", "identifiers", "expected"),
     [

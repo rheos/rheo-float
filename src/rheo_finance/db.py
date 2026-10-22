@@ -16,14 +16,13 @@ import re
 import secrets
 import stat
 import subprocess
-import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rheo_finance.render import Report, emit
+from rheo_finance.render import Report, emit, emit_error
 
 if TYPE_CHECKING:
     from alembic.config import Config
@@ -500,7 +499,7 @@ def migrate(url: URL | None = None) -> str:
 
 
 def _fail(command: str, exc: DbError) -> int:
-    emit(f"finance db {command}: failed. {exc}", sys.stderr)
+    emit_error(Report.from_message(f"finance db {command}: failed. {exc}"))
     return 1
 
 

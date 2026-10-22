@@ -33,9 +33,18 @@ STATUS_MAX: Final = 15
 HOME_CURRENCY: Final = "CAD"
 
 _CENT: Final = Decimal("0.01")
-_EM_DASH: Final = "\u2014"
-# A run of em dashes and the spaces or tabs around it becomes one plain hyphen.
-_EM_DASH_RUN: Final = re.compile(r"[ \t]*\u2014(?:[ \t]*\u2014)*[ \t]*")
+_EM_DASH: Final = chr(0x2014)
+# The characters str.splitlines() breaks on: a report line holds none of them.
+LINE_BREAKS: Final = "".join(
+    map(chr, (0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029))
+)
+# Horizontal whitespace: every Unicode space (tab, no-break, thin, narrow no-break
+# and the rest) except a line break.
+_HSPACE: Final = "[^\\S" + re.escape(LINE_BREAKS) + "]"
+# A run of em dashes and the horizontal space around it becomes one plain hyphen.
+_EM_DASH_RUN: Final = re.compile(
+    f"{_HSPACE}*{_EM_DASH}(?:{_HSPACE}*{_EM_DASH})*{_HSPACE}*"
+)
 _CURRENCY: Final = re.compile(r"[A-Z0-9]{2,12}")
 
 
@@ -46,15 +55,16 @@ class Writer(Protocol):
 def guard(text: str) -> str:
     """``text`` with every U+2014 replaced by a plain hyphen, spaces collapsed.
 
-    "a", an em dash, "b" becomes ``a - b`` whether or not spaces stood around the
-    dash, and a run of em dashes counts as one. At the start or end of a line the
-    hyphen keeps its space only on the side that has text.
+    "a", an em dash, "b" becomes ``a - b`` whether or not whitespace stood around
+    the dash (spaces, tabs, no-break and thin spaces alike), and a run of em dashes
+    counts as one. At the start or end of a line the hyphen keeps its space only on
+    the side that has text; line breaks are never touched.
     """
 
     def replace(match: re.Match[str]) -> str:
         start, end = match.start(), match.end()
-        left = start > 0 and text[start - 1] not in "\r\n"
-        right = end < len(text) and text[end] not in "\r\n"
+        left = start > 0 and text[start - 1] not in LINE_BREAKS
+        right = end < len(text) and text[end] not in LINE_BREAKS
         return (" " if left else "") + "-" + (" " if right else "")
 
     if _EM_DASH not in text:
@@ -65,7 +75,7 @@ def guard(text: str) -> str:
 def _check_line(line: str) -> str:
     if not isinstance(line, str):
         raise TypeError(f"a report line must be str, not {type(line).__name__}")
-    if "\n" in line or "\r" in line:
+    if any(char in LINE_BREAKS for char in line):
         raise ValueError("a report line holds no line break; pass one item per line")
     return line
 
@@ -118,6 +128,13 @@ class Report:
         report = cls.__new__(cls)
         report._init(lines[:HEADLINE_MAX], lines[HEADLINE_MAX:], fixed_list=True)
         return report
+
+    @classmethod
+    def from_message(cls, text: str) -> Self:
+        """A message that may span lines: its first line is the headline, the rest
+        detail, so a long failure still keeps the headline budget."""
+        first, *rest = text.splitlines() or [""]
+        return cls([first or "failed."], rest)
 
     def lines(self) -> list[str]:
         """Every line in print order, without the separator."""
@@ -209,6 +226,40 @@ def emit(report_or_text: Report | str, stream: Writer | None = None) -> None:
     (stream or sys.stdout).write(out)
 
 
+def emit_error(report_or_text: Report | str) -> None:
+    """``emit`` to stderr: the way commands report a failure."""
+    emit(report_or_text, sys.stderr)
+
+
+_URL_PASSWORD: Final = re.compile(
+    r"(?P<head>[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*:)[^\s@]*@"
+)
+_KEYWORD_PASSWORD: Final = re.compile(
+    r"(?i)(?P<key>pass(?:word|wd)?|pwd)(?P<eq>\s*=\s*)(?:'[^']*'|\"[^\"]*\"|\S+)"
+)
+_SQL_ECHO: Final = re.compile(r"\s*\[(?:SQL|parameters|generated in)\b.*$", re.DOTALL)
+_FAILURE_MAX: Final = 200
+
+
+def redact(text: str) -> str:
+    """``text`` with DSN and keyword passwords replaced by ``<redacted>``."""
+    text = _URL_PASSWORD.sub(r"\g<head><redacted>@", text)
+    return _KEYWORD_PASSWORD.sub(r"\g<key>\g<eq><redacted>", text)
+
+
+def failure_line(label: str, exc: BaseException) -> str:
+    """One safe line for an unexpected failure: the exception type and the first
+    line of its message, with any SQL or bound parameters cut and passwords
+    redacted. Nothing past the first line is shown."""
+    lines = str(exc).splitlines()
+    first = _SQL_ECHO.sub("", lines[0]).strip() if lines else ""
+    first = redact(first)
+    if len(first) > _FAILURE_MAX:
+        first = first[: _FAILURE_MAX - 3] + "..."
+    detail = f"{type(exc).__name__}: {first}" if first else type(exc).__name__
+    return f"{label}: failed. {detail}"
+
+
 def _json_safe(value: object) -> object:
     if isinstance(value, BaseModel):
         return _json_safe(value.model_dump(mode="python"))
@@ -235,7 +286,10 @@ def _json_safe(value: object) -> object:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError("JSON object keys are str")
-            safe[guard(key)] = _json_safe(item)
+            guarded = guard(key)
+            if guarded in safe:
+                raise ValueError(f"two JSON keys read {guarded!r} once guarded")
+            safe[guarded] = _json_safe(item)
         return safe
     if isinstance(value, list | tuple):
         return [_json_safe(item) for item in value]

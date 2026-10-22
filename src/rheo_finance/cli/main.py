@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from rheo_finance import db, init_data
-from rheo_finance.render import emit
+from rheo_finance.render import Report, emit, emit_error, failure_line
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite
@@ -39,7 +39,10 @@ class GuardedParser(argparse.ArgumentParser):
     ) -> None:
         if message:
             try:
-                emit(message, file or sys.stderr)
+                if file is None:
+                    emit_error(message)
+                else:
+                    emit(message, file)
             except OSError:
                 pass
 
@@ -72,7 +75,17 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         parser.print_help()
         return 0
-    return handler(args)
+    label = f"finance {args.command}"
+    try:
+        return handler(args)
+    except KeyboardInterrupt:
+        emit_error(Report([f"{label}: interrupted."]))
+        return 130
+    except Exception as exc:
+        # Never let a traceback reach stderr through sys.excepthook: it would skip
+        # the guard and could echo SQL, bound parameters or a DSN.
+        emit_error(Report([failure_line(label, exc)]))
+        return 1
 
 
 if __name__ == "__main__":

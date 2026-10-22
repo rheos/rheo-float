@@ -13,14 +13,13 @@ import csv
 import io
 import os
 import stat
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
 from rheo_finance import db
 from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
-from rheo_finance.render import Report, emit
+from rheo_finance.render import Report, emit, emit_error
 from rheo_finance.settings import SETTINGS_FILE_NAME, settings_template
 
 DIRECTORIES: Final[tuple[str, ...]] = (
@@ -90,7 +89,7 @@ def _cmd_init_data(_args: argparse.Namespace) -> int:
     try:
         result = init_data()
     except OSError as exc:
-        emit(f"finance init-data: failed. {exc}", sys.stderr)
+        emit_error(Report.from_message(f"finance init-data: failed. {exc}"))
         return 1
     if result.created:
         headline = (

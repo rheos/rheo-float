@@ -6,16 +6,20 @@ The guard is keyed on the method and on the reviewed table of vendor-documented 
 read paths that name transfers or orders, and those are fine to read.
 
 (a) Only the modules in ``OUTBOUND_ALLOWED`` import ``urllib``, ``imaplib``,
-    ``subprocess``, ``socket`` or another network or process module, or call a process
-    spawner such as ``os.system``. ``urllib.parse`` is exempt: it parses text and opens
+    ``subprocess``, ``socket`` or another network, HTTP-client or process module
+    (``httpx``, ``requests``, ``urllib3``, ``aiohttp``, ``webbrowser`` among them), name
+    one in a literal dynamic import (``importlib.import_module("...")`` or
+    ``__import__("...")``), or call a process spawner such as ``os.system`` or
+    ``asyncio.open_connection``. ``urllib.parse`` is exempt: it parses text and opens
     nothing. ``scripts/`` is scanned too.
 (b) Every allowlist entry that exists is a row of the table. The entries are the
     requests of every ``SinkSpec`` the providers in ``SINK_SPECS`` return, and every
     connector's ``READ_ALLOWLIST``. That is the whole set: ``http.Client`` refuses an
     allowlist entry its spec does not declare, and the gate refuses a spec whose digest
     is not the approved digest of the provider's spec. A row is refused when it is not
-    a GET and carries no ``exception``, when it carries ``exception`` for a sink other
-    than ``mot`` or ``telegram``, and when its documentation URL is empty.
+    a GET and carries no ``exception``, when it carries ``exception`` for anything but
+    the M.O.T. POST or PATCH or Telegram's POST to ``/api/mcp``, and when its
+    documentation URL is empty.
 (c) No ``Client(...)`` outside the tests passes ``allowed_schemes`` holding ``http``
     (or anything that is not a literal).
 (d) No browser-automation package is in ``pyproject.toml`` or ``uv.lock``, and no module
@@ -24,8 +28,9 @@ read paths that name transfers or orders, and those are fine to read.
     ``rheo_finance.features.connectors_api.*``) declares ``SINK_SPEC`` (a ``SinkSpec``)
     and ``READ_ALLOWLIST`` (``(method, path)`` pairs the spec declares), makes no write
     call (a ``request`` whose method is not a literal ``GET``, or a ``post``, ``put``,
-    ``patch`` or ``delete`` call), and names no URL on a host outside
-    ``SINK_SPEC.hosts``.
+    ``patch`` or ``delete`` call), and names no host outside ``SINK_SPEC.hosts``: not
+    in a URL, and not in a hostname-shaped string, the literal parts of an f-string
+    included.
 
 The lists here are constants later prompts extend: a module that gains a subprocess call
 joins ``OUTBOUND_ALLOWED`` with its reason, and a sink request or connector entry adds
@@ -76,13 +81,30 @@ READ_PATHS = PACKAGE / "sinks" / "read_paths.toml"
 
 OUTBOUND_IMPORTS = (
     "urllib", "imaplib", "subprocess", "socket", "http.client", "smtplib", "ftplib",
-    "poplib", "telnetlib", "multiprocessing", "pty",
+    "poplib", "telnetlib", "multiprocessing", "pty", "webbrowser", "httpx", "requests",
+    "urllib3", "aiohttp", "websockets", "pycurl",
 )  # fmt: skip
 OUTBOUND_EXEMPT = ("urllib.parse",)
 PROCESS_CALL = re.compile(
     r"os\.(system|popen|exec\w*|spawn\w*|posix_spawnp?|fork\w*)"
-    r"|asyncio\.create_subprocess_\w+"
+    r"|asyncio\.(create_subprocess_\w+|open_connection|open_unix_connection)"
 )
+DYNAMIC_IMPORTS = {"import_module", "__import__"}
+
+
+def _is_outbound(name: str) -> bool:
+    return any(names_module(name, target) for target in OUTBOUND_IMPORTS) and not any(
+        names_module(name, ok) for ok in OUTBOUND_EXEMPT
+    )
+
+
+def _dynamic_import(call: ast.Call) -> str | None:
+    """The module a literal ``importlib.import_module`` or ``__import__`` names."""
+    if call.args and isinstance(call.args[0], ast.Constant):
+        value = call.args[0].value
+        return value if isinstance(value, str) else None
+    return None
+
 
 # Each module that may, and the one reason. Later prompts add theirs here.
 OUTBOUND_ALLOWED: dict[str, str] = {
@@ -108,8 +130,14 @@ def outbound_modules(*roots: Path) -> dict[str, list[str]]:
             how = [
                 f"imports {each.name}"
                 for each in imports(module)
-                if any(names_module(each.name, target) for target in OUTBOUND_IMPORTS)
-                and not any(names_module(each.name, ok) for ok in OUTBOUND_EXEMPT)
+                if _is_outbound(each.name)
+            ]
+            how += [
+                f"imports {target} dynamically"
+                for name, call in calls(module)
+                if name.rpartition(".")[2] in DYNAMIC_IMPORTS
+                and (target := _dynamic_import(call)) is not None
+                and _is_outbound(target)
             ]
             how += [
                 f"calls {name}"
@@ -148,6 +176,15 @@ def test_only_the_allowed_modules_reach_the_network_or_start_a_process() -> None
         "from os import system\n",
         "import asyncio\nasyncio.create_subprocess_exec('x')\n",
         "def later():\n    import subprocess\n",
+        "import httpx\n",
+        "import requests\n",
+        "from urllib3 import PoolManager\n",
+        "import aiohttp\n",
+        "import webbrowser\n",
+        "import asyncio\nasyncio.open_connection('h', 443)\n",
+        "import importlib\nimportlib.import_module('subprocess')\n",
+        "from importlib import import_module\nimport_module('http.client')\n",
+        "requests = __import__('requests')\n",
     ],
 )
 def test_a_planted_outbound_module_is_found(source: str, tmp_path: Path) -> None:
@@ -158,15 +195,34 @@ def test_a_planted_outbound_module_is_found(source: str, tmp_path: Path) -> None
     assert set(found) - set(OUTBOUND_ALLOWED) == {"rheo_finance.rates.planted"}
 
 
-def test_parsing_a_url_is_not_outbound(tmp_path: Path) -> None:
+def test_parsing_a_url_or_a_plain_dynamic_import_is_not_outbound(
+    tmp_path: Path,
+) -> None:
     root = copy_package(tmp_path)
-    plant(root, "rates/parse.py", "from urllib.parse import urlsplit\n")
+    plant(
+        root,
+        "rates/parse.py",
+        "import importlib\nfrom urllib.parse import urlsplit\n"
+        "importlib.import_module('urllib.parse')\nimportlib.import_module(name)\n",
+    )
     assert "rheo_finance.rates.parse" not in outbound_modules(root)
 
 
 # --- (b) the reviewed table of read paths ---------------------------------------------
 
-EXCEPTION_SINKS = frozenset({"mot", "telegram"})
+# The only writes a row may flag as an exception: (sink, method, path or None for any).
+EXCEPTIONS = frozenset(
+    {("mot", "POST", None), ("mot", "PATCH", None), ("telegram", "POST", "/api/mcp")}
+)
+
+
+def exception_allowed(row: ReadPath) -> bool:
+    return any(
+        row.sink == sink and row.method == method and path in (None, row.path)
+        for sink, method, path in EXCEPTIONS
+    )
+
+
 ROW_KEYS = {"sink", "method", "path", "docs", "why", "exception"}
 
 
@@ -250,8 +306,11 @@ def row_problems(rows: Iterable[ReadPath]) -> list[str]:
             problems.append(f"{where}: the documentation URL is not an https URL")
         if not row.why:
             problems.append(f"{where}: no line saying why it is read-only")
-        if row.exception and row.sink not in EXCEPTION_SINKS:
-            problems.append(f"{where}: only mot and telegram may carry exception")
+        if row.exception and not exception_allowed(row):
+            problems.append(
+                f"{where}: exception is only for the M.O.T. POST and PATCH and"
+                " Telegram's POST /api/mcp"
+            )
         if row.method != "GET" and not row.exception:
             problems.append(f"{where}: a non-GET row without exception")
     return problems
@@ -315,7 +374,23 @@ GOOD_ROW = (
         (
             '[[read_path]]\nsink = "kraken"\nmethod = "POST"\npath = "/v1/withdraw"\n'
             'docs = "https://vendor.invalid/docs"\nwhy = "x"\nexception = true\n',
-            "only mot and telegram may carry exception",
+            "exception is only for",
+        ),
+        (
+            '[[read_path]]\nsink = "mot"\nmethod = "DELETE"\n'
+            'path = "/api/tickets/:id"\n'
+            'docs = "https://vendor.invalid/mot"\nwhy = "x"\nexception = true\n',
+            "exception is only for",
+        ),
+        (
+            '[[read_path]]\nsink = "telegram"\nmethod = "PUT"\npath = "/api/mcp"\n'
+            'docs = "https://vendor.invalid/mcp"\nwhy = "x"\nexception = true\n',
+            "exception is only for",
+        ),
+        (
+            '[[read_path]]\nsink = "telegram"\nmethod = "POST"\npath = "/api/other"\n'
+            'docs = "https://vendor.invalid/mcp"\nwhy = "x"\nexception = true\n',
+            "exception is only for",
         ),
         (
             '[[read_path]]\nsink = "rates"\nmethod = "GET"\npath = "/v1/rates"\n'
@@ -355,12 +430,15 @@ def test_the_mot_and_telegram_writes_may_carry_exception() -> None:
         '[[read_path]]\nsink = "mot"\nmethod = "POST"\npath = "/api/tickets"\n'
         'docs = "https://vendor.invalid/mot"\nwhy = "Creates a reminder ticket."\n'
         "exception = true\n"
+        '[[read_path]]\nsink = "mot"\nmethod = "PATCH"\npath = "/api/tickets/:id"\n'
+        'docs = "https://vendor.invalid/mot"\nwhy = "Updates the ticket it made."\n'
+        "exception = true\n"
         '[[read_path]]\nsink = "telegram"\nmethod = "POST"\npath = "/api/mcp"\n'
         'docs = "https://vendor.invalid/mcp"\nwhy = "The notify tool over JSON-RPC."\n'
         "exception = true\n"
     )
     rows, problems = load_table(text + GOOD_ROW)
-    assert problems == [] and len(rows) == 3
+    assert problems == [] and len(rows) == 4
 
 
 def planted_provider(_uow: UnitOfWork) -> SinkSpec:
@@ -617,17 +695,54 @@ def _method_argument(call: ast.Call, callee: str) -> str | None:
     return "POST" if has_data else "GET"
 
 
+# A hostname-shaped token: dotted labels ending in a TLD-like label, optional :port.
+_HOST_TOKEN = re.compile(
+    r"(?<![\w.@-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+([a-z]{2,24}))"
+    r"(?::([0-9]{1,5}))?(?![\w-])",
+    re.IGNORECASE,
+)
+# The last labels that make a dotted token a host; any other two-letter label is a
+# country code, except these file extensions.
+HOST_TLDS = frozenset(
+    {
+        "com", "net", "org", "io", "app", "dev", "ai", "cloud", "info", "biz", "xyz",
+        "co", "me", "tech", "finance", "money", "bank", "exchange", "trade", "invalid",
+        "test", "example", "localhost", "local", "internal",
+    }
+)  # fmt: skip
+FILE_EXTENSIONS = frozenset(
+    {"py", "md", "sh", "js", "ts", "rs", "pl", "rb", "cs", "gz"}
+)
+
+
+def _is_host_label(tld: str) -> bool:
+    tld = tld.lower()
+    return tld in HOST_TLDS or (len(tld) == 2 and tld not in FILE_EXTENSIONS)
+
+
 def named_hosts(module: Module) -> list[tuple[int, str]]:
-    """Each ``host[:port]`` a URL string in the module names."""
-    found: list[tuple[int, str]] = []
+    """Each ``host[:port]`` a string in the module names: in a URL, or as a
+    hostname-shaped token. The literal parts of an f-string are strings too, so
+    ``f"https://{key}@host/..."`` and ``f"{scheme}://host:{port}"`` are both read."""
+    found: set[tuple[int, str]] = set()
     for node in ast.walk(module.tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            for url in _URL.findall(node.value):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        for url in _URL.findall(node.value):
+            try:
                 parts = urlsplit(url)
-                if parts.hostname:
-                    port = f":{parts.port}" if parts.port else ""
-                    found.append((node.lineno, f"{parts.hostname}{port}"))
-    return found
+                port = f":{parts.port}" if parts.port else ""
+            except ValueError:
+                continue
+            if parts.hostname:
+                found.add((node.lineno, f"{parts.hostname}{port}"))
+        # A literal part that follows an interpolation (f"https://{region}.api.x.com")
+        # starts with a dot; its host suffix still counts.
+        for match in _HOST_TOKEN.finditer(node.value.removeprefix(".")):
+            host, tld, port = match.group(1), match.group(2), match.group(3)
+            if _is_host_label(tld):
+                found.add((node.lineno, host.lower() + (f":{port}" if port else "")))
+    return sorted(found)
 
 
 def check_connectors(root: Path, rows: list[ReadPath]) -> dict[str, list[str]]:
@@ -705,6 +820,27 @@ def test_a_well_formed_fixture_connector_passes(tmp_path: Path, package: str) ->
                 'BASE = "https://other.invalid/v1"',
             ),
             "names host other.invalid, outside SINK_SPEC.hosts",
+        ),
+        (
+            (
+                'BASE = "https://api.vendor.invalid/v1"',
+                'SCHEME, PORT = "https", 8443\nBASE = f"{SCHEME}://other.invalid:{PORT}/v1"',
+            ),
+            "names host other.invalid, outside SINK_SPEC.hosts",
+        ),
+        (
+            (
+                'BASE = "https://api.vendor.invalid/v1"',
+                'VERSION = "v2"\nBASE = f"https://{VERSION}.api.other.invalid/v1"',
+            ),
+            "names host api.other.invalid, outside SINK_SPEC.hosts",
+        ),
+        (
+            (
+                'BASE = "https://api.vendor.invalid/v1"',
+                'BASE = "https://api.vendor.invalid/v1"\nHOST = "api.other.com"',
+            ),
+            "names host api.other.com, outside SINK_SPEC.hosts",
         ),
         (
             ("READ_ALLOWLIST = ", "_UNUSED = "),

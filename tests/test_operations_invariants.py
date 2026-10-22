@@ -355,7 +355,11 @@ def _names(tree: ast.Module) -> set[str]:
 # field dispatch reads). A composition root that builds contexts (the CLI, jobs) joins
 # this list in the change that adds it.
 HOLDER_NAMES = {"_Databases", "_databases", "with_databases"}
-HOLDER_ALLOWED = {"rheo_finance.operations", "rheo_finance.context"}
+HOLDER_ALLOWED = {
+    "rheo_finance.operations",
+    "rheo_finance.context",
+    "rheo_finance.composition",
+}
 # Who may make an engine: dispatch, and the migration path.
 ENGINE_ALLOWED = {
     "rheo_finance.operations",

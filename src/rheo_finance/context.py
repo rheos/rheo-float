@@ -34,14 +34,17 @@ class ModelClient(Protocol):
 
 
 class LineSnapshot(BaseModel):
-    """What a line looked like when a decision named it (Key decision 19)."""
+    """What a line looked like when a decision named it (Key decision 19).
+
+    The fields are the ``decision_target`` columns of the same names.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    account_ref: str
+    account_slug: str
     amount: Decimal
     currency: str
-    posted_on: dt.date
+    posting_date: dt.date
 
 
 _Params = Mapping[str, Any] | Sequence[Mapping[str, Any]]

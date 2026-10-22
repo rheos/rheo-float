@@ -11,7 +11,7 @@ import importlib
 
 from rheo_finance import operations
 
-MODULES: tuple[str, ...] = ()
+MODULES: tuple[str, ...] = ("rheo_finance.decision",)
 
 
 def load_all() -> dict[str, operations.OperationSpec]:

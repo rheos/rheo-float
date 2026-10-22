@@ -14,9 +14,10 @@ import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
-from sqlalchemy import Connection, Engine, create_engine, text
+from sqlalchemy import Connection, Engine, NestedTransaction, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
@@ -24,6 +25,7 @@ from sqlalchemy.pool import NullPool
 from rheo_finance import db, operations
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import (
+    ConnectionName,
     FinanceContext,
     FinancePaths,
     LineSnapshot,
@@ -129,6 +131,55 @@ def make_context(
         )
 
     return build
+
+
+class _SavepointConnection:
+    """``owner_conn`` as ``dispatch`` sees it: ``begin`` opens a savepoint."""
+
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def begin(self) -> NestedTransaction:
+        return self._connection.begin_nested()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __enter__(self) -> _SavepointConnection:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+class _SavepointEngine:
+    def __init__(self, connection: Connection) -> None:
+        self._connection = connection
+
+    def connect(self) -> _SavepointConnection:
+        return _SavepointConnection(self._connection)
+
+
+@pytest.fixture
+def rolled_back_context(
+    owner_conn: Connection,
+    make_context: Callable[[Role], FinanceContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Role], FinanceContext]:
+    """``make_context``, but ``dispatch`` runs owner operations on ``owner_conn``.
+
+    Each operation's commit releases a savepoint inside the test's transaction, which
+    is rolled back after the test. The append-only tables keep committed rows for good,
+    so a test that writes decisions dispatches through this.
+    """
+    real_engine = operations._Databases.engine
+    fake = _SavepointEngine(owner_conn)
+
+    def engine(self: operations._Databases, name: ConnectionName) -> Any:
+        return fake if name == "owner" else real_engine(self, name)
+
+    monkeypatch.setattr(operations._Databases, "engine", engine)
+    return make_context
 
 
 @pytest.fixture

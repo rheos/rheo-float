@@ -311,6 +311,30 @@ def test_unrecognised_files_stay_untouched_and_are_listed(
         assert name not in out.model_dump_json()
 
 
+def test_a_matching_file_with_unreadable_fields_is_unrecognised_and_the_scan_goes_on(
+    rolled_back_context: MakeContext, dirs: Dirs
+) -> None:
+    # The layout matches a statement, but the period end is not a real date, so the
+    # rule raises ValueError instead of NotRecognised. Files sort by name: the bad one
+    # comes first, and the good ones after it must still be filed.
+    broken = STATEMENT.replace(b"to 10 JAN 2026", b"to 31 FEB 2026")
+    assert broken != STATEMENT
+    download(dirs, "a-broken.pdf", broken, age=HOUR)
+    download(dirs, "b-statement.pdf", STATEMENT, age=HOUR)
+    download(dirs, "c-export.csv", EXPORT, age=HOUR)
+    before = downloads_state(dirs)
+
+    out = file_op(rolled_back_context, dirs)
+
+    assert tree(dirs.archive) == {
+        "vancity/2026-01-10.pdf": sha(STATEMENT),
+        "vancity/2026-02-16.csv": sha(EXPORT),
+    }
+    assert downloads_state(dirs) == before
+    assert (out.downloads.filed, out.downloads.unrecognised) == (2, 1)
+    assert "a-broken" not in out.model_dump_json()
+
+
 def test_the_returned_list_names_the_unrecognised_and_refused_files(
     owner_conn: Connection, dirs: Dirs
 ) -> None:

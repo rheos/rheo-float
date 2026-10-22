@@ -144,18 +144,26 @@ def _dated(
     rules: tuple[Parser, ...],
     extract_pdf: Callable[[Path], str],
 ) -> tuple[Parser, dt.date] | None:
-    """The first rule that dates the file, and the date; None when none does."""
+    """The first rule that dates the file, and the date; None when none does.
+
+    A rule that matches the layout but finds a field it cannot read (a date that is not
+    a date, an amount that is not a number) raises ``ValueError`` or ``ArithmeticError``
+    out of its parse: that means this rule cannot date this file, so the next rule
+    tries, and the file is unrecognised when none does. One bad file must not stop the
+    scan.
+    """
     text: str | None = None
     for rule in rules:
         if rule.format != fmt or rule.filing_date is None:
             continue
-        try:
-            if text is None:
+        if text is None:
+            try:
                 text = _text(path, data, fmt, extract_pdf)
-            return rule, rule.filing_date(text)
-        except NotRecognised:
-            if text is None:
+            except NotRecognised:
                 return None
+        try:
+            return rule, rule.filing_date(text)
+        except (NotRecognised, ValueError, ArithmeticError):
             continue
     return None
 

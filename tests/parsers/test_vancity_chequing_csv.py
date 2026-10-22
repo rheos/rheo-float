@@ -47,7 +47,8 @@ class Setup:
         self.archive = tmp_path / "archive"
         self.archive.mkdir()
 
-    def register(self, identifier: str = IDENTIFIER) -> None:
+    def register(self, *identifiers: str) -> None:
+        """One chequing account holding ``identifiers`` (the fixture's by default)."""
         manual = self.data / "manual"
         manual.mkdir(parents=True, exist_ok=True)
         columns = MANUAL_FILES[ACCOUNTS_FILE]
@@ -60,15 +61,18 @@ class Setup:
             ",".join(columns) + "\n" + ",".join(cells[c] for c in columns) + "\n",
             encoding="utf-8",
         )
+        rows = [
+            f"chequing,{identifier},number,,"
+            for identifier in identifiers or (IDENTIFIER,)
+        ]
         (manual / IDENTIFIERS_FILE).write_text(
-            ",".join(MANUAL_FILES[IDENTIFIERS_FILE])
-            + f"\nchequing,{identifier},number,,\n",
+            "\n".join([",".join(MANUAL_FILES[IDENTIFIERS_FILE]), *rows]) + "\n",
             encoding="utf-8",
         )
         load_accounts(self.uow, self.data)
 
-    def file(self, text: str) -> uuid.UUID:
-        target = self.archive / "vancity" / "transactions-2026-02.csv"
+    def file(self, text: str, name: str = "transactions-2026-02.csv") -> uuid.UUID:
+        target = self.archive / "vancity" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         data = text.encode("utf-8")
         target.write_bytes(data)
@@ -100,6 +104,14 @@ class Setup:
 @pytest.fixture
 def setup(owner_conn: Connection, tmp_path: Path) -> Setup:
     return Setup(owner_conn, tmp_path)
+
+
+def row(
+    day: str, withdrawal: str, deposit: str, balance: str, identifier: str = IDENTIFIER
+) -> str:
+    """One export row: identifier, date, description, empty column, withdrawal,
+    deposit, balance."""
+    return f'{identifier},{day},"SAMPLE ITEM",,{withdrawal},{deposit},{balance}\n'
 
 
 def jump_text() -> str:
@@ -202,3 +214,101 @@ def test_a_csv_of_another_layout_is_unparsed(setup: Setup) -> None:
 
     assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
     assert setup.lines(doc) == []
+
+
+def test_a_lone_line_between_two_breaks_verifies_nothing(setup: Setup) -> None:
+    setup.register()
+    text = (
+        row("01-Feb-2026", "", "100.00", "100.00")
+        + row("02-Feb-2026", "10.00", "", "90.00")  # continues the first
+        + row("04-Feb-2026", "5.00", "", "50.00")  # a break before and after
+        + row("06-Feb-2026", "5.00", "", "20.00")
+    )
+    doc = setup.file(text)
+
+    assert setup.parse(doc) == Parsed(
+        "parsed", None, periods=1, lines=4, segments=1, gaps=2
+    )
+    result = vancity_chequing_csv.parse(text, account_lookup(setup.uow))
+    (registered,) = {period.account for period in result.periods}
+    assert result.segments == (
+        VerifiedSegment(registered, D(2026, 2, 1), D(2026, 2, 2)),
+    )
+    assert result.gaps == (
+        BalanceGap(registered, D(2026, 2, 2), D(2026, 2, 4)),
+        BalanceGap(registered, D(2026, 2, 4), D(2026, 2, 6)),
+    )
+    assert setup.period(doc)["tied_out"] is False
+
+
+def test_a_one_row_file_loads_its_line_and_verifies_nothing(setup: Setup) -> None:
+    setup.register()
+    doc = setup.file(row("03-Feb-2026", "12.00", "", "88.00"))
+
+    assert setup.parse(doc) == Parsed(
+        "parsed", None, periods=1, lines=1, segments=0, gaps=0
+    )
+    assert setup.lines(doc) == [(D(2026, 2, 3), Decimal("-12.00"), Decimal("88.00"))]
+    period = setup.period(doc)
+    assert (period["period_start"], period["period_end"]) == (
+        D(2026, 2, 3), D(2026, 2, 3),
+    )  # fmt: skip
+    assert period["tied_out"] is False
+
+
+def test_two_identifiers_of_one_account_in_one_file_are_ambiguous(
+    setup: Setup,
+) -> None:
+    other = "999000000066-999-99901-99903"
+    setup.register(IDENTIFIER, other)
+    doc = setup.file(
+        row("02-Feb-2026", "", "100.00", "100.00")
+        + row("03-Feb-2026", "10.00", "", "90.00", identifier=other)
+    )
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.lines(doc) == []
+
+
+def test_a_row_with_a_withdrawal_and_a_deposit_becomes_two_lines(
+    setup: Setup,
+) -> None:
+    """The withdrawal first, carrying the balance between them; the run stays
+    continuous."""
+    setup.register()
+    doc = setup.file(
+        row("02-Feb-2026", "", "100.00", "100.00")
+        + row("03-Feb-2026", "20.00", "50.00", "130.00")
+    )
+
+    assert setup.parse(doc) == Parsed(
+        "parsed", None, periods=1, lines=3, segments=1, gaps=0
+    )
+    assert setup.lines(doc) == [
+        (D(2026, 2, 2), Decimal("100.00"), Decimal("100.00")),
+        (D(2026, 2, 3), Decimal("-20.00"), Decimal("80.00")),
+        (D(2026, 2, 3), Decimal("50.00"), Decimal("130.00")),
+    ]
+
+
+def test_an_oldest_first_file_gives_the_same_lines(setup: Setup) -> None:
+    setup.register()
+    newest_first = setup.file(jump_text())
+    oldest_first = setup.file(
+        "".join(reversed(jump_text().splitlines(keepends=True))), "oldest-first.csv"
+    )
+
+    expected = Parsed("parsed", None, periods=1, lines=6, segments=2, gaps=1)
+    assert setup.parse(newest_first) == expected
+    assert setup.parse(oldest_first) == expected
+    assert setup.lines(oldest_first) == setup.lines(newest_first)
+
+
+def test_the_registered_identifier_matches_whatever_its_separators(
+    setup: Setup,
+) -> None:
+    setup.register(IDENTIFIER.replace("-", " "))
+    doc = setup.file(jump_text())
+
+    assert setup.parse(doc).status == "parsed"
+    assert setup.period(doc)["account_id"] == account_id("chequing")

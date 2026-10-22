@@ -22,6 +22,8 @@ from rheo_finance.documents.registry import document_id, file_archive
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.headers import MANUAL_FILES
 from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.parsers.base import NotRecognised
+from rheo_finance.parsers.docextract_adapter import reference_bill
 from rheo_finance.parsers.registry import (
     DOCUMENT_REJECTED,
     Parsed,
@@ -189,3 +191,24 @@ def test_text_that_is_not_a_bill_is_unparsed(setup: Setup) -> None:
 
     assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
     assert setup.count(statement_period, doc) == 0
+
+
+def test_docextract_still_reads_the_fixture_bill() -> None:
+    """An upstream change that stops docextract reading bills (so every bill would
+    come back unparsed) fails here, at the adapter, not only in parse_document."""
+    bill = reference_bill(bill_text())
+    assert (bill["bill_date"], bill["due_date"]) == ("2026-02-02", "2026-02-23")
+    assert bill["total_due"] is not None and bill["unpaid_balance"] is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A PAGE OF TEXT THAT IS NOT A BILL\n",  # no Bill Date line: AttributeError
+        "Bill Date   February 2, 2026\n",  # no pay-by date: AttributeError
+        "Bill Date   Someday 2, 2026\nPlease pay by*   Someday 23, 2026\n",
+    ],
+)
+def test_the_adapter_turns_docextract_failures_into_not_recognised(text: str) -> None:
+    with pytest.raises(NotRecognised):
+        reference_bill(text)

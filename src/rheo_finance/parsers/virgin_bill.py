@@ -7,7 +7,9 @@ feeds obligations, not the ledger):
 - every amount goes through ``to_money``, so docextract's floats become exact
   two-decimal values;
 - ``balance_due`` is the printed total due and ``due_date`` the "pay by" date;
-- the bill prints no service period, so the period is its bill-date month;
+- the period is the bill-date month. That is a decision, not something the bill
+  states: the only dates a bill prints are its bill date, its next bill date and the
+  "pay by" date, never a service period, so the bill-date month is the period;
 - the identity: the printed unpaid balance plus the current charges must equal the
   total due, else the bill is rejected (``identity_mismatch``) with zero lines. A
   bill that prints no unpaid balance or no total due states no identity and loads as

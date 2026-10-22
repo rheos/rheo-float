@@ -56,6 +56,11 @@ def reference_bill(text: str) -> Mapping[str, Any]:
     rather than returning nothing)."""
     try:
         return _reference_parse(text)
+    # docextract.reference.parse fails in two shapes on text it cannot read:
+    # AttributeError from ``.group`` on a None match (no "Bill Date" line, or no
+    # "Please pay by*" date in either the summary or the payment stub), and
+    # ValueError from ``datetime.strptime`` on a date that matched but does not parse
+    # (a word in the month position that is not a month).
     except (AttributeError, ValueError):
         raise NotRecognised("not a Virgin Plus bill layout") from None
 

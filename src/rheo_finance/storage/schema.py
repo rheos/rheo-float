@@ -19,6 +19,7 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
+    func,
 )
 
 from rheo_finance.storage.tiers import register_column
@@ -115,5 +116,32 @@ _tiers(
     {
         "decision_id": P, "seq": P, "target_ref": P, "account_slug": P,
         "amount": R, "currency": P, "posting_date": P, "merchant_key": R,
+    },
+)  # fmt: skip
+
+# --- sink specs (derived, stage 16; migration 0003) -----------------------------------
+
+sink_spec = Table(
+    "sink_spec",
+    metadata,
+    Column("sink", Text, primary_key=True),
+    Column("spec_digest", Text, nullable=False),
+    Column("hosts", Text, nullable=False),
+    Column("request_templates", Text, nullable=False),
+    Column("key_file", Text),
+    Column("policy_version", Integer, nullable=False),
+    Column("data_inputs", Text, nullable=False),
+    Column(
+        "computed_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+)
+_tiers(
+    sink_spec,
+    {
+        "sink": P, "spec_digest": P, "hosts": P, "request_templates": P,
+        "key_file": P, "policy_version": P, "data_inputs": P, "computed_at": P,
     },
 )  # fmt: skip

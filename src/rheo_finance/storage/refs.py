@@ -3,7 +3,7 @@
 The id's shape depends on the system: a UUIDv7 for ``finance.*``, a UUID for the
 rheoStream modules (``relationships.party``, ``current.item``), and for any other
 system (a Tuttle id) an opaque non-empty string with no whitespace and no colon. UUIDs
-are written in canonical lower-case form, so ``format(parse(text)) == text``. An
+are written in canonical lower-case form, so ``str(parse(text)) == text``. An
 external ref is plain text: nothing here looks it up.
 """
 
@@ -46,8 +46,12 @@ def _canonical_uuid(text: str, what: str) -> uuid.UUID:
 def _check_id(system: str, ref_id: str) -> None:
     if system == FINANCE_SYSTEM:
         value = _canonical_uuid(ref_id, "a finance")
-        if value.version != 7 or value.variant != uuid.RFC_4122:
+        # The raw version nibble: UUID.version is None for a non-RFC variant, which
+        # would hide the variant check behind the version check.
+        if (value.int >> 76) & 0xF != 7:
             raise RefError("a finance id is not a UUIDv7")
+        if value.variant != uuid.RFC_4122:
+            raise RefError("a finance id does not carry the RFC 9562 variant")
     elif system in RHEOSTREAM_SYSTEMS:
         _canonical_uuid(ref_id, f"a {system}")
     elif not ref_id:
@@ -68,7 +72,7 @@ def parse(text: str) -> Ref:
     return Ref(system, ref_type, ref_id)
 
 
-def format(system: str, ref_type: str, ref_id: uuid.UUID | str) -> str:
+def format_ref(system: str, ref_type: str, ref_id: uuid.UUID | str) -> str:
     """The reference string for one record, checked as ``parse`` checks it."""
     text = f"{system}.{ref_type}:{ref_id}"
     parse(text)

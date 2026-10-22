@@ -1,4 +1,4 @@
-"""``refs.parse`` and ``refs.format``: three id shapes, all else refused."""
+"""``refs.parse`` and ``refs.format_ref``: three id shapes, all else refused."""
 
 from __future__ import annotations
 
@@ -12,6 +12,17 @@ from rheo_finance.storage.ids import derived_id, uuid7
 
 FINANCE_ID = uuid7(dt.datetime(2026, 10, 22, tzinfo=dt.UTC))
 UUID4 = uuid.UUID("9990a2b4-3c5d-4e6f-8a7b-9c0d1e2f3a4b")
+_VARIANT = 0x3 << 62
+
+
+def with_variant(value: uuid.UUID, bits: int) -> uuid.UUID:
+    """``value`` with its two variant bits set to ``bits``; the version nibble stays."""
+    return uuid.UUID(int=(value.int & ~_VARIANT) | (bits << 62))
+
+
+# Version nibble 7, but the variant is not RFC 9562's 0b10.
+V7_NCS_VARIANT = with_variant(FINANCE_ID, 0b00)
+V7_MICROSOFT_VARIANT = with_variant(FINANCE_ID, 0b11)
 
 
 @pytest.mark.parametrize(
@@ -30,18 +41,20 @@ def test_parse_accepts_each_id_shape_and_round_trips(
     parsed = refs.parse(text)
     assert parsed == refs.Ref(system, ref_type, ref_id)
     assert str(parsed) == text
-    assert refs.format(system, ref_type, ref_id) == text
+    assert refs.format_ref(system, ref_type, ref_id) == text
 
 
 def test_a_derived_id_is_a_finance_ref() -> None:
     value = derived_id(dt.date(2026, 3, 14), ("line", 1))
-    assert refs.parse(refs.format("finance", "line", value)).id == str(value)
+    assert refs.parse(refs.format_ref("finance", "line", value)).id == str(value)
 
 
 @pytest.mark.parametrize(
     "text",
     [
         f"finance.decision:{UUID4}",  # a UUID, but not version 7
+        f"finance.decision:{V7_NCS_VARIANT}",
+        f"finance.decision:{V7_MICROSOFT_VARIANT}",
         f"finance.decision:{str(FINANCE_ID).upper()}",
         f"finance.decision:{FINANCE_ID.hex}",
         "finance.decision:not-a-uuid",
@@ -69,6 +82,6 @@ def test_parse_refuses_any_other_shape(text: str) -> None:
 
 def test_format_refuses_what_parse_refuses() -> None:
     with pytest.raises(refs.RefError):
-        refs.format("finance", "decision", UUID4)
+        refs.format_ref("finance", "decision", UUID4)
     with pytest.raises(refs.RefError):
-        refs.format("tuttle", "invoice", "has space")
+        refs.format_ref("tuttle", "invoice", "has space")

@@ -63,10 +63,9 @@ def _canonical_part(value: object) -> list[object]:
         return ["none", None]
     if isinstance(value, bool):
         return ["bool", value]
-    if isinstance(value, int):
-        return ["int", str(int(value))]
-    if isinstance(value, Decimal):
-        return ["dec", _canonical_decimal(value)]
+    if isinstance(value, int | Decimal):
+        # One numeric tag: 3 and Decimal("3") are one value, so one id.
+        return ["num", _canonical_decimal(Decimal(value))]
     if isinstance(value, str):
         return ["str", unicodedata.normalize("NFC", str(value))]
     if isinstance(value, dt.datetime):
@@ -83,9 +82,10 @@ def _canonical_part(value: object) -> list[object]:
 def canonical_key(natural_key: tuple[object, ...]) -> bytes:
     """The bytes ``derived_id`` hashes: equal canonical keys give equal bytes.
 
-    Decimals are normalized and rendered in plain form (``1E-7``, ``0.0000001`` and
-    ``0.00000010000`` are one value), dates and aware datetimes are ISO (datetimes in
-    UTC), strings are NFC. A float or any other type is refused.
+    Numbers are normalized and rendered in plain form (``1E-7``, ``0.0000001`` and
+    ``0.00000010000`` are one value, and so are ``3`` and ``Decimal("3")``; a bool keeps
+    its own tag), dates and aware datetimes are ISO (datetimes in UTC), strings are NFC.
+    A float or any other type is refused.
     """
     parts = [_canonical_part(part) for part in natural_key]
     return json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

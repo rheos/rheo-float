@@ -15,10 +15,12 @@ A derived row's id has the UUIDv7 layout. The 48-bit time field is the row's bus
 00:00 UTC; the remaining bits come from sha256 of the row's natural key, with the version and
 variant bits set. Both inputs are pure functions of the natural key. For a crypto line the time
 field is the UTC calendar date of `occurred_at`, never the local date, which the configured
-timezone would move. Every Decimal in a natural key is canonicalized before hashing
-(`Decimal.normalize()` rendered with `format(d, "f")`, so `1E-7`, `0.0000001` and `0.00000010000`
-hash the same, and `0E-10` and `0` are one zero); dates are ISO and strings are NFC. State rows get
-ordinary UUIDv7. All derived ids go through one helper, `derived_id`.
+timezone would move. Every number in a natural key is canonicalized before hashing: a Decimal is
+normalized under a context as wide as its own digits (the default 28-digit context would round two
+long quantities into one id), then rendered with `format(d, "f")`, so `1E-7`, `0.0000001` and
+`0.00000010000` hash the same, `0E-10`, `-0` and `0` are one zero, and an int hashes as the Decimal
+of equal value. Dates are ISO and strings are NFC. State rows get ordinary UUIDv7. All derived ids
+go through one helper, `derived_id`.
 
 ## Consequences
 

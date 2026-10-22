@@ -29,7 +29,7 @@ def test_derived_id_is_deterministic_and_pinned() -> None:
     assert derived_id(DAY, key) == first
     # Pinned: a change to the layout or the canonical form re-keys every derived row
     # and orphans every decision that points at one.
-    assert str(first) == "019ce9a4-8800-734f-8cb0-ea7c7f96537e"
+    assert str(first) == "019ce9a4-8800-7060-b61e-f314d685a29a"
 
 
 def test_the_time_field_is_the_business_date_at_midnight_utc() -> None:
@@ -65,6 +65,22 @@ def test_different_decimals_give_different_ids() -> None:
     long_a = Decimal("99912345678.12345678901234567890")
     long_b = Decimal("99912345678.12345678901234567891")
     assert derived_id(DAY, (long_a,)) != derived_id(DAY, (long_b,))
+
+
+def test_an_int_and_a_decimal_of_equal_value_give_one_id() -> None:
+    assert derived_id(DAY, (3,)) == derived_id(DAY, (Decimal("3"),))
+    assert derived_id(DAY, (Decimal("3.00"),)) == derived_id(DAY, (3,))
+    assert derived_id(DAY, (300,)) == derived_id(DAY, (Decimal("3E+2"),))
+    assert derived_id(DAY, (Decimal("-0"),)) == derived_id(DAY, (0,))
+    assert derived_id(DAY, (3,)) != derived_id(DAY, (4,))
+    assert derived_id(DAY, (3,)) != derived_id(DAY, (Decimal("3.1"),))
+
+
+def test_a_bool_keeps_its_own_tag() -> None:
+    assert derived_id(DAY, (True,)) != derived_id(DAY, (1,))
+    assert derived_id(DAY, (True,)) != derived_id(DAY, (Decimal("1"),))
+    assert derived_id(DAY, (False,)) != derived_id(DAY, (0,))
+    assert derived_id(DAY, (True,)) != derived_id(DAY, (False,))
 
 
 def test_strings_are_nfc_and_parts_keep_their_type_and_boundaries() -> None:

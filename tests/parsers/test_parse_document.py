@@ -280,6 +280,17 @@ def test_a_parser_id_registers_once(fixture_registry: dict[str, Parser]) -> None
         )
 
 
+def test_an_issuer_format_and_version_register_once(
+    fixture_registry: dict[str, Parser],
+) -> None:
+    with pytest.raises(ValueError, match="already registered as mbna.fixture"):
+        registry.register_parser(
+            Parser("mbna.other", "mbna", "pdf", "7", fixture_parser)
+        )
+    registry.register_parser(Parser("mbna.other", "mbna", "pdf", "8", fixture_parser))
+    assert "mbna.other" in fixture_registry
+
+
 def test_every_module_that_registers_a_parser_is_listed() -> None:
     registering = set()
     for path in sorted(PACKAGE.rglob("*.py")):

@@ -20,3 +20,8 @@ description = "Vancity statement layout text (pdftotext -layout), older chequing
 path = "tests/fixtures/synthetic/vancity_statement_2026.txt"
 synthetic = true
 description = "Vancity statement layout text, the same chequing number under its later name, an overdrawn spell and three fee types; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_statement_split.txt"
+synthetic = true
+description = "Vancity statement layout text, one chequing account with a printed line holding a withdrawal, a deposit and the balance; fake values."

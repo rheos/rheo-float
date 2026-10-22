@@ -1,0 +1,54 @@
+                                                                        JANUARY 11, 2026
+
+
+
+
+                                                                        99999999
+                                                                        99999999
+           VANAS11000_0000000 E D 00000   00000
+           SAMPLE, ALEX
+           PO BOX 1                                                     MAIN STREET
+           ANYTOWN BC V0A 0A0                                           100 MAIN ST.
+                                                                        ANYTOWN BC V0A 0A0
+                                                                        vancity.com
+
+
+
+
+ACCOUNT OWNERS: SAMPLE, ALEX
+STATEMENT PERIOD: 11 DEC 2025 to 10 JAN 2026
+
+
+
+
+DAILY BANKING                                           OPENING                                         CLOSING
+                                                    BALANCE ON           TOTAL           TOTAL      BALANCE ON
+ACCOUNT SUMMARY
+                                                     11 DEC 2025   WITHDRAWALS        DEPOSITS       10 JAN 2026
+
+VANCITY ESSENTIAL CHEQUING #999000000022                  100.00           32.00            50.00         118.00
+
+TOTAL NUMBER OF CHEQUES 0
+
+
+
+
+VANCITY ESSENTIAL CHEQUING #999000000022
+
+DATE     DESCRIPTION                                                WITHDRAWALS       DEPOSITS         BALANCE
+
+         OPENING BALANCE                                                                                 100.00
+
+15 DEC   BRANCH DEPOSIT LESS CASH (MAIN ST)                                 2.00          50.00          148.00
+
+20 DEC   BILL PAYMENT-ONLINE (HYDRO CO #0001)                              30.00                         118.00
+
+
+Please review your statement and report any errors or omissions to us within 30 days of the statement date. If we don't hear from you within
+30 days, this statement will be considered correct.
+
+
+
+
+                                                                                                       PAGE 1 OF 1
+                                 VANAS11000_0000000_001 - 0000000 HRI- -02-01-22--    000001

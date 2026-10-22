@@ -37,6 +37,7 @@ from rheo_finance.storage.schema import document, document_line, event, statemen
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 STATEMENT_2020 = FIXTURES / "vancity_statement_2020.txt"
 STATEMENT_2026 = FIXTURES / "vancity_statement_2026.txt"
+STATEMENT_SPLIT = FIXTURES / "vancity_statement_split.txt"
 NOW = dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)
 
 # slug -> (label, the fake account number the fixtures print)
@@ -306,3 +307,30 @@ def test_reparsing_gives_the_same_rows(setup: Setup) -> None:
         select(document_line.c.id).where(document_line.c.document_id == doc)
     ).all()
     assert sorted(first) == sorted(again) and len(set(first)) == 12
+
+
+def test_a_line_with_a_withdrawal_and_a_deposit_becomes_two_lines(
+    setup: Setup,
+) -> None:
+    """The withdrawal first, carrying the balance between the two, which the
+    statement does not print."""
+    setup.register(("chequing",))
+    doc = setup.file("2026-01-11.pdf", STATEMENT_SPLIT.read_text(encoding="utf-8"))
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=3)
+
+    lines = setup.conn.execute(
+        select(
+            document_line.c.posting_date,
+            document_line.c.amount,
+            document_line.c.running_balance,
+        )
+        .where(document_line.c.document_id == doc)
+        .order_by(document_line.c.line_no)
+    ).all()
+    day = dt.date(2025, 12, 15)
+    assert [tuple(each) for each in lines] == [
+        (day, Decimal("-2.00"), Decimal("98.00")),
+        (day, Decimal("50.00"), Decimal("148.00")),
+        (dt.date(2025, 12, 20), Decimal("-30.00"), Decimal("118.00")),
+    ]

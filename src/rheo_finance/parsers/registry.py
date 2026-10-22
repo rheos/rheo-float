@@ -116,9 +116,17 @@ PARSERS: dict[str, Parser] = {}
 
 
 def register_parser(parser: Parser) -> Parser:
-    """Add ``parser``; a second parser with the same id is an error."""
+    """Add ``parser``. A second parser with the same id, or with the same issuer,
+    format and version (the triple FR-3 registers by), is an error."""
     if parser.parser_id in PARSERS:
         raise ValueError(f"parser {parser.parser_id} is already registered")
+    triple = (parser.issuer, parser.format, parser.version)
+    for other in PARSERS.values():
+        if (other.issuer, other.format, other.version) == triple:
+            raise ValueError(
+                f"{parser.issuer}, {parser.format}, version {parser.version} is"
+                f" already registered as {other.parser_id}"
+            )
     PARSERS[parser.parser_id] = parser
     return parser
 

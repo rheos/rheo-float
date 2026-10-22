@@ -97,7 +97,11 @@ EVENT_MODELS: Final[Mapping[str, type[BaseModel]]] = MappingProxyType(
 # --- the registry ---------------------------------------------------------------------
 
 # Every module that registers a parser at import.
-PARSER_MODULES: Final[tuple[str, ...]] = ("rheo_finance.parsers.vancity_statement",)
+PARSER_MODULES: Final[tuple[str, ...]] = (
+    "rheo_finance.parsers.vancity_statement",
+    "rheo_finance.parsers.vancity_chequing_csv",
+    "rheo_finance.parsers.virgin_bill",
+)
 
 
 @dataclass(frozen=True)
@@ -218,12 +222,15 @@ def summary_ties_out(result: ParseResult) -> bool:
 
 @dataclass(frozen=True)
 class Parsed:
-    """What happened to one document: counts and codes only."""
+    """What happened to one document: counts and codes only. ``segments`` and
+    ``gaps`` count a running-balance document's verified segments and breaks."""
 
     status: DocumentStatus
     reason: RejectReason | UnparsedReason | ManualReason | None
     periods: int = 0
     lines: int = 0
+    segments: int = 0
+    gaps: int = 0
 
 
 def _clear(uow: UnitOfWork, document_id: uuid.UUID, ref: str) -> None:
@@ -431,7 +438,14 @@ def _store(
     return _set_status(
         uow,
         document_id,
-        Parsed("parsed", None, periods=len(result.periods), lines=len(result.lines)),
+        Parsed(
+            "parsed",
+            None,
+            periods=len(result.periods),
+            lines=len(result.lines),
+            segments=len(result.segments),
+            gaps=len(result.gaps),
+        ),
         parser=parser,
         period=span,
         official=result.official,

@@ -3,6 +3,8 @@ adapter and every parser.
 
 A parser is a function ``(text, accounts) -> ParseResult``. It reads extracted text,
 never a path, and matches the accounts the document names through ``AccountLookup``.
+A ``running_balance`` parser splits its lines into verified segments and the gaps
+between them with ``balance_runs``, which coverage can run again over stored lines.
 It raises ``NotRecognised`` when the text is not a layout it reads (the document is
 ``unparsed``) and ``Rejected`` when it read the layout but the document must not load
 (``unknown_account``, a failed check). The registry checks a ``summary`` control
@@ -12,8 +14,9 @@ itself; a parser does not need to.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final, Literal
@@ -30,6 +33,7 @@ LineKind = Literal[
 # with status ``unparsed`` or ``needs_manual_entry``.
 RejectReason = Literal[
     "summary_mismatch", "checks_failed", "unknown_account", "ambiguous_account",
+    "identity_mismatch",
 ]  # fmt: skip
 UnparsedReason = Literal[
     "no_parser", "not_recognised", "not_text", "file_missing", "file_changed",
@@ -39,6 +43,7 @@ ManualReason = Literal["no_text_layer"]
 
 REJECT_REASONS: Final[tuple[RejectReason, ...]] = (
     "summary_mismatch", "checks_failed", "unknown_account", "ambiguous_account",
+    "identity_mismatch",
 )  # fmt: skip
 
 
@@ -116,6 +121,31 @@ class AccountLookup:
             and each.covers(start, end)
         }
         return tuple(sorted(found, key=lambda account: account.slug))
+
+    def by_identifier(
+        self, institution: str, identifier: str, start: dt.date, end: dt.date
+    ) -> tuple[RegisteredAccount, ...]:
+        """Every distinct registered account holding ``identifier`` in full as a
+        ``number`` identifier at ``institution``, valid during the period, sorted by
+        slug. Digits are compared and separators ignored; an identifier with no digit
+        matches nothing."""
+        wanted = institution_key(institution)
+        digits = _digits(identifier)
+        if not digits:
+            return ()
+        found = {
+            each.account
+            for each in self._identifiers
+            if each.kind == "number"
+            and institution_key(each.institution) == wanted
+            and _digits(each.identifier) == digits
+            and each.covers(start, end)
+        }
+        return tuple(sorted(found, key=lambda account: account.slug))
+
+
+def _digits(identifier: str) -> str:
+    return re.sub(r"\D", "", identifier)
 
 
 @dataclass(frozen=True)
@@ -203,12 +233,54 @@ class VerifiedSegment:
 
 
 @dataclass(frozen=True)
+class BalanceGap:
+    """Rows are missing between two consecutive lines of a running-balance account:
+    the earlier line's balance plus the later line's amount is not the later line's
+    balance. The span runs from the earlier line's date to the later line's, both
+    lines loaded; coverage marks it ``missing`` (reason ``running_balance_break``)."""
+
+    account: RegisteredAccount
+    start_date: dt.date
+    end_date: dt.date
+
+
+@dataclass(frozen=True)
 class ParseResult:
     periods: tuple[ParsedPeriod, ...]
     lines: tuple[ParsedLine, ...]
     control_kind: ControlKind
     segments: tuple[VerifiedSegment, ...] = field(default=())
     official: bool = True
+    gaps: tuple[BalanceGap, ...] = field(default=())
+
+
+def balance_runs(
+    account: RegisteredAccount,
+    lines: Sequence[tuple[dt.date, Decimal, Decimal]],
+) -> tuple[tuple[VerifiedSegment, ...], tuple[BalanceGap, ...]]:
+    """The verified segments and the gaps of one account's running-balance lines,
+    given as ``(posting date, signed amount, running balance)`` in posting order.
+
+    A line continues the one before it when that line's balance plus its own amount
+    is its balance, to the cent. Each maximal run of two or more continuing lines is
+    a segment from its first line's date to its last's; a lone line between two
+    breaks verifies nothing and is no segment. Each break is a gap between the two
+    lines either side of it.
+    """
+    segments: list[VerifiedSegment] = []
+    gaps: list[BalanceGap] = []
+    start = 0
+    for index in range(1, len(lines) + 1):
+        if index < len(lines):
+            before, line = lines[index - 1], lines[index]
+            if before[2] + line[1] == line[2]:
+                continue
+            gaps.append(BalanceGap(account, before[0], line[0]))
+        if index - 1 > start:
+            first, last = lines[start][0], lines[index - 1][0]
+            segments.append(VerifiedSegment(account, first, last))
+        start = index
+    return tuple(segments), tuple(gaps)
 
 
 Parse = Callable[[str, AccountLookup], ParseResult]

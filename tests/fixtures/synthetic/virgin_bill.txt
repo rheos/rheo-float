@@ -1,0 +1,59 @@
+   Copy   Page   1 / 4
+   Bill Date   February 2, 2026
+   Next Bill Date   March 2, 2026
+   Virgin Plus Number   999-999-9999
+   Account Number   999000123
+   Client ID Number   99900012SAMPLE
+   (16 Digit Number for online/telebanking)
+
+   ACCOUNT SUMMARY for Sample Customer
+   Previous amount due   $99.10
+   CREDITS THIS MONTH...
+   Mobile credits   $5.00
+   Total payments (see following pages)   -54.00   (see following pages for details)
+   Unpaid balance   $45.10
+   Current charges summary
+   Late payment charge   1.10
+   Monthly charges   50.00
+   Monthly Device Payment(s) (non-taxable)   20.00
+   Usage and long distance   2.50
+   Total taxes on current charges   7.60
+
+   Total current charges   including taxes   $81.20
+
+   Total amount due   Please pay by* Feb 23, 2026   $126.30
+
+   Total GST included in this bill   $3.00
+   Total BC PST included in this bill   $4.60
+
+   Manage your account online or call the number on the back of your bill.
+
+Please detach this portion and return with your payment
+   Client ID Number:   99900012SAMPLE
+
+   Account Number   Please Pay By*   Total Amount Due   Amount Paid
+   999000123   February 23, 2026   $126.30
+
+   Sample Customer
+   999 SAMPLE ST
+   SAMPLETOWN, BC A9A 9A9
+
+   Page   2 / 4
+   Bill Date   February 2, 2026
+   Account Number   999000123
+
+ACCOUNT SUMMARY(continued)
+Payments
+Payment received Thank you Jan 20   -54.00
+Total payments   $-54.00
+
+CURRENT CHARGES for 999-999-9999
+
+Usage
+Long distance   2 events   2.50
+Roaming   0.00
+Taxes
+GST   3.00
+BC PST   4.60
+
+Total megabytes   999.5

@@ -15,7 +15,8 @@ is what FR-47 forbids.
   into typed values, every amount through ``to_money``. The ``checks`` list becomes a
   count: its messages carry account names and amounts, and go no further.
 - ``reference_bill(text)`` and ``money(value)`` pass ``docextract.reference.parse`` and
-  ``to_money`` through for the Virgin bill parser.
+  ``to_money`` through for the Virgin bill parser; text docextract cannot read as a
+  bill raises ``NotRecognised``.
 """
 
 from __future__ import annotations
@@ -50,8 +51,13 @@ def money(value: object) -> Decimal | None:
 
 
 def reference_bill(text: str) -> Mapping[str, Any]:
-    """``docextract.reference.parse`` over a Virgin Plus bill's text."""
-    return _reference_parse(text)
+    """``docextract.reference.parse`` over a Virgin Plus bill's text; ``NotRecognised``
+    when it cannot read the text as a bill (it fails on a missing bill or due date
+    rather than returning nothing)."""
+    try:
+        return _reference_parse(text)
+    except (AttributeError, ValueError):
+        raise NotRecognised("not a Virgin Plus bill layout") from None
 
 
 @dataclass(frozen=True)

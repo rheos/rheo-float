@@ -354,7 +354,12 @@ def _names(tree: ast.Module) -> set[str]:
 # Who may name the DSN holder: operations (it owns it) and context (it declares the
 # field dispatch reads). A composition root that builds contexts (the CLI, jobs) joins
 # this list in the change that adds it.
-HOLDER_NAMES = {"_Databases", "_databases", "with_databases"}
+HOLDER_NAMES = {
+    "_Databases",
+    "_databases",
+    "with_databases",
+    "with_owner_connection",
+}
 HOLDER_ALLOWED = {
     "rheo_finance.operations",
     "rheo_finance.context",

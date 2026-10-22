@@ -63,7 +63,7 @@ class ItemRole(StrEnum):
 
 # The columns a kind's CHECK governs; id, kind, note and decided_at are every kind's.
 MATRIX_COLUMNS: tuple[str, ...] = (
-    "target_ref", "category", "tag", "business_unit", "business_pct",
+    "target_ref", "merchant_key", "category", "tag", "business_unit", "business_pct",
     "counterpart_ref", "obligation_ref", "party_ref", "account_ref", "effective_on",
     "sink", "spec_digest", "preview_digest", "amount", "about_decision_id", "bulk_id",
     "reverses_id", "reverses_bulk_id",
@@ -103,11 +103,10 @@ K = DecisionKind
 REATTACH = "about_decision_id"
 BULK = "bulk_id"
 DECISION_KIND_COLUMNS: Mapping[DecisionKind, KindColumns] = {
-    # A line-keyed category names target_ref; a merchant-keyed one leaves it null and
-    # its merchant key lives on its decision_target row.
+    # A category names one line (target_ref) or one merchant (merchant_key).
     K.CATEGORY: _kc(
-        optional=("target_ref", "category", "tag", "business_unit", "business_pct",
-                  REATTACH, BULK),
+        optional=("category", "tag", "business_unit", "business_pct", REATTACH, BULK),
+        exactly_one=(("target_ref", "merchant_key"),),
         at_least_one=(("category", "tag"),),
     ),
     K.PAIR: _kc(("target_ref",), ("counterpart_ref", "party_ref", REATTACH, BULK)),
@@ -143,7 +142,11 @@ TARGET_COLUMN: Mapping[DecisionKind, str] = {
     if kind is not K.REVERSE
 }
 
-# Kinds whose named lines get a decision_target snapshot and can be orphaned (stage 17).
+# The ref types that name a ledger line (``finance.txn:<uuid>``, prompt 21). A prompt
+# that gives document lines their own ref type adds it here.
+LINE_REF_TYPES = frozenset({"txn"})
+
+# Kinds keyed to a line or a merchant, which stage 17 can find orphaned.
 LINE_KEYED_KINDS = frozenset(
     {K.CATEGORY, K.PAIR, K.UNPAIR, K.SPLIT, K.INCLUDE, K.PAYMENT_APPLY,
      K.PAYMENT_UNAPPLY}
@@ -212,8 +215,9 @@ class LegIn(BaseModel):
 class RecordIn(BaseModel):
     """A decision's kind, the kind's fields and the lines it names.
 
-    A merchant-keyed ``category`` gives ``merchant_key`` and ``newest_line_ref`` (the
-    merchant's newest line, whose snapshot is stored) instead of ``target_ref``.
+    A merchant-keyed ``category`` gives ``merchant_key`` (stored on the decision, which
+    is what applies it) and ``newest_line_ref`` (the merchant's newest line, whose
+    snapshot is stored for the orphan stage) instead of ``target_ref``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -285,6 +289,7 @@ class Decision(BaseModel):
     id: uuid.UUID
     kind: DecisionKind
     target_ref: str | None
+    merchant_key: str | None
     category: str | None
     tag: str | None
     business_unit: str | None
@@ -369,13 +374,7 @@ def effective(
     if isinstance(target, MerchantKey):
         if set(kinds) != {K.CATEGORY}:
             raise ValueError("a merchant key is the target of category decisions only")
-        match = and_(
-            row.c.target_ref.is_(None),
-            exists().where(
-                decision_target.c.decision_id == row.c.id,
-                decision_target.c.merchant_key == target.key,
-            ),
-        )
+        match = row.c.merchant_key == target.key
     else:
         match = row.c[columns.pop()] == target
     statement = (
@@ -414,20 +413,13 @@ def _check_columns(data: RecordIn) -> None:
                 f"{kind.value}: needs at least one of {', '.join(sorted(group))}"
             )
 
-    merchant = data.merchant_key is not None or data.newest_line_ref is not None
-    if kind is K.CATEGORY:
-        if (data.target_ref is None) == (data.merchant_key is None):
-            raise DecisionRefused(
-                "category: names exactly one of target_ref and merchant_key"
-            )
-        if (data.merchant_key is None) != (data.newest_line_ref is None):
-            raise DecisionRefused(
-                "category: a merchant_key comes with the merchant's newest_line_ref"
-            )
-    elif merchant:
+    # The matrix keeps merchant_key to category; its newest line comes with it.
+    if (data.merchant_key is None) != (data.newest_line_ref is None):
         raise DecisionRefused(
-            f"{kind.value}: does not use merchant_key or newest_line_ref"
+            f"{kind.value}: a merchant_key comes with the merchant's newest_line_ref"
         )
+    if data.newest_line_ref is not None and not is_line_ref(data.newest_line_ref):
+        raise DecisionRefused(f"{kind.value}: newest_line_ref is not a line reference")
     if data.parts and kind is not K.SPLIT:
         raise DecisionRefused(f"{kind.value}: does not take parts")
     if kind is K.SPLIT and not data.parts:
@@ -461,10 +453,18 @@ def _check_about(uow: UnitOfWork, data: RecordIn) -> None:
         )
 
 
+def is_line_ref(ref: str) -> bool:
+    """Whether ``ref`` names a ledger line, the thing a snapshot is taken of."""
+    parsed = refs.parse(ref)
+    return parsed.system == refs.FINANCE_SYSTEM and parsed.type in LINE_REF_TYPES
+
+
 def _named_lines(data: RecordIn) -> list[tuple[str, str]]:
-    """``(field, ref)`` for every line the decision names, first mention only."""
-    if data.kind not in LINE_KEYED_KINDS:
-        return []
+    """``(field, ref)`` for every line the decision names, first mention only.
+
+    Any kind: a ref of a line type is snapshotted wherever it appears, and a ref of
+    another type (a notice, a document, an obligation) is stored without one.
+    """
     named: list[tuple[str, str | None]] = [
         ("target_ref", data.target_ref),
         ("newest_line_ref", data.newest_line_ref),
@@ -474,7 +474,7 @@ def _named_lines(data: RecordIn) -> list[tuple[str, str]]:
     seen: set[str] = set()
     lines: list[tuple[str, str]] = []
     for field, ref in named:
-        if ref is not None and ref not in seen:
+        if ref is not None and ref not in seen and is_line_ref(ref):
             seen.add(ref)
             lines.append((field, ref))
     return lines
@@ -570,6 +570,12 @@ def reverse(ctx: FinanceContext, uow: UnitOfWork, data: ReverseIn) -> ReverseOut
         )
         if found is None:
             raise DecisionRefused("reverse: no decision has that id")
+        if found["kind"] == K.SINK_DISABLE.value:
+            # Re-enabling a sink is an approval: only `finance sink approve`, in a
+            # terminal, records one.
+            raise DecisionRefused(
+                "reverse: a sink_disable is not reversed; run finance sink approve"
+            )
         if found["kind"] == K.REVERSE.value:
             raise DecisionRefused(
                 "reverse: a reversal is not reversed; record the decision again"

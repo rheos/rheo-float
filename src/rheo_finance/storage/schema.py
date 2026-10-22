@@ -45,6 +45,7 @@ decision = Table(
     Column("id", Uuid, primary_key=True),
     Column("kind", Text, nullable=False),
     Column("target_ref", Text),
+    Column("merchant_key", Text),
     Column("category", Text),
     Column("tag", Text),
     Column("business_unit", Text),
@@ -68,7 +69,8 @@ decision = Table(
 _tiers(
     decision,
     {
-        "id": P, "kind": P, "target_ref": P, "category": P, "tag": P,
+        "id": P, "kind": P, "target_ref": P, "merchant_key": R, "category": P,
+        "tag": P,
         "business_unit": P, "business_pct": P, "counterpart_ref": P,
         "obligation_ref": P, "party_ref": P, "account_ref": P, "effective_on": P,
         "sink": P, "spec_digest": P, "preview_digest": P, "amount": R,

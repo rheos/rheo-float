@@ -24,7 +24,7 @@ KINDS = (
 
 # The columns a kind's CHECK governs. id, kind, note and decided_at are every kind's.
 MATRIX_COLUMNS = (
-    "target_ref", "category", "tag", "business_unit", "business_pct",
+    "target_ref", "merchant_key", "category", "tag", "business_unit", "business_pct",
     "counterpart_ref", "obligation_ref", "party_ref", "account_ref", "effective_on",
     "sink", "spec_digest", "preview_digest", "amount", "about_decision_id", "bulk_id",
     "reverses_id", "reverses_bulk_id",
@@ -35,9 +35,9 @@ _Groups = tuple[tuple[str, ...], ...]
 MATRIX: dict[str, tuple[tuple[str, ...], tuple[str, ...], _Groups, _Groups]] = {
     "category": (
         (),
-        ("target_ref", "category", "tag", "business_unit", "business_pct",
-         "about_decision_id", "bulk_id"),
-        (),
+        ("category", "tag", "business_unit", "business_pct", "about_decision_id",
+         "bulk_id"),
+        (("target_ref", "merchant_key"),),
         (("category", "tag"),),
     ),
     "pair": (
@@ -103,6 +103,7 @@ def statements() -> list[str]:
             id uuid PRIMARY KEY,
             kind text NOT NULL,
             target_ref text,
+            merchant_key text,
             category text,
             tag text,
             business_unit text,

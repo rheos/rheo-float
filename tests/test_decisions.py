@@ -48,6 +48,8 @@ def line_ref() -> str:
 LINE_A, LINE_B, LINE_C, LINE_D = (line_ref() for _ in range(4))
 UNKNOWN_LINE = line_ref()
 OBLIGATION = f"finance.obligation:{uuid7(START)}"
+NOTICE = f"finance.payment_notice:{uuid7(START)}"
+DOCUMENT = f"finance.document:{uuid7(START)}"
 SNAPSHOTS = {
     ref: LineSnapshot(
         account_slug=f"chequing-999{index}",
@@ -197,6 +199,8 @@ def test_a_merchant_category_snapshots_the_newest_line_with_its_key(
     )
     [row] = rows(owner_conn, schema.decision, out.decision_id)
     assert row["target_ref"] is None and row["category"] == "groceries"
+    assert row["merchant_key"] == "grocer 999"
+    # The snapshot keeps its own copy of the key, for the orphan stage.
     [target] = rows(owner_conn, schema.decision_target, out.decision_id)
     assert (target["target_ref"], target["merchant_key"]) == (LINE_D, "grocer 999")
     assert target["amount"] == SNAPSHOTS[LINE_D].amount
@@ -209,6 +213,31 @@ def test_a_merchant_category_snapshots_the_newest_line_with_its_key(
     assert effective(owner_conn, K.CATEGORY, MerchantKey("grocer 998")) is None
 
 
+def test_the_merchant_key_on_the_decision_is_what_applies_it(
+    owner: FinanceContext, owner_conn: Connection
+) -> None:
+    out = record(
+        owner, kind="category", merchant_key="grocer 999", newest_line_ref=LINE_D,
+        category="groceries",
+    )  # fmt: skip
+    # Change the snapshot copy (inside the test's transaction, triggers off): the
+    # decision still applies to its merchant and not to the snapshot's key.
+    owner_conn.execute(
+        text("ALTER TABLE finance.decision_target DISABLE TRIGGER USER")
+    )
+    owner_conn.execute(
+        text(
+            "UPDATE finance.decision_target SET merchant_key = 'grocer 998'"
+            " WHERE decision_id = :id"
+        ),
+        {"id": out.decision_id},
+    )
+    assert effective(owner_conn, K.CATEGORY, MerchantKey("grocer 999")) == (
+        out.decision_id
+    )
+    assert effective(owner_conn, K.CATEGORY, MerchantKey("grocer 998")) is None
+
+
 def test_a_line_that_resolves_to_no_current_line_is_refused(
     owner: FinanceContext, owner_conn: Connection
 ) -> None:
@@ -216,6 +245,39 @@ def test_a_line_that_resolves_to_no_current_line_is_refused(
         record(owner, kind="pair", target_ref=LINE_A, counterpart_ref=UNKNOWN_LINE)
     assert count(owner_conn, schema.decision) == 0
     assert count(owner_conn, schema.decision_target) == 0
+
+
+def test_a_ref_that_is_not_a_line_is_stored_without_a_snapshot(
+    owner: FinanceContext, owner_conn: Connection, calls: Calls
+) -> None:
+    # A notice joined to a payment: the payment is a line, the notice is not.
+    out = record(owner, kind="pair", target_ref=LINE_A, counterpart_ref=NOTICE)
+    [row] = rows(owner_conn, schema.decision, out.decision_id)
+    assert row["counterpart_ref"] == NOTICE
+    targets = rows(owner_conn, schema.decision_target, out.decision_id)
+    assert [t["target_ref"] for t in targets] == [LINE_A]
+    unpaired = record(owner, kind="unpair", target_ref=NOTICE, counterpart_ref=LINE_B)
+    targets = rows(owner_conn, schema.decision_target, unpaired.decision_id)
+    assert [t["target_ref"] for t in targets] == [LINE_B]
+    invoice = record(
+        owner, kind="invoice_paid", target_ref=DOCUMENT,
+        account_ref=f"finance.account:{uuid7(START)}",
+        effective_on=dt.date(2026, 1, 20),
+    )  # fmt: skip
+    assert invoice.targets == 0
+    assert calls.refs == [LINE_A, LINE_B]
+
+
+def test_a_line_is_snapshotted_whatever_the_kind(
+    owner: FinanceContext, owner_conn: Connection
+) -> None:
+    out = record(owner, kind="proposal_decline", target_ref=LINE_C)
+    [target] = rows(owner_conn, schema.decision_target, out.decision_id)
+    assert (target["target_ref"], target["account_slug"]) == (
+        LINE_C, SNAPSHOTS[LINE_C].account_slug,
+    )  # fmt: skip
+    with pytest.raises(DecisionRefused, match="target_ref resolves to no"):
+        record(owner, kind="proposal_decline", target_ref=UNKNOWN_LINE)
 
 
 def test_a_decision_on_no_line_asks_the_provider_nothing(
@@ -236,13 +298,26 @@ def test_a_decision_on_no_line_asks_the_provider_nothing(
         (
             {"kind": "category", "target_ref": LINE_A, "category": "x",
              "merchant_key": "m", "newest_line_ref": LINE_B},
-            "exactly one of target_ref and merchant_key",
+            "needs exactly one of merchant_key, target_ref",
         ),
         (
             {"kind": "category", "merchant_key": "m", "category": "x"},
             "comes with the merchant's newest_line_ref",
         ),
-        ({"kind": "pair", "target_ref": LINE_A, "merchant_key": "m"}, "merchant_key"),
+        (
+            {"kind": "pair", "target_ref": LINE_A, "merchant_key": "m",
+             "newest_line_ref": LINE_B},
+            "does not use merchant_key",
+        ),
+        (
+            {"kind": "pair", "target_ref": LINE_A, "newest_line_ref": LINE_B},
+            "comes with the merchant's newest_line_ref",
+        ),
+        (
+            {"kind": "category", "merchant_key": "m", "category": "x",
+             "newest_line_ref": NOTICE},
+            "newest_line_ref is not a line reference",
+        ),
         (
             {"kind": "pair", "target_ref": LINE_A,
              "parts": [{"label": "rent", "amount": "1"}]},
@@ -392,6 +467,26 @@ def test_reverse_refuses_a_second_reversal_a_reversal_and_an_unknown_id(
     assert count(owner_conn, schema.decision) == 2
 
 
+def test_reverse_refuses_a_sink_disable_and_allows_a_sink_approve(
+    owner: FinanceContext, owner_conn: Connection
+) -> None:
+    disable = record(owner, kind="sink_disable", sink="rates")
+    with pytest.raises(DecisionRefused, match="a sink_disable is not reversed"):
+        reverse(owner, decision_id=str(disable.decision_id))
+    kinds = (K.SINK_APPROVE, K.SINK_DISABLE)
+    assert effective(owner_conn, kinds, "rates") == disable.decision_id
+    # An approval is written only by the sink approve path; plant one here.
+    approval = uuid7(START)
+    owner_conn.execute(
+        insert(schema.decision).values(
+            id=approval, kind="sink_approve", sink="imap", spec_digest="spec",
+            preview_digest="preview", decided_at=START + dt.timedelta(hours=1),
+        )
+    )  # fmt: skip
+    reverse(owner, decision_id=str(approval))
+    assert effective(owner_conn, kinds, "imap") is None
+
+
 def test_reverse_by_bulk_id_un_applies_every_decision_of_the_run(
     owner: FinanceContext, owner_conn: Connection
 ) -> None:
@@ -477,6 +572,7 @@ def base_decision(written: decision.RecordOut) -> uuid.UUID:
 def column_values(base: uuid.UUID) -> dict[str, object]:
     return {
         "target_ref": LINE_A,
+        "merchant_key": "grocer 999",
         "category": "groceries",
         "tag": "personal",
         "business_unit": "studio",

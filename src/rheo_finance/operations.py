@@ -20,14 +20,15 @@ Outbound pushes (M.O.T., Telegram) are sink adapters, never registered operation
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Self
 
 import psycopg
 from psycopg import pq
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
-from sqlalchemy import Connection, Engine, create_engine, text
+from sqlalchemy import Connection, Engine, Transaction, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.pool import NullPool
 
@@ -81,12 +82,18 @@ class _Databases:
     ``src/rheo_finance`` that names it, ``_databases`` or ``with_databases``.
     """
 
-    def __init__(self, owner_url: URL, reader_url: URL) -> None:
+    def __init__(
+        self,
+        owner_url: URL,
+        reader_url: URL,
+        owner_connection: Connection | None = None,
+    ) -> None:
         self._urls: dict[ConnectionName, URL] = {
             "owner": owner_url,
             "reader": reader_url,
         }
         self._engines: dict[ConnectionName, Engine] = {}
+        self.owner_connection = owner_connection
 
     def engine(self, name: ConnectionName) -> Engine:
         engine = self._engines.get(name)
@@ -107,6 +114,41 @@ def with_databases(
     without them.
     """
     return replace(ctx, _databases=_Databases(owner_url, reader_url))
+
+
+def with_owner_connection(
+    ctx: FinanceContext, connection: Connection
+) -> FinanceContext:
+    """``ctx`` with every owner-connection operation run on ``connection``.
+
+    For tests only (the DSN-holder guard keeps it out of ``src``): ``dispatch`` runs
+    the handler inside a savepoint on ``connection`` and "commits" by releasing it, so
+    the caller's own transaction decides what survives.
+    Reader operations still open the reader DSN. ``ctx`` must already carry databases
+    (``with_databases``).
+    """
+    databases = ctx._databases
+    if databases is None:
+        raise NoDatabases("with_owner_connection needs a context with databases")
+    return replace(
+        ctx,
+        _databases=_Databases(
+            databases._urls["owner"], databases._urls["reader"], connection
+        ),
+    )
+
+
+@contextmanager
+def _opened(
+    databases: _Databases, name: ConnectionName
+) -> Iterator[tuple[Connection, Transaction]]:
+    """The connection and transaction an operation runs in."""
+    injected = databases.owner_connection if name == "owner" else None
+    if injected is not None:
+        yield injected, injected.begin_nested()
+        return
+    with databases.engine(name).connect() as connection:
+        yield connection, connection.begin()
 
 
 class OperationSpec(BaseModel):
@@ -232,8 +274,7 @@ def dispatch(
         raise NoDatabases(f"{name}: the context carries no databases")
     handler_ctx = replace(ctx, _databases=None)
 
-    with databases.engine(spec.connection).connect() as connection:
-        transaction = connection.begin()
+    with _opened(databases, spec.connection) as (connection, transaction):
         try:
             # psycopg sends BEGIN with the first statement: open the server transaction
             # now, so an idle server after the handler means the handler ended it.

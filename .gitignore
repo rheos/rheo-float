@@ -15,3 +15,8 @@ __pycache__/
 # Local-only context: describes the owner's real accounts and setup. Never committed.
 project-context.md
 HANDOFF.md
+
+# Synthetic fixtures (fake values, each listed in MANIFEST.toml) stay trackable even with
+# statement-like names; scripts/repo_check.py guards what goes in.
+!tests/fixtures/synthetic/
+!tests/fixtures/synthetic/**

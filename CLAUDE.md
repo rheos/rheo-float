@@ -30,6 +30,23 @@ no statement, export, dump, key, account number, balance or TXID.
 committed or printed into a transcript: report counts and pass/fail only. Fixtures are synthetic
 layout text with fake values (digit runs start with `999`).
 
+## Repo check and the pre-commit hook
+
+`scripts/repo_check.py` fails when a tracked or staged file looks like private data (FR-45).
+Enable the hook once per clone (worktrees share the setting):
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The hook runs the check in `--staged` mode before every commit. Run it yourself over the whole
+tree with `uv run python scripts/repo_check.py --tracked`. It blocks statement-type files (pdf,
+csv, eml, dump, sql, qfx, ofx, jsonl, heic, jpg, json outside `src/rheo_finance/reference/`)
+outside `tests/fixtures/synthetic/`, any fixture not listed in that directory's `MANIFEST.toml`,
+and, in data-shaped files, digit runs of 8 or more that do not start with `999` (dates as
+`YYYYMMDD` and 13-digit millisecond epochs pass) and Luhn-valid card numbers. Never bypass it with
+`--no-verify`; fix the file instead.
+
 ## Running the tests
 
 ```sh

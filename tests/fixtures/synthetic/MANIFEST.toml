@@ -1,0 +1,8 @@
+# Every file under tests/fixtures/synthetic/ is listed here, or the repo check fails (FR-45).
+# Paths are relative to the repo root. Every value in a fixture is fake: digit runs of 8 or
+# more start with 999, except YYYYMMDD dates and 13-digit millisecond epochs.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/statement_layout.txt"
+synthetic = true
+description = "Tiny bank statement layout with fake values, so the check has a fixture to pass."

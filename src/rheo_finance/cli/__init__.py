@@ -1,0 +1,1 @@
+"""The ``finance`` command line."""

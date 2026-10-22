@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(finance sink approve:*)",
+      "Bash(uv run finance sink approve:*)",
+      "Bash(finance confirm bulk:*)",
+      "Bash(uv run finance confirm bulk:*)"
+    ]
+  }
+}

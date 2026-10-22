@@ -22,6 +22,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from rheo_finance.storage.tiers import register_column
 from rheo_finance.tier import Tier
@@ -181,4 +182,68 @@ report_sink = Table(
 _tiers(
     report_sink,
     {"sink": P, "approved_at": P, "spec_digest": P, "stale": P},
+)
+
+# --- account registry (derived, stage 2; migration 0005) ------------------------------
+
+account = Table(
+    "account",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("slug", Text, nullable=False, unique=True),
+    Column("label", Text, nullable=False),
+    Column("institution", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("currencies", ARRAY(Text), nullable=False),
+    Column("cadence", Text, nullable=False),
+    Column("owner", Text),
+    Column("opened_on", Date),
+    Column("closed_on", Date),
+    Column("first_known_on", Date),
+    Column("sourced_by", Text, nullable=False),
+    Column("placeholder", Boolean, nullable=False, server_default="false"),
+    Column("missing_before", Date),
+    Column("missing_reason", Text),
+)
+_tiers(
+    account,
+    {
+        "id": P, "slug": P, "label": P, "institution": P, "kind": P,
+        "currencies": P, "cadence": P, "owner": P, "opened_on": P, "closed_on": P,
+        "first_known_on": P, "sourced_by": P, "placeholder": P,
+        "missing_before": P, "missing_reason": P,
+    },
+)  # fmt: skip
+
+# Every column restricted: an identifier row is what a statement is matched by, and
+# which kinds an account carries and since when is part of that.
+account_identifier = Table(
+    "account_identifier",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("account_id", Uuid, ForeignKey("finance.account.id"), nullable=False),
+    Column("identifier", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("valid_from", Date),
+    Column("valid_to", Date),
+)
+_tiers(
+    account_identifier,
+    {
+        "id": R, "account_id": R, "identifier": R, "kind": R, "valid_from": R,
+        "valid_to": R,
+    },
+)  # fmt: skip
+
+manual_entry_error = Table(
+    "manual_entry_error",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("file", Text, nullable=False),
+    Column("line_no", Integer, nullable=False),
+    Column("reason", Text, nullable=False),
+)
+_tiers(
+    manual_entry_error,
+    dict.fromkeys(("id", "file", "line_no", "reason"), Tier.INTERNAL),
 )

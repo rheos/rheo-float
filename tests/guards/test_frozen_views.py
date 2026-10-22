@@ -38,6 +38,9 @@ PINNED = {
     "0004_sink_views.py": (
         "570690ba75b1777b1c91cb4d4c5144de9206cbcaafc1dfca8405c3ee816bed76"
     ),
+    "0005_accounts.py": (
+        "60f7a37270474d8c54ed2247313391276ae4f69db3ee5bd3962f7da643e06cda"
+    ),
 }
 
 

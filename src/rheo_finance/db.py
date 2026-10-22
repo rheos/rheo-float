@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -40,6 +41,8 @@ LIVE_DATABASE = "finance"
 TEST_DATABASE = "finance_test"
 DATABASES = (LIVE_DATABASE, TEST_DATABASE)
 VERSION_TABLE = "alembic_version_finance"
+# Names go into SQL as quoted identifiers, so only plain lower-case names are accepted.
+DATABASE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 
 ENV_FILE_NAME = "db.env"
 PASSWORD_KEY = "POSTGRES_PASSWORD"
@@ -319,6 +322,17 @@ def _privilege_snapshot(databases: Sequence[str]) -> list[str]:
                 )
             )
         ]
+        rows += [
+            f"{database}|default|{row}"
+            for row in _rows(
+                psql(
+                    "SELECT pg_get_userbyid(defaclrole), defaclnamespace::regnamespace,"
+                    " defaclobjtype, coalesce(defaclacl::text, '') FROM pg_default_acl"
+                    " ORDER BY 1, 2, 3;",
+                    database=database,
+                )
+            )
+        ]
     return rows
 
 
@@ -337,17 +351,24 @@ def _password_ok(dsn: str, database: str) -> bool:
         ) from None
 
 
-def init(databases: Sequence[str] = DATABASES) -> list[str]:
+def init(databases: Sequence[str] | None = None) -> list[str]:
     """Create the roles, databases and schema, and set their privileges. Idempotent.
 
-    Returns one line per change; an empty list means nothing changed. The superuser
-    owns each database; ``finance_owner`` owns schema ``finance``; ``finance_reader``
-    gets LOGIN, CONNECT and USAGE on ``finance`` and nothing else. ``PUBLIC`` loses
-    CONNECT and TEMPORARY on the databases and every privilege on schema ``public``,
-    so no role but the superuser can create a table outside ``finance``.
+    ``databases`` defaults to ``finance`` and ``finance_test``; the roles are
+    cluster-wide whatever it names. Returns one line per change; an empty list means
+    nothing changed. The superuser owns each database; ``finance_owner`` owns schema
+    ``finance``; ``finance_reader`` gets LOGIN, CONNECT and USAGE on ``finance`` and
+    nothing else. ``PUBLIC`` loses CONNECT and TEMPORARY on the databases, every
+    privilege on schema ``public``, and EXECUTE on functions ``finance_owner`` creates,
+    so no role but the superuser can create a table outside ``finance`` and the reader
+    cannot call the owner's functions.
     """
+    databases = DATABASES if databases is None else tuple(databases)
     if not databases:
         raise DbError("no database to initialise")
+    for database in databases:
+        if not DATABASE_NAME.fullmatch(database):
+            raise DbError(f"not a plain database name: {database!r}")
     path = env_file_path()
     values = read_env_file(path)
     dsns = {
@@ -409,7 +430,11 @@ def init(databases: Sequence[str] = DATABASES) -> list[str]:
             f"ALTER SCHEMA {SCHEMA} OWNER TO {OWNER_ROLE};\n"
             "REVOKE ALL ON SCHEMA public FROM PUBLIC;\n"
             f"REVOKE ALL ON SCHEMA {SCHEMA} FROM PUBLIC;\n"
-            f"GRANT USAGE ON SCHEMA {SCHEMA} TO {READER_ROLE};\n",
+            f"GRANT USAGE ON SCHEMA {SCHEMA} TO {READER_ROLE};\n"
+            # Global, not IN SCHEMA: a per-schema default can only add to the global
+            # default, and the global default gives PUBLIC EXECUTE on new functions.
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {OWNER_ROLE}"
+            " REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;\n",
             database=database,
         )
     if _privilege_snapshot(databases) != before:
@@ -490,9 +515,9 @@ def _cmd_up(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_init(_args: argparse.Namespace) -> int:
+def _cmd_init(args: argparse.Namespace) -> int:
     try:
-        changes = init()
+        changes = init(args.databases)
     except DbError as exc:
         return _fail("init", exc)
     if not changes:
@@ -525,9 +550,17 @@ def add_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     sub.add_parser(
         "up", help=f"start the container on {HOST}:{PORT} and write db.env if missing"
     ).set_defaults(handler=_cmd_up)
-    sub.add_parser(
+    init_parser = sub.add_parser(
         "init", help="create the roles, databases and schema (idempotent)"
-    ).set_defaults(handler=_cmd_init)
+    )
+    init_parser.add_argument(
+        "--database",
+        dest="databases",
+        action="append",
+        metavar="NAME",
+        help=f"set up only this database (repeatable; default: {', '.join(DATABASES)})",
+    )
+    init_parser.set_defaults(handler=_cmd_init)
     sub.add_parser(
         "migrate", help="upgrade the live database to the newest migration"
     ).set_defaults(handler=_cmd_migrate)

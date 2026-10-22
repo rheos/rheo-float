@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import stat
 import subprocess
 from collections.abc import Iterator, Sequence
@@ -24,7 +25,27 @@ from conftest import DatabaseUnderTest
 from rheo_finance import db
 from rheo_finance.cli.main import main
 
-PROBE_DATABASE = "finance_init_probe"
+# Unique per session: two suites on the shared container must not drop each other's.
+PROBE_DATABASE = f"finance_init_probe_{secrets.token_hex(4)}"
+
+
+class LiveDatabaseTouched(AssertionError):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def never_the_live_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every superuser statement a test sends must leave the live ledger alone."""
+    real_psql = db.psql
+
+    def guarded(
+        sql: str, *, database: str = "postgres", hidden: Sequence[str] = ()
+    ) -> str:
+        if database == db.LIVE_DATABASE or f'"{db.LIVE_DATABASE}"' in sql:
+            raise LiveDatabaseTouched(f"a test aimed SQL at {db.LIVE_DATABASE}")
+        return real_psql(sql, database=database, hidden=hidden)
+
+    monkeypatch.setattr(db, "psql", guarded)
 
 
 def _literal_list(names: Sequence[str]) -> str:
@@ -33,7 +54,8 @@ def _literal_list(names: Sequence[str]) -> str:
 
 def _catalog_snapshot(databases: Sequence[str]) -> list[str]:
     """Everything ``db init`` sets: role attributes and password hashes (digested),
-    database owners and ACLs, schema owners and ACLs, and per-role settings."""
+    database owners and ACLs, schema owners and ACLs, default privileges, and
+    per-role settings."""
     rows = db.psql(
         "SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin,"
         " rolreplication, rolbypassrls, rolconnlimit, md5(coalesce(rolpassword, ''))"
@@ -59,6 +81,14 @@ def _catalog_snapshot(databases: Sequence[str]) -> list[str]:
                 database=database,
             ).splitlines()
         ]
+        rows += [
+            f"{database}|default|{row}"
+            for row in db.psql(
+                "SELECT pg_get_userbyid(defaclrole), defaclnamespace, defaclobjtype,"
+                " coalesce(defaclacl::text, '') FROM pg_default_acl ORDER BY 1, 2, 3;",
+                database=database,
+            ).splitlines()
+        ]
     return rows
 
 
@@ -78,6 +108,11 @@ def _has(sql: str, database: str) -> bool:
 
 
 # --- finance db init ---------------------------------------------------------------
+
+
+def test_the_guard_stops_init_before_it_reaches_the_live_database() -> None:
+    with pytest.raises(LiveDatabaseTouched):
+        db.init()  # the default names the live ledger
 
 
 def test_db_init_creates_a_database_then_a_second_run_changes_nothing(
@@ -107,25 +142,35 @@ def test_db_init_creates_a_database_then_a_second_run_changes_nothing(
 
 
 def test_finance_db_init_twice_is_a_no_op_and_prints_no_password(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], probe_database: str
 ) -> None:
-    assert main(["db", "init"]) == 0
-    capsys.readouterr()
-    before = _catalog_snapshot(db.DATABASES)
+    scoped = (db.TEST_DATABASE, probe_database)
+    assert db.LIVE_DATABASE not in scoped
+    argv = ["db", "init", "--database", scoped[0], "--database", scoped[1]]
 
-    assert main(["db", "init"]) == 0
+    assert main(argv) == 0
+    first = capsys.readouterr().out
+    assert f"- created database {probe_database}" in first.splitlines()
+    before = _catalog_snapshot(scoped)
+
+    assert main(argv) == 0
     out = capsys.readouterr().out
-    assert _catalog_snapshot(db.DATABASES) == before
+    assert _catalog_snapshot(scoped) == before
     assert out.splitlines() == ["finance db init: already set up, nothing changed."]
 
     values = db.read_env_file()
-    secrets = [
+    passwords = [
         values[db.PASSWORD_KEY],
         db.to_sqlalchemy_url(values[db.OWNER_DSN_KEY]).password or "",
         db.to_sqlalchemy_url(values[db.READER_DSN_KEY]).password or "",
     ]
-    leaked = any(secret and secret in out for secret in secrets)
+    leaked = any(value and value in first + out for value in passwords)
     assert not leaked, "db init printed a password"
+
+
+def test_db_init_refuses_a_name_it_would_have_to_quote() -> None:
+    with pytest.raises(db.DbError):
+        db.init(databases=('finance_test"; DROP TABLE x; --',))
 
 
 # --- role privileges -----------------------------------------------------------------
@@ -190,6 +235,24 @@ def test_reader_cannot_read_or_write_any_finance_table(
             f"SELECT * FROM {name}",
         ):
             _expect_denied(reader_engine, statement)
+
+
+def test_reader_cannot_call_a_function_the_owner_creates(
+    owner_engine: Engine, reader_engine: Engine
+) -> None:
+    db.init(databases=(db.TEST_DATABASE,))  # applies the default privileges
+    name = f"finance.exec_probe_{secrets.token_hex(4)}"
+    with owner_engine.begin() as connection:
+        connection.execute(
+            text(f"CREATE FUNCTION {name}() RETURNS integer LANGUAGE sql AS 'SELECT 1'")
+        )
+    try:
+        with owner_engine.connect() as connection:
+            assert connection.execute(text(f"SELECT {name}()")).scalar_one() == 1
+        _expect_denied(reader_engine, f"SELECT {name}()")
+    finally:
+        with owner_engine.begin() as connection:
+            connection.execute(text(f"DROP FUNCTION IF EXISTS {name}()"))
 
 
 def test_owner_writes_inside_its_rolled_back_transaction(

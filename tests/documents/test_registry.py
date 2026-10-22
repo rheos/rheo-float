@@ -271,6 +271,7 @@ def test_a_document_whose_bytes_moved_follows_them(
 # and an 8-digit run that is not a calendar date.
 SKIPPED = {
     "vancity/statement-9991234.pdf": "number identifier",
+    "vancity/999-1234-2024.pdf": "number identifier split by a separator",
     "mbna/9999-99xx-xxxx-4321.pdf": "masked card, other mask characters",
     "coinstats/synthetic_pot-2024-01-31.json": "portfolio name",
     "wise/99912345678.pdf": "11-digit run",
@@ -281,6 +282,7 @@ ADOPTED = {
     "vancity/2024-01-31.pdf": "a hyphenated date",
     "mbna/2024-02-29-4321.pdf": "last four alone is not the masked card",
     "vancity/cash-2024.pdf": "the built-in internal identifier is not matched",
+    "vancity/1999-1234.pdf": "the number's digits only from inside a run",
 }
 
 
@@ -302,7 +304,7 @@ def test_an_identifier_bearing_path_is_skipped_counted_and_stored_nowhere(
     assert skips(owner_conn) == [
         ("coinstats", "identifier_in_path", 1),
         ("mbna", "identifier_in_path", 1),
-        ("vancity", "identifier_in_path", 1),
+        ("vancity", "identifier_in_path", 2),
         ("wise", "identifier_in_path", 2),
     ]
     assert [(s.directory, s.reason, s.count) for s in out.skipped] == skips(owner_conn)
@@ -348,6 +350,46 @@ def test_the_skip_counts_are_rewritten_on_every_walk(
     assert skips(owner_conn) == []
     assert out.registered == 1
     assert [row[0] for row in documents(owner_conn)] == ["vancity/2024-01-31.pdf"]
+
+
+def test_a_path_stored_before_its_identifier_was_registered_is_withheld(
+    owner_conn: Connection,
+    rolled_back_context: MakeContext,
+    archive: Path,
+    load_identifiers: Callable[[], None],
+) -> None:
+    statement = write_file(archive, "vancity/statement-9991234.pdf", b"%PDF early")
+    write_file(archive, "invoices-received/vendor-999-1234/inv.pdf", b"%PDF invoice")
+    write_file(archive, "mbna/2024-01-31.pdf", b"%PDF untouched")
+    assert file_op(rolled_back_context, archive).registered == 3
+
+    load_identifiers()
+    out = file_op(rolled_back_context, archive)
+
+    assert (out.registered, out.known, out.withheld) == (0, 1, 2)
+    assert documents(owner_conn) == [
+        ("(withheld)", "invoices-received", "invoice", "pdf", "filed", "none"),
+        ("(withheld)", "vancity", "statement", "pdf", "filed", "none"),
+        ("mbna/2024-01-31.pdf", "mbna", "statement", "pdf", "filed", "none"),
+    ]
+    assert skips(owner_conn) == [
+        ("invoices-received", "identifier_in_path", 1),
+        ("vancity", "identifier_in_path", 1),
+    ]
+    stored = " ".join(
+        f"{path} {issuer}"
+        for path, issuer in owner_conn.execute(
+            select(document.c.path, document.c.issuer)
+        )
+    )
+    assert "1234" not in stored
+
+    # Renamed, the file is adopted again: its row takes the new path back.
+    statement.rename(archive / "vancity/2024-02-29.pdf")
+    again = file_op(rolled_back_context, archive)
+    assert (again.registered, again.moved, again.withheld) == (0, 1, 0)
+    assert "vancity/2024-02-29.pdf" in [row[0] for row in documents(owner_conn)]
+    assert document_count(owner_conn) == 3
 
 
 def test_files_the_walk_cannot_register_are_counted_by_mapped_directory_only(

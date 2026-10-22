@@ -18,8 +18,13 @@ file gets one of three outcomes.
 - **Known.** Bytes already registered are a no-op, so filing the same bytes twice
   leaves the count unchanged. When the same bytes sit at two paths, the first path in
   sorted order is the document's. A registered document whose bytes now sit only at
-  another path follows them: its path is updated. A document whose bytes are gone from
-  the archive keeps its row.
+  another path follows them: its path and issuer are updated. A document whose bytes
+  are gone from the archive keeps its row.
+- **Withheld.** Every stored path is checked again on every walk. One the check now
+  refuses (an identifier registered after the file was filed) is replaced by
+  ``WITHHELD_PATH`` and counted in the output; the file is counted in ``archive_skip``
+  like any other skipped file, and the document gets its path back once the owner
+  renames the file.
 
 Hidden files and directories (a leading ``.``, such as ``.DS_Store``) are not
 documents and are passed over, except the iCloud placeholders counted above.
@@ -57,6 +62,10 @@ ARCHIVE_KEY: Final = "finance.paths.archive"
 # derived_id needs a business date and a document has none of its own at registration;
 # the registry rows of stage 2 use the same fixed date.
 REGISTRY_DATE: Final = dt.date(2000, 1, 1)
+# What a stored path becomes once the adopted-path check refuses it (an identifier
+# registered after the file was): no parser opens it, and the document takes its real
+# path back when the walk next finds its bytes at an adoptable one.
+WITHHELD_PATH: Final = "(withheld)"
 
 SkipReason = Literal[
     "identifier_in_path", "unmapped_directory", "not_a_regular_file", "not_downloaded"
@@ -69,6 +78,8 @@ DOCUMENT_STATUSES: Final[tuple[DocumentStatus, ...]] = (
 )  # fmt: skip
 
 _DIGIT_RUN = re.compile(r"\d+")
+# Digit runs joined by single separators, such as ``999-1234`` or ``999 1234``.
+_DIGIT_GROUP = re.compile(r"\d+(?:[\s._-]\d+)+")
 # An identifier that is a bare number: digits with optional spaces, dots or hyphens.
 _NUMBER = re.compile(r"[\d\s.-]*\d[\d\s.-]*")
 _SEPARATORS = re.compile(r"[\s._-]+")
@@ -116,7 +127,10 @@ class PathCheck:
     A path is refused when it holds a run of 8 or more digits that is not a
     ``YYYYMMDD`` date, or contains a registered identifier. An identifier that is a bare
     number (digits with spaces, dots or hyphens) matches when its digits appear inside
-    one digit run of the path. Any other identifier (a masked card, a file token, a
+    one digit run of the path, or when it equals two or more consecutive whole runs of
+    one separated group (``999-1234`` for ``9991234``; a run is never split, so a
+    date such as ``2024-01-31`` does not hide a number from its middle). Any other
+    identifier (a masked card, a file token, a
     portfolio name) matches when it appears in the path, both compared without case,
     separators or the difference between mask characters. Both are substring
     matches: they err toward skipping, and a skipped file is adopted once renamed.
@@ -139,8 +153,21 @@ class PathCheck:
             return False
         if any(number in run for run in runs for number in self._numbers):
             return False
+        if self._numbers and any(
+            joined in self._numbers
+            for group in _DIGIT_GROUP.findall(relative)
+            for joined in _joined_runs(_DIGIT_RUN.findall(group))
+        ):
+            return False
         comparable = _comparable(relative)
         return not any(text in comparable for text in self._texts)
+
+
+def _joined_runs(runs: list[str]) -> Iterator[str]:
+    """Every concatenation of two or more consecutive runs."""
+    for start in range(len(runs)):
+        for end in range(start + 2, len(runs) + 1):
+            yield "".join(runs[start:end])
 
 
 def registered_identifiers(uow: UnitOfWork) -> tuple[str, ...]:
@@ -227,6 +254,7 @@ class Filed:
     known: int
     moved: int
     duplicates: int
+    withheld: int
     skipped: tuple[tuple[str, SkipReason, int], ...]
 
 
@@ -247,9 +275,10 @@ def _new_row(found: Found, now: dt.datetime) -> dict[str, object]:
 
 
 def file_archive(uow: UnitOfWork, root: Path, now: dt.datetime) -> Filed:
-    """Walk the archive at ``root``, register new bytes, follow moved ones and rewrite
-    ``archive_skip``."""
-    walked = walk(root, PathCheck(registered_identifiers(uow)))
+    """Walk the archive at ``root``, register new bytes, follow moved ones, withhold
+    stored paths the check now refuses and rewrite ``archive_skip``."""
+    check = PathCheck(registered_identifiers(uow))
+    walked = walk(root, check)
     paths_by_sha: dict[str, list[Found]] = {}
     for found in walked.found:
         paths_by_sha.setdefault(found.sha256, []).append(found)
@@ -274,11 +303,12 @@ def file_archive(uow: UnitOfWork, root: Path, now: dt.datetime) -> Filed:
             uow.execute(
                 update(document)
                 .where(document.c.sha256 == sha)
-                .values(path=first.relative)
+                .values(path=first.relative, issuer=first.placement.issuer)
             )
             moved += 1
     if new_rows:
         uow.execute(insert(document), new_rows)
+    withheld = _withhold_refused(uow, check)
 
     uow.execute(delete(archive_skip))
     skipped = tuple(
@@ -298,8 +328,37 @@ def file_archive(uow: UnitOfWork, root: Path, now: dt.datetime) -> Filed:
         known=known,
         moved=moved,
         duplicates=len(walked.found) - len(paths_by_sha),
+        withheld=withheld,
         skipped=skipped,
     )
+
+
+def _withhold_refused(uow: UnitOfWork, check: PathCheck) -> int:
+    """Withhold every stored path that ``check`` refuses now.
+
+    A path stored before an identifier in it was registered must not stay stored. The
+    row keeps its bytes' hash and its status; its path becomes ``WITHHELD_PATH`` and
+    its issuer the mapped top-level directory (a nested issuer is part of the path, so
+    it is refused with it). The file itself, still at that path, is
+    counted in ``archive_skip`` by the same walk. Runs after the moves, so bytes found
+    at an adoptable path are followed there instead.
+    """
+    refused = [
+        (row.id, row.issuer)
+        for row in uow.execute(
+            select(document.c.id, document.c.path, document.c.issuer).where(
+                document.c.path != WITHHELD_PATH
+            )
+        )
+        if not check.allows(row.path)
+    ]
+    for document_row_id, issuer in refused:
+        uow.execute(
+            update(document)
+            .where(document.c.id == document_row_id)
+            .values(path=WITHHELD_PATH, issuer=issuer.split("/")[0])
+        )
+    return len(refused)
 
 
 # --- finance.document.file ------------------------------------------------------------
@@ -327,6 +386,8 @@ class FileOut(BaseModel):
     moved: Annotated[int, Tiered(P)]
     # Second and later paths holding bytes already found in this walk.
     duplicates: Annotated[int, Tiered(P)]
+    # Stored paths replaced by WITHHELD_PATH in this walk.
+    withheld: Annotated[int, Tiered(P)]
     skipped: Annotated[list[SkipCount], Tiered(P)]
 
 
@@ -340,6 +401,7 @@ def file_documents(ctx: FinanceContext, uow: UnitOfWork, _data: FileIn) -> FileO
         known=filed.known,
         moved=filed.moved,
         duplicates=filed.duplicates,
+        withheld=filed.withheld,
         skipped=[
             SkipCount(directory=directory, reason=reason, count=count)
             for directory, reason, count in filed.skipped

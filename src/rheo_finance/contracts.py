@@ -1,4 +1,5 @@
-"""Shared operation contracts: safety class, caller role and output-field tier.
+"""Shared operation contracts: safety class, caller role, output-field tier, and the
+event fields allowed to be restricted.
 
 ``SafetyClass`` and ``Role`` mirror rheoStream's enums. This module declares only the
 three classes its operations use: there is no FINANCIAL and no EXTERNAL class.
@@ -6,8 +7,11 @@ three classes its operations use: there is no FINANCIAL and no EXTERNAL class.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
+from typing import Final
 
 from pydantic import BaseModel
 
@@ -49,3 +53,10 @@ def field_tiers(model: type[BaseModel]) -> dict[str, Tier | None]:
             raise ValueError(f"{model.__name__}.{name} has more than one Tiered marker")
         tiers[name] = marks[0] if marks else None
     return tiers
+
+
+# Event data holds no restricted field (FR-55, AC-47a, AC-56), except the fields listed
+# here for their event type: ``{event type: field names}``. Each entry is reviewed in
+# the change that adds it; the guard test fails on a restricted event field not listed
+# here and on an entry naming no restricted field.
+EVENT_RESTRICTED_EXCEPTIONS: Final[Mapping[str, frozenset[str]]] = MappingProxyType({})

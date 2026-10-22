@@ -87,6 +87,25 @@ def skips(conn: Connection) -> list[tuple[str, str, int]]:
     return sorted((str(d), str(r), int(c)) for d, r, c in rows)
 
 
+def everything_stored(conn: Connection) -> list[str]:
+    """Every row of every table in schema ``finance``, as text, for asserting that a
+    value appears nowhere in the database."""
+    tables = conn.scalars(
+        text(
+            "SELECT table_name FROM information_schema.tables"
+            " WHERE table_schema = 'finance'"
+        )
+    ).all()
+    assert "document" in tables and "archive_skip" in tables
+    return [
+        str(row)
+        for table in tables
+        for row in conn.scalars(
+            text(f'SELECT CAST(t AS text) FROM finance."{table}" t')
+        )
+    ]
+
+
 def snapshot(archive: Path) -> dict[str, tuple[str, int, int]]:
     """Every entry under ``archive``: its sha256 (files), mtime and mode."""
     found: dict[str, tuple[str, int, int]] = {}
@@ -315,21 +334,11 @@ def test_an_identifier_bearing_path_is_skipped_counted_and_stored_nowhere(
     needles = {
         part for relative in SKIPPED for part in (relative, relative.split("/")[1])
     }
-    tables = owner_conn.scalars(
-        text(
-            "SELECT table_name FROM information_schema.tables"
-            " WHERE table_schema = 'finance'"
-        )
-    ).all()
-    assert "document" in tables and "archive_skip" in tables
-    stored = [
-        str(row)
-        for table in tables
-        for row in owner_conn.scalars(
-            text(f'SELECT CAST(t AS text) FROM finance."{table}" t')
-        )
+    haystacks = [
+        *everything_stored(owner_conn),
+        out.model_dump_json(),
+        *caplog.messages,
     ]
-    haystacks = [*stored, out.model_dump_json(), *caplog.messages]
     found = [needle for needle in needles if any(needle in hay for hay in haystacks)]
     assert found == []
 
@@ -389,6 +398,125 @@ def test_identifiers_in_the_manual_file_are_refused_before_stage_2_has_run(
     )
     assert "1234" not in stored and "pot" not in stored and "7777" not in stored
     assert "1234" not in out.model_dump_json()
+
+
+IDENTIFIERS_HEADER = ",".join(MANUAL_FILES[IDENTIFIERS_FILE])
+# Shapes of the identifiers file that a lenient read would silently lose rows of. Each
+# names three synthetic identifiers; a path carrying any of them is in the archive.
+MALFORMED_IDENTIFIERS_FILES: dict[str, str | bytes] = {
+    "headerless": (
+        "test-chequing,9991234,number,,\n"
+        "test-savings,9995678,number,,\n"
+        "test-other,9997777,number,,\n"
+    ),
+    "not_utf8": (
+        IDENTIFIERS_HEADER + "\n"
+        "test-chequing,9991234,number,,\n"
+        "test-savings,9995678,number,,\n"
+        "test-other,9997777,number,,\n"
+    ).encode()
+    + b"\xff\n",
+    "padded_header": (
+        "account, identifier, kind, valid_from, valid_to\n"
+        "test-chequing,9991234,number,,\n"
+        "test-savings,9995678,number,,\n"
+        "test-other,9997777,number,,\n"
+    ),
+    "unclosed_quote": (
+        IDENTIFIERS_HEADER + "\n"
+        "test-chequing,9991234,number,,\n"
+        '"test-savings,9995678,number,,\n'
+        "test-other,9997777,number,,\n"
+    ),
+    "line_break_in_a_cell": (
+        IDENTIFIERS_HEADER + "\n"
+        "test-chequing,9991234,number,,\n"
+        '"test-savings","9995678\n9997777",number,,\n'
+    ),
+}
+IDENTIFIER_PATHS = [
+    "vancity/statement-9991234.pdf",
+    "vancity/statement-9995678.pdf",
+    "mbna/9997777.pdf",
+]
+
+
+@pytest.mark.parametrize(
+    "body", MALFORMED_IDENTIFIERS_FILES.values(), ids=MALFORMED_IDENTIFIERS_FILES
+)
+def test_a_malformed_identifiers_file_refuses_the_walk_and_files_nothing(
+    owner_conn: Connection,
+    rolled_back_context: MakeContext,
+    archive: Path,
+    tmp_path: Path,
+    body: str | bytes,
+) -> None:
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    (manual / IDENTIFIERS_FILE).write_bytes(
+        body if isinstance(body, bytes) else body.encode()
+    )
+    for number, relative in enumerate([*IDENTIFIER_PATHS, "vancity/2024-01-31.pdf"]):
+        write_file(archive, relative, f"synthetic file {number}".encode())
+    assert owner_conn.scalar(select(func.count()).select_from(account_identifier)) == 0
+
+    with pytest.raises(DocumentRefused) as refused:
+        file_op(rolled_back_context, archive)
+
+    message = str(refused.value)
+    assert IDENTIFIERS_FILE in message and "fix the file" in message
+    assert document_count(owner_conn) == 0 and skips(owner_conn) == []
+    haystacks = [*everything_stored(owner_conn), message]
+    for needle in ("1234", "5678", "7777", str(tmp_path), str(archive)):
+        assert not any(needle in hay for hay in haystacks), needle
+
+
+def test_a_header_only_identifiers_file_lets_the_walk_proceed(
+    owner_conn: Connection,
+    rolled_back_context: MakeContext,
+    archive: Path,
+    tmp_path: Path,
+) -> None:
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    (manual / IDENTIFIERS_FILE).write_text(IDENTIFIERS_HEADER + "\n")
+    write_file(archive, "vancity/2024-01-31.pdf", b"%PDF synthetic")
+
+    out = file_op(rolled_back_context, archive)
+
+    assert out.registered == 1
+
+
+def test_an_invalid_row_in_a_well_formed_identifiers_file_still_refuses_its_path(
+    owner_conn: Connection,
+    rolled_back_context: MakeContext,
+    archive: Path,
+    tmp_path: Path,
+) -> None:
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    (manual / IDENTIFIERS_FILE).write_text(
+        IDENTIFIERS_HEADER + "\n"
+        "test-chequing,9991234,number,,\n"
+        "test-savings,9995678,number,not-a-date,\n"  # fails row validation
+    )
+    for number, relative in enumerate(
+        [
+            "vancity/statement-9991234.pdf",
+            "vancity/9995678.pdf",
+            "vancity/2024-01-31.pdf",
+        ]
+    ):
+        write_file(archive, relative, f"synthetic file {number}".encode())
+
+    out = file_op(rolled_back_context, archive)
+
+    assert (out.registered, [row[0] for row in documents(owner_conn)]) == (
+        1,
+        ["vancity/2024-01-31.pdf"],
+    )
+    assert skips(owner_conn) == [("vancity", "identifier_in_path", 2)]
+    assert "5678" not in " ".join(everything_stored(owner_conn))
 
 
 def test_an_unreadable_file_or_directory_is_counted_and_the_walk_goes_on(

@@ -2,7 +2,11 @@
 
 The identifiers the check refuses come from the manual identifiers file itself and
 from ``account_identifier``, so the walk never depends on derivation stage 2 having
-run first (a rebuild registers files before stage 2 loads the registry).
+run first (a rebuild registers files before stage 2 loads the registry). The file is
+read failing closed: one whose rows cannot all be trusted (a header that is not the
+expected one, a row that is not valid CSV, a cell holding a line break) refuses the
+whole walk, because an identifier the read lost would let a path carrying it be
+stored.
 
 The walk adopts the files under ``finance.paths.archive`` where they sit: it opens
 each one for reading only, to hash it, and never moves, renames or writes one. Every
@@ -62,7 +66,7 @@ from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.documents.issuers import Placement, place, skip_directory
 from rheo_finance.manual.accounts import IDENTIFIERS_FILE, AccountIdentifierRow
 from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
-from rheo_finance.manual.loader import load_csv
+from rheo_finance.manual.loader import INVALID_CSV, load_csv
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import account_identifier, archive_skip, document
@@ -104,7 +108,8 @@ _DATE_YEARS: Final = range(1900, 2101)
 
 
 class DocumentRefused(OperationError):
-    """The walk cannot run. Messages name the setting, never a path."""
+    """The walk cannot run. Messages name the setting or the manual file's name and
+    what to fix, never a path or a cell's value."""
 
 
 def document_id(sha256: str) -> uuid.UUID:
@@ -185,37 +190,67 @@ def _joined_runs(runs: list[str]) -> Iterator[str]:
             yield "".join(runs[start:end])
 
 
+def _identifiers_file_refused(line_no: int, what: str) -> DocumentRefused:
+    """The refusal for a malformed identifiers file: its name, the line and what is
+    wrong there, and the remedy. Never a cell's value or the file's path."""
+    return DocumentRefused(
+        f"{IDENTIFIERS_FILE} line {line_no}: {what}; nothing was filed, fix the file"
+        " first"
+    )
+
+
 def file_identifiers(data_dir: Path) -> set[str]:
     """The identifier text of every row of ``<data>/manual/account_identifiers.csv``
     whose kind is not ``internal``, read only.
 
     The rows ``load_csv`` validates, and the identifier cell of every other row too:
-    a row the registry rejects (a bad date, an unknown account) still names a real
-    identifier, and a path carrying it must not be stored. A missing file gives none.
+    a row the registry rejects (a bad date, an unknown account, too few cells) still
+    names a real identifier, and a path carrying it must not be stored. A missing
+    file or a header-only file gives none.
+
+    Fails closed. The file is refused with ``DocumentRefused`` when its first line
+    is not exactly the expected header, when ``load_csv`` reports a file-level error
+    or a row that is not valid CSV, or when any cell holds a line break: each of
+    those can lose an identifier row (a headerless file's first row would pass as
+    the header; an unclosed quote swallows every later row), and a lost identifier
+    lets a path carrying it be stored. The owner fixes the file; nothing is filed
+    until then.
     """
     path = data_dir / MANUAL_DIR_NAME / IDENTIFIERS_FILE
-    found = {
-        row.identifier
-        for row in load_csv(path, AccountIdentifierRow).rows
-        if row.kind != "internal"
-    }
+    columns = MANUAL_FILES[IDENTIFIERS_FILE]
+    loaded = load_csv(path, AccountIdentifierRow)
+    for error in sorted(loaded.errors):
+        if error.line_no == 1 or error.reason == INVALID_CSV:
+            raise _identifiers_file_refused(error.line_no, error.reason)
+    found = {row.identifier for row in loaded.rows if row.kind != "internal"}
     try:
-        raw = path.read_bytes()
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return found
-    text = raw.decode("utf-8-sig", errors="replace")
-    columns = list(MANUAL_FILES[IDENTIFIERS_FILE])
-    rows = csv.reader(io.StringIO(text, newline=""))
-    header = [cell.strip() for cell in next(rows, [])]
-    # A broken header still leaves the columns where the file's layout puts them.
-    names = header if "identifier" in header else columns
-    at = names.index("identifier")
-    kind_at = names.index("kind") if "kind" in names else None
+    # Exactly the header ``finance init-data`` writes: ``load_csv`` also accepts one
+    # with padded cells, but a file that is not what the tooling wrote is not trusted.
+    first_line = text.splitlines()[:1]
+    if first_line != [",".join(columns)]:
+        raise _identifiers_file_refused(1, f"the header is not: {','.join(columns)}")
 
-    def cell(cells: list[str], index: int | None) -> str:
-        return cells[index].strip() if index is not None and index < len(cells) else ""
+    at = columns.index("identifier")
+    kind_at = columns.index("kind")
 
-    for cells in rows:
+    def cell(cells: list[str], index: int) -> str:
+        return cells[index].strip() if index < len(cells) else ""
+
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    next(reader)  # the header, checked above
+    while True:
+        start = reader.line_num + 1
+        try:
+            cells = next(reader, None)
+        except csv.Error:
+            raise _identifiers_file_refused(start, INVALID_CSV) from None
+        if cells is None:
+            break
+        if any("\n" in each or "\r" in each for each in cells):
+            raise _identifiers_file_refused(start, "a cell holds a line break")
         identifier = cell(cells, at)
         if identifier and cell(cells, kind_at) != "internal":
             found.add(identifier)

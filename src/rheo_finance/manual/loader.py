@@ -33,6 +33,9 @@ from rheo_finance.manual.headers import MANUAL_FILES
 
 LIST_SEPARATOR: Final = ";"
 _ENCODING: Final = "utf-8-sig"  # a spreadsheet's byte-order mark is not a column
+# The reason of a row the CSV reader could not parse (a stray or unclosed quote). A
+# caller that must not trust what follows such a row checks errors for this reason.
+INVALID_CSV: Final = "the row is not valid CSV"
 
 
 @dataclass(frozen=True, order=True)
@@ -119,7 +122,7 @@ def load_csv[T: BaseModel](path: Path, row_model: type[T]) -> LoadResult[T]:
         try:
             cells = next(reader, None)
         except csv.Error:
-            result.errors.append(RowError(name, start, "the row is not valid CSV"))
+            result.errors.append(RowError(name, start, INVALID_CSV))
             if reader.line_num < start:
                 break  # no line consumed: nothing left to resume from
             # The reader resumes on the next line; an unclosed quote runs to the end.

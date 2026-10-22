@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
 import subprocess
 import sys
@@ -234,6 +235,9 @@ def manifest_listing(
 
 
 def check(staged_only: bool) -> tuple[list[Failure], int]:
+    # From a subdirectory, ls-files lists only that subtree with cwd-relative paths
+    # while diff --cached stays root-relative, so every git call runs from the root.
+    os.chdir(git("rev-parse", "--show-toplevel").decode().rstrip("\n"))
     entries = index_entries()
     targets = staged_paths() if staged_only else set(entries)
     checked = sorted(p for p in targets if p in entries and not is_claude_settings(p))

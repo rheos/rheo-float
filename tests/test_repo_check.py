@@ -70,10 +70,12 @@ class Repo:
             "fixture",
         )
 
-    def check(self, mode: str = "--staged") -> subprocess.CompletedProcess[str]:
+    def check(
+        self, mode: str = "--staged", subdir: str = ""
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCRIPT), mode],
-            cwd=self.root,
+            cwd=self.root / subdir,
             env=git_env(),
             capture_output=True,
             text=True,
@@ -284,6 +286,16 @@ def test_staged_mode_ignores_unstaged_working_tree_content(repo: Repo) -> None:
     (repo.root / "notes" / "export.txt").write_text(f"value {PLAIN_RUN}\n")
     (repo.root / "loose.pdf").write_text("untracked\n")
     assert_passes(repo.check())
+
+
+@pytest.mark.parametrize("mode", ["--staged", "--tracked"])
+def test_run_from_a_subdirectory_checks_the_whole_repo(repo: Repo, mode: str) -> None:
+    repo.stage("src/app.py", "x = 1\n")
+    repo.stage("docs/statement.pdf", "fake\n")
+    repo.stage(FIXTURE, "fake layout\n")  # not in any manifest
+    result = repo.check(mode, subdir="src")
+    assert_fails(result, "docs/statement.pdf", "statement-type")
+    assert_fails(result, FIXTURE, "MANIFEST")
 
 
 def test_clean_repo_passes_in_both_modes(repo: Repo) -> None:

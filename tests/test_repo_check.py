@@ -416,3 +416,48 @@ def test_a_mode_is_required(repo: Repo) -> None:
         check=False,
     )
     assert result.returncode == 2
+
+
+# This repo itself.
+
+REPO_ROOT = SCRIPT.parents[1]
+SYNTHETIC = "tests/fixtures/synthetic/"
+
+
+def test_this_repo_passes_the_tracked_check() -> None:
+    """Every tracked file passes, so every committed fixture is listed as synthetic."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--tracked"],
+        cwd=REPO_ROOT,
+        env=git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert_passes(result)
+
+
+def test_gitignore_covers_the_data_paths() -> None:
+    data = [
+        "data/statement.txt",
+        "statements/2026-01.pdf",
+        "exports/ledger.csv",
+        "mail/batch.jsonl",
+        "bank.qfx",
+        "bank.ofx",
+        "ledger.sqlite",
+        ".env",
+        "project-context.md",
+        "HANDOFF.md",
+    ]
+    kept = [f"{SYNTHETIC}layout.csv", f"{SYNTHETIC}layout.pdf"]
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", *data, *kept],
+        cwd=REPO_ROOT,
+        env=git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert sorted(result.stdout.split()) == sorted(data)

@@ -20,6 +20,17 @@ commit messages or PR text.
 - Money is `Decimal`, never float. CAD amounts are `numeric(20,2)`, rounded half-even per line.
 - `rheo_finance/cli/main.py` never imports sqlalchemy or `rheo_finance.storage`.
 
+## Code rules the guard tests enforce
+
+- `rheo_finance.render.emit` (and `emit_json`) is the only way text reaches a stream; no other
+  module prints or writes to stdout or stderr. U+2014 never gets through it.
+- A module that calls `operations.register` adds its dotted name to `catalogue.MODULES` in the
+  same change, so the invariant tests load every operation.
+- Migration revisions are frozen. Each revision file is pinned by the sha256 of its bytes in
+  `tests/guards/test_frozen_views.py`; a view's SQL lives in its revision's `VIEWS` dict and
+  must match what the code compiles. Change a rule by adding a revision, not by editing one.
+  Re-pin a hash only for a revision no database has run yet (an unmerged phase branch).
+
 ## Data lives outside the repo
 
 All real data lives in `$FINANCE_DATA_DIR`, default `~/Finances/`, kept outside iCloud: settings,
@@ -40,12 +51,15 @@ git config core.hooksPath .githooks
 ```
 
 The hook runs the check in `--staged` mode before every commit. Run it yourself over the whole
-tree with `uv run python scripts/repo_check.py --tracked`. It blocks statement-type files (pdf,
-csv, eml, dump, sql, qfx, ofx, jsonl, heic, jpg, json outside `src/rheo_finance/reference/`)
-outside `tests/fixtures/synthetic/`, any fixture not listed in that directory's `MANIFEST.toml`,
-and, in data-shaped files, digit runs of 8 or more that do not start with `999` (dates as
-`YYYYMMDD` and 13-digit millisecond epochs pass) and Luhn-valid card numbers. Never bypass it with
-`--no-verify`; fix the file instead.
+tree with `uv run python scripts/repo_check.py --tracked`. It reads content from the git index.
+It blocks statement-type files (pdf, csv, eml, dump, sql, qfx, ofx, jsonl, heic, jpg, jpeg, png,
+xlsx, xls, zip, json outside `src/rheo_finance/reference/`) outside `tests/fixtures/synthetic/`,
+any fixture not listed in that directory's `MANIFEST.toml`, and, in data-shaped files, digit runs
+of 8 or more that do not start with `999` (dates as `YYYYMMDD` and 13-digit millisecond epochs
+pass; fractional runs count too) and Luhn-valid card numbers, contiguous or in card groups with
+spaces or hyphens. Fixtures are text: a data file with NUL bytes that is not UTF-16 or UTF-32
+fails as unscannable. `.claude/*.json` is not scanned. Never bypass it with `--no-verify`; fix
+the file instead.
 
 ## Running the tests
 
@@ -54,6 +68,10 @@ uv sync
 uv run finance db up && uv run finance db init   # once per machine; both are idempotent
 uv run ruff check && uv run mypy --strict src tests scripts && uv run pytest -q
 ```
+
+`finance db init` sets up both databases (`finance` and `finance_test`); `--database NAME`
+(repeatable) limits it to the ones named, so a checkout that only runs the suite can pass
+`--database finance_test` and leave the live ledger alone.
 
 `docker-compose.yml` pins the compose project (`rheo-finance`), the container
 (`rheo-finance-postgres`) and the volume (`finance-pgdata`), so every checkout, the primary

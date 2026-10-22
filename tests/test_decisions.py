@@ -222,9 +222,7 @@ def test_the_merchant_key_on_the_decision_is_what_applies_it(
     )  # fmt: skip
     # Change the snapshot copy (inside the test's transaction, triggers off): the
     # decision still applies to its merchant and not to the snapshot's key.
-    owner_conn.execute(
-        text("ALTER TABLE finance.decision_target DISABLE TRIGGER USER")
-    )
+    owner_conn.execute(text("ALTER TABLE finance.decision_target DISABLE TRIGGER USER"))
     owner_conn.execute(
         text(
             "UPDATE finance.decision_target SET merchant_key = 'grocer 998'"

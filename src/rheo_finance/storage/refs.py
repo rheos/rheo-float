@@ -61,8 +61,8 @@ def _check_id(system: str, ref_id: str) -> None:
 
 
 def parse(text: str) -> Ref:
-    """Parse ``<system>.<type>:<id>``, refusing an id of the wrong shape for its system.
-    """
+    """Parse ``<system>.<type>:<id>``, refusing an id of the wrong shape for its
+    system."""
     head, colon, ref_id = text.partition(":")
     system, dot, ref_type = head.partition(".")
     names_ok = _NAME.fullmatch(system) and _NAME.fullmatch(ref_type)

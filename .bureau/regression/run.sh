@@ -72,15 +72,42 @@ run_gate repo-check \
 
 # Promoted Bureau fixtures (NN-<slug>.md, docs/conventions/regression-fixtures.md in
 # the Bureau) run after the gates, each command from the repo root with $ROOT exported.
+# Only fixtures in the git index (git ls-files, so staged ones count) are read or run;
+# an untracked file with a fixture name is reported as SKIP untracked and never read.
 # A fixture passes when its command exits 0; retired, slow and <none> ones are skipped.
 export ROOT
+if ! fixture_index=$(git -C "$ROOT" ls-files -- .bureau/regression/); then
+    echo "FAIL setup: git ls-files failed"
+    exit 2
+fi
+# repo_check refuses any other name under .bureau/, so these names hold no spaces or
+# glob characters. Two-digit fixtures run before three-digit ones.
+fixture_tracked=$(
+    printf '%s\n' "$fixture_index" | grep -E '^\.bureau/regression/[0-9]{2}-[A-Za-z0-9._-]+\.md$' || true
+    printf '%s\n' "$fixture_index" | grep -E '^\.bureau/regression/[0-9]{3}-[A-Za-z0-9._-]+\.md$' || true
+)
+
 for fixture in "$ROOT"/.bureau/regression/[0-9][0-9]-*.md \
     "$ROOT"/.bureau/regression/[0-9][0-9][0-9]-*.md; do
-    [ -f "$fixture" ] || continue
+    [ -e "$fixture" ] || [ -L "$fixture" ] || continue
+    fixture_rel=.bureau/regression/$(basename "$fixture")
+    if ! printf '%s\n' "$fixture_tracked" | grep -q -x -F -e "$fixture_rel"; then
+        echo "SKIP untracked $(basename "$fixture")"
+        gate_skip=$((gate_skip + 1))
+    fi
+done
+
+for fixture_rel in $fixture_tracked; do
+    fixture="$ROOT/$fixture_rel"
     fixture_name=$(basename "$fixture")
     if [ "$gate_fail" -gt 0 ]; then
         echo "SKIP not-run $fixture_name"
         gate_skip=$((gate_skip + 1))
+        continue
+    fi
+    if [ -L "$fixture" ] || [ ! -f "$fixture" ]; then
+        echo "FAIL not-a-regular-file $fixture_name"
+        gate_fail=$((gate_fail + 1))
         continue
     fi
     if grep -q -E '^(retired|slow):' "$fixture"; then

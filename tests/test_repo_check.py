@@ -457,8 +457,13 @@ def test_gitignore_covers_the_data_paths() -> None:
     data += [f"exports/file.{each}" for each in types]
     data += [".env", "project-context.md", "HANDOFF.md"]
     kept = [f"{SYNTHETIC}layout.{each}" for each in ("txt", *types)]
+    # The folder patterns are anchored to the repo root: a package or test directory
+    # named like a data folder (the Phase 6 `rheo_finance.packs` package) stays tracked.
+    code = [f"src/rheo_finance/{folder}/__init__.py" for folder in folders]
+    code += [f"tests/{folder}/test_x.py" for folder in folders]
+    code += ["src/rheo_finance/logs/x.py", "docs/data/notes.md"]
     result = subprocess.run(
-        ["git", "check-ignore", "--no-index", *data, *kept],
+        ["git", "check-ignore", "--no-index", *data, *kept, *code],
         cwd=REPO_ROOT,
         env=git_env(),
         capture_output=True,

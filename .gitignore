@@ -1,10 +1,12 @@
 # Financial data never enters this repo: statements, exports, ledger dumps, keys.
-data/
-dumps/
-packs/
-staging/
-mail-inbox/
-logs/
+# The data folders are anchored to the repo root (leading slash): an unanchored `packs/`
+# would also ignore source such as src/rheo_finance/packs/ and tests/packs/.
+/data/
+/dumps/
+/packs/
+/staging/
+/mail-inbox/
+/logs/
 *.pdf
 *.csv
 *.qfx

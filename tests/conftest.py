@@ -107,12 +107,14 @@ def scratch_database(test_database: DatabaseUnderTest) -> Iterator[DatabaseUnder
     owner = test_database.owner_url.set(database=name)
     reader = test_database.reader_url.set(database=name)
     try:
-        drop()
-        db.init(databases=(name,))
-        head = db.migrate(owner)
-    except db.DbError as exc:
-        pytest.fail(f"{TEST_REMEDY} (scratch database: {exc})", pytrace=False)
-    try:
+        # Setup sits inside the cleanup scope: a database init created before a
+        # failed migrate is dropped too.
+        try:
+            drop()
+            db.init(databases=(name,))
+            head = db.migrate(owner)
+        except db.DbError as exc:
+            pytest.fail(f"{TEST_REMEDY} (scratch database: {exc})", pytrace=False)
         yield DatabaseUnderTest(owner_url=owner, reader_url=reader, head=head)
     finally:
         drop()

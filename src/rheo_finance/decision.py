@@ -328,6 +328,18 @@ def _reversed(row: Table) -> ColumnElement[bool]:
     )
 
 
+def _bulk_reversed(uow: UnitOfWork, bulk_id: uuid.UUID) -> bool:
+    """Whether a ``reverse`` names bulk run ``bulk_id``."""
+    return bool(
+        uow.scalar(
+            select(func.count()).where(
+                decision.c.kind == K.REVERSE.value,
+                decision.c.reverses_bulk_id == bulk_id,
+            )
+        )
+    )
+
+
 def effective(
     uow: UnitOfWork,
     kind: DecisionKind | Iterable[DecisionKind],
@@ -474,6 +486,9 @@ def record(ctx: FinanceContext, uow: UnitOfWork, data: RecordIn) -> RecordOut:
         raise DecisionRefused(f"{data.kind.value}: recorded only by {elsewhere}")
     _check_columns(data)
     _check_about(uow, data)
+    if data.bulk_id is not None and _bulk_reversed(uow, data.bulk_id):
+        # It would be un-applied from the moment it was recorded.
+        raise DecisionRefused(f"{data.kind.value}: that bulk run is already reversed")
 
     snapshots = []
     for field, ref in _named_lines(data):
@@ -563,17 +578,12 @@ def reverse(ctx: FinanceContext, uow: UnitOfWork, data: ReverseIn) -> ReverseOut
             raise DecisionRefused("reverse: that decision is already reversed")
         undone = 1
     else:
+        assert data.bulk_id is not None  # checked above: exactly one is set
         in_bulk = decision.c.bulk_id == data.bulk_id
         total = uow.scalar(select(func.count()).where(in_bulk))
         if not total:
             raise DecisionRefused("reverse: no decision has that bulk id")
-        already = uow.scalar(
-            select(func.count()).where(
-                decision.c.kind == K.REVERSE.value,
-                decision.c.reverses_bulk_id == data.bulk_id,
-            )
-        )
-        if already:
+        if _bulk_reversed(uow, data.bulk_id):
             raise DecisionRefused("reverse: that bulk run is already reversed")
         undone = int(
             uow.scalar(select(func.count()).where(in_bulk, ~_reversed(decision))) or 0

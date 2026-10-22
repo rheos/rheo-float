@@ -425,6 +425,11 @@ def test_reverse_by_bulk_id_un_applies_every_decision_of_the_run(
         reverse(owner, decision_id=str(in_bulk[LINE_B].decision_id))
     with pytest.raises(DecisionRefused, match="no decision has that bulk id"):
         reverse(owner, bulk_id=str(uuid7(START)))
+    # A decision cannot join a reversed run: it would never apply.
+    with pytest.raises(DecisionRefused, match="bulk run is already reversed"):
+        record(owner, kind="category", target_ref=LINE_B, category="fuel",
+               bulk_id=str(bulk))  # fmt: skip
+    assert effective(owner_conn, K.CATEGORY, LINE_B) is None
 
 
 # --- the append-only trigger ----------------------------------------------------------

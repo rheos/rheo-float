@@ -1,26 +1,30 @@
 """Known periods of documents no parser reads, from ``document_periods.csv`` (FR-9).
 
 ``DocumentPeriodRow`` validates one row: the document's archive-relative path, the
-period it covers (end on or after start) and an optional note. The path is relative
+account it belongs to (an account slug), the period it covers (end on or after start)
+and an optional note. The path is relative
 (no leading ``/`` or ``~``), uses ``/``, and has no empty, ``.`` or ``..`` part; it is
-kept as written. ``build_document_periods`` rejects every row of a path given twice,
-since a document has one period.
+kept as written. ``build_document_periods`` rejects a row whose account is not in
+the loaded registry, and every row of a path given twice, since a document has one
+period.
 
 Nothing is stored here. The periods are held for derivation stage 6, where an
 ``unparsed`` or ``needs_manual_entry`` document with a known period makes the months
-it overlaps ``unparsed`` instead of leaving them silently ``missing``. The file has no
-account column: the account is the document's own, from its registration.
+it overlaps ``unparsed`` instead of leaving them silently ``missing``. The account is
+entered, not derived: such a document names no account of its own, and one issuer
+directory can hold several accounts.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Annotated, Final, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
-from rheo_finance.manual.accounts import Text
+from rheo_finance.manual.accounts import Slug, Text
 from rheo_finance.manual.loader import LoadResult, RowError, duplicate_lines
 
 DOCUMENT_PERIODS_FILE: Final = "document_periods.csv"
@@ -45,6 +49,7 @@ class DocumentPeriodRow(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     archive_path: ArchivePath
+    account: Slug
     period_start: dt.date
     period_end: dt.date
     note: Text | None = None
@@ -64,10 +69,19 @@ class DocumentPeriods:
     errors: tuple[RowError, ...]
 
 
-def build_document_periods(result: LoadResult[DocumentPeriodRow]) -> DocumentPeriods:
+def build_document_periods(
+    result: LoadResult[DocumentPeriodRow], account_slugs: Collection[str]
+) -> DocumentPeriods:
     numbered = result.numbered()
     repeated = duplicate_lines((line, row.archive_path) for line, row in numbered)
     errors = list(result.errors)
+    unknown = {line for line, row in numbered if row.account not in account_slugs}
+    errors.extend(
+        RowError(
+            DOCUMENT_PERIODS_FILE, line, "account: no loaded account has this slug"
+        )
+        for line in sorted(unknown)
+    )
     errors.extend(
         RowError(
             DOCUMENT_PERIODS_FILE,
@@ -76,5 +90,6 @@ def build_document_periods(result: LoadResult[DocumentPeriodRow]) -> DocumentPer
         )
         for line in sorted(repeated)
     )
-    periods = tuple(row for line, row in numbered if line not in repeated)
+    bad = repeated | unknown
+    periods = tuple(row for line, row in numbered if line not in bad)
     return DocumentPeriods(periods, tuple(sorted(set(errors))))

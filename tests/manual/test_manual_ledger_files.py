@@ -90,7 +90,7 @@ def test_header_only_files_load_as_empty(
     registry = load_accounts(uow, tmp_path)
 
     cash = load_cash_lines(uow, tmp_path, registry)
-    periods = load_document_periods(uow, tmp_path)
+    periods = load_document_periods(uow, tmp_path, registry)
     filed = load_filed_years(uow, tmp_path)
 
     assert (cash.lines, cash.errors) == ((), ())
@@ -188,11 +188,15 @@ def test_each_loader_rewrites_only_its_own_files_errors(
         ],
     )
     write(tmp_path, TRANSACTIONS_FILE, [",2024-03-05,0,CAD,Test market,"])
-    write(tmp_path, DOCUMENT_PERIODS_FILE, ["test/a.pdf,2024-02-01,2024-01-01,"])
+    write(
+        tmp_path,
+        DOCUMENT_PERIODS_FILE,
+        ["test/a.pdf,paid-outside,2024-02-01,2024-01-01,"],
+    )
     write(tmp_path, FILED_YEARS_FILE, ["not-a-year,,"])
 
     load_cash_lines(uow, tmp_path, registry)
-    load_document_periods(uow, tmp_path)
+    load_document_periods(uow, tmp_path, registry)
     load_filed_years(uow, tmp_path)
 
     assert [(f, n) for f, n, _ in errors(owner_conn)] == [
@@ -213,22 +217,32 @@ def test_document_periods_load_and_a_bad_row_is_reported_by_line(
         tmp_path,
         DOCUMENT_PERIODS_FILE,
         [
-            "test-issuer/2024-01 bill.jpg,2024-01-01,2024-01-31,typed in",  # 2: good
-            "test-issuer/b.pdf,2024-02-29,2024-02-01,",  # 3: end before start
-            "/abs/c.pdf,2024-01-01,2024-01-31,",  # 4: absolute
-            "test-issuer/../d.pdf,2024-01-01,2024-01-31,",  # 5: dot-dot part
-            "test-issuer/e.pdf,2024-01-01,2024-01-31,",  # 6: same path as 7
-            "test-issuer/e.pdf,2024-02-01,2024-02-29,",  # 7
-            "test-issuer/f.pdf,2024-03-01,,",  # 8: no end
-            "test-issuer/g.pdf,2024-04-01,2024-04-30,",  # 9: good
+            "test-issuer/2024-01 bill.jpg,test-sub,2024-01-01,2024-01-31,typed in",
+            "test-issuer/b.pdf,test-sub,2024-02-29,2024-02-01,",  # 3: end < start
+            "/abs/c.pdf,test-sub,2024-01-01,2024-01-31,",  # 4: absolute
+            "test-issuer/../d.pdf,test-sub,2024-01-01,2024-01-31,",  # 5: dot-dot
+            "test-issuer/e.pdf,test-sub,2024-01-01,2024-01-31,",  # 6: same as 7
+            "test-issuer/e.pdf,test-sub,2024-02-01,2024-02-29,",  # 7
+            "test-issuer/f.pdf,test-sub,2024-03-01,,",  # 8: no end
+            "test-issuer/g.pdf,,2024-04-01,2024-04-30,",  # 9: no account
+            "test-issuer/h.pdf,no-such-account,2024-04-01,2024-04-30,",  # 10
+            "test-issuer/i.pdf,paid-outside,2024-05-01,2024-05-31,",  # 11: good
         ],
     )
+    write(
+        tmp_path,
+        ACCOUNTS_FILE,
+        ["test-sub,Test sub-account,Test Bank,savings,CAD,monthly,,,,,,,,,"],
+    )
+    write(tmp_path, IDENTIFIERS_FILE, ["test-sub,9992,number,,"])
+    uow = UnitOfWork(owner_conn)
+    registry = load_accounts(uow, tmp_path)
 
-    periods = load_document_periods(UnitOfWork(owner_conn), tmp_path)
+    periods = load_document_periods(uow, tmp_path, registry)
 
-    assert [p.archive_path for p in periods.periods] == [
-        "test-issuer/2024-01 bill.jpg",
-        "test-issuer/g.pdf",
+    assert [(p.archive_path, p.account) for p in periods.periods] == [
+        ("test-issuer/2024-01 bill.jpg", "test-sub"),
+        ("test-issuer/i.pdf", "paid-outside"),
     ]
     first = periods.periods[0]
     assert (first.period_start, first.period_end, first.note) == (
@@ -236,7 +250,9 @@ def test_document_periods_load_and_a_bad_row_is_reported_by_line(
         dt.date(2024, 1, 31),
         "typed in",
     )
-    assert error_lines(owner_conn, DOCUMENT_PERIODS_FILE) == [3, 4, 5, 6, 7, 8]
+    assert error_lines(owner_conn, DOCUMENT_PERIODS_FILE) == [3, 4, 5, 6, 7, 8, 9, 10]
+    reasons = {line: reason for _, line, reason in errors(owner_conn)}
+    assert reasons[10] == "account: no loaded account has this slug"
 
 
 # --- filed_years.csv ------------------------------------------------------------------

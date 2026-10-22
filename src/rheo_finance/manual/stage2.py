@@ -7,8 +7,8 @@ Each loader rewrites the ``manual_entry_error`` rows of its own files and no oth
   registry rules (``manual.accounts``) into ``account`` and ``account_identifier``;
 - ``load_cash_lines``: ``transactions.csv``, checked against the loaded registry and
   held for stage 3 (``manual.cash_lines``);
-- ``load_document_periods``: ``document_periods.csv``, held for stage 6
-  (``manual.document_periods``);
+- ``load_document_periods``: ``document_periods.csv``, checked against the loaded
+  registry and held for stage 6 (``manual.document_periods``);
 - ``load_filed_years``: ``filed_years.csv`` into ``filed_year``
   (``manual.filed_years``).
 
@@ -146,10 +146,14 @@ def load_cash_lines(uow: UnitOfWork, data_dir: Path, registry: Registry) -> Cash
     return cash
 
 
-def load_document_periods(uow: UnitOfWork, data_dir: Path) -> DocumentPeriods:
-    """The ``document_periods.csv`` periods, for stage 6."""
+def load_document_periods(
+    uow: UnitOfWork, data_dir: Path, registry: Registry
+) -> DocumentPeriods:
+    """The ``document_periods.csv`` periods whose account is in ``registry``, for
+    stage 6."""
     periods = build_document_periods(
-        load_csv(data_dir / MANUAL_DIR_NAME / DOCUMENT_PERIODS_FILE, DocumentPeriodRow)
+        load_csv(data_dir / MANUAL_DIR_NAME / DOCUMENT_PERIODS_FILE, DocumentPeriodRow),
+        {row.slug for row in registry.accounts},
     )
     _rewrite_errors(uow, (DOCUMENT_PERIODS_FILE,), periods.errors)
     return periods

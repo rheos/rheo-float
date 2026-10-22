@@ -9,9 +9,11 @@ run. It never skips: a skipped database test passes vacuously.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from sqlalchemy import Connection, Engine, create_engine, text
@@ -19,7 +21,17 @@ from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
-from rheo_finance import db
+from rheo_finance import db, operations
+from rheo_finance.clock import FakeClock
+from rheo_finance.context import (
+    Databases,
+    FinanceContext,
+    FinancePaths,
+    LineSnapshot,
+    UnitOfWork,
+)
+from rheo_finance.contracts import Role
+from rheo_finance.settings import default_settings
 
 TEST_REMEDY = (
     "the test database is unreachable: run `uv run finance db up && uv run finance db"
@@ -90,3 +102,45 @@ def reader_engine(test_database: DatabaseUnderTest) -> Iterator[Engine]:
         pytest.fail(f"{TEST_REMEDY} (reader: {exc.orig})", pytrace=False)
     yield engine
     engine.dispose()
+
+
+def no_snapshot(_uow: UnitOfWork, _ref: str) -> LineSnapshot | None:
+    """The fixture snapshot provider: no line resolves."""
+    return None
+
+
+@pytest.fixture
+def test_databases(test_database: DatabaseUnderTest) -> Iterator[Databases]:
+    """The ``finance_test`` owner and reader DSNs, as ``dispatch`` opens them."""
+    databases = Databases(test_database.owner_url, test_database.reader_url)
+    yield databases
+    databases.dispose()
+
+
+@pytest.fixture
+def make_context(
+    test_databases: Databases, tmp_path: Path
+) -> Callable[[Role], FinanceContext]:
+    """A ``FinanceContext`` for a role over ``finance_test``, with a fake clock."""
+
+    def build(role: Role) -> FinanceContext:
+        return FinanceContext(
+            settings=default_settings(),
+            clock=FakeClock(dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)),
+            paths=FinancePaths(data=tmp_path),
+            role=role,
+            databases=test_databases,
+            snapshot_provider=no_snapshot,
+        )
+
+    return build
+
+
+@pytest.fixture
+def empty_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, operations.OperationSpec]:
+    """Swap ``operations.SPECS`` for an empty dict; the real one is restored after."""
+    fresh: dict[str, operations.OperationSpec] = {}
+    monkeypatch.setattr(operations, "SPECS", fresh)
+    return fresh

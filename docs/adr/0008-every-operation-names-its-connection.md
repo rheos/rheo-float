@@ -6,7 +6,7 @@ Date: 2026-10-22
 
 The ledger has two database roles: the owner role, which reads and writes everything, and a
 read-only reader role that sees only the `report_*` views, where restricted columns are masked.
-A household member gets read access through the `member` role. If an operation picks its
+Read-only callers, such as a Claude session monitoring the ledger, use the `member` role. If an operation picks its
 connection at runtime, or by command, it is easy to route a member call through the owner
 connection and leak restricted columns, or to give a READ operation the reader connection and have
 it fail later for want of a grant.

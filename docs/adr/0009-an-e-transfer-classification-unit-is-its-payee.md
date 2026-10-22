@@ -26,6 +26,6 @@ classified by rule or decision only.
 ## Consequences
 
 Unregistered one-off e-Transfers each need their own decision, which is a little more confirm work
-for the owner. Registering a payee later turns its future lines into one unit, while lines already
-decided keep their line-keyed decisions. The printed name never appears in a key, a report or a
-model prompt.
+for the owner. Adding a `payees.csv` row later groups that payee's lines into one unit on the next
+derive, without disturbing line-keyed answers: a line-keyed decision outranks its unit's. The
+printed name never appears in a key, a report or a model prompt.

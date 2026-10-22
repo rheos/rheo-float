@@ -19,8 +19,8 @@ that possible, in its own issue and PR: a hatchling `[build-system]` that packag
 only, the unused model client dropped, and the web-server dependencies moved to an `api` extra
 and also listed in the `dev` group, so a plain `uv sync` in that repo still installs them.
 
-The ledger imports only the statement and reference parsers, their error types, the PDF-to-text
-helper with its not-a-text-PDF error, and the money converter (`to_money`, `Decimal(str(v))`,
+The ledger imports only the bank statement parser and its parse error, the card reference parser,
+the PDF-to-text helper and its not-a-text-PDF error, and the money converter (`to_money`, `Decimal(str(v))`,
 exact for two-decimal values). It imports nothing from the monitor code or the model-based
 extractor: sending a statement that has a working parser to a model is forbidden. Each parsed
 account is matched to the account registry by its identifier, never by its printed name, since an

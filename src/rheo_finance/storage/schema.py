@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import (
     Boolean,
     Column,
+    Computed,
     Date,
     DateTime,
     ForeignKey,
@@ -416,4 +417,94 @@ event = Table(
 _tiers(
     event,
     {"id": P, "type": P, "subject_ref": P, "occurred_on": P, "data": P},
+)
+
+# --- the ledger lines (derived, stage 3; migration 0010) ------------------------------
+# The columns after ``fee_type`` mirror SPEC Data Models; stage 3 sets the identity,
+# date, amount and description ones and later stages fill the rest.
+
+txn = Table(
+    "txn",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("account_id", Uuid, _account_fk(), nullable=False),
+    Column("posting_date", Date, nullable=False),
+    Column("txn_date", Date),
+    Column("occurred_at", DateTime(timezone=True)),
+    Column("recognition_date", Date),
+    Column(
+        "tax_year", Integer, Computed("EXTRACT(YEAR FROM recognition_date)::integer")
+    ),
+    Column("amount", Numeric, nullable=False),
+    Column("currency", Text, nullable=False),
+    Column("asset_identifier", Text),
+    Column("cad_amount", Numeric(20, 2)),
+    Column("cad_source", Text),
+    Column("rate", Numeric),
+    Column("rate_date", Date),
+    Column("conversion_state", Text),
+    Column("description_norm", Text),
+    Column("merchant_key", Text),
+    Column("display_label", Text),
+    Column("counterparty", Text),
+    Column("party_id", Uuid),
+    Column("txid", Text),
+    Column("from_address", Text),
+    Column("to_address", Text),
+    Column("origin", Text, nullable=False),
+    Column("basis", Text),
+    Column("provisional", Boolean, nullable=False, server_default="false"),
+    Column("movement_kind", Text, nullable=False),
+    Column("transfer_like", Boolean, nullable=False, server_default="false"),
+    Column("hint_account_id", Uuid, _account_fk()),
+    Column("transfer_state", Text),
+    Column("pair_kind", Text),
+    Column("allocation_state", Text),
+    Column("exclusion", Text),
+    Column("orphan_candidate", Boolean, nullable=False, server_default="false"),
+    Column("category", Text),
+    Column("category_basis_ref", Text),
+    Column("category_basis_class", Text),
+    Column("tag", Text),
+    Column("business_unit", Text),
+    Column("business_pct", Numeric),
+    Column("tag_basis_ref", Text),
+    Column("tag_basis_class", Text),
+    Column("classification_state", Text, nullable=False, server_default="unclassified"),
+    Column("fee_type", Text),
+    Column("trade_ref", Text),
+)
+# SPEC marks asset_identifier internal and cad_source public; the tier guard restricts
+# every name shaped like an identifier or a CAD figure, so they are restricted here.
+_tiers(
+    txn,
+    {
+        "id": P, "account_id": P, "posting_date": P, "txn_date": P, "occurred_at": P,
+        "recognition_date": P, "tax_year": P, "amount": R, "currency": P,
+        "asset_identifier": R, "cad_amount": R, "cad_source": R, "rate": R,
+        "rate_date": P, "conversion_state": P, "description_norm": R,
+        "merchant_key": R, "display_label": Tier.INTERNAL, "counterparty": R,
+        "party_id": P, "txid": R, "from_address": R, "to_address": R, "origin": P,
+        "basis": P, "provisional": P, "movement_kind": P, "transfer_like": P,
+        "hint_account_id": P, "transfer_state": P, "pair_kind": P,
+        "allocation_state": P, "exclusion": P, "orphan_candidate": P, "category": P,
+        "category_basis_ref": P, "category_basis_class": P, "tag": P,
+        "business_unit": P, "business_pct": P, "tag_basis_ref": P,
+        "tag_basis_class": P, "classification_state": P, "fee_type": P,
+        "trade_ref": P,
+    },
+)  # fmt: skip
+
+txn_source = Table(
+    "txn_source",
+    metadata,
+    Column("txn_id", Uuid, ForeignKey("finance.txn.id"), nullable=False),
+    Column("document_line_id", Uuid, ForeignKey("finance.document_line.id")),
+    Column("manual_ref", Text),
+    Column("line_key_id", Uuid, nullable=False),
+    Column("role", Text, nullable=False),
+)
+_tiers(
+    txn_source,
+    {"txn_id": P, "document_line_id": P, "manual_ref": P, "line_key_id": P, "role": P},
 )

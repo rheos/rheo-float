@@ -9,29 +9,14 @@ from __future__ import annotations
 
 from rheo_finance import db, operations
 from rheo_finance.clock import SystemClock
-from rheo_finance.context import (
-    FinanceContext,
-    FinancePaths,
-    LineSnapshot,
-    SnapshotProvider,
-    UnitOfWork,
-)
+from rheo_finance.context import FinanceContext, FinancePaths, SnapshotProvider
 from rheo_finance.contracts import Role
+from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.settings import load_settings, settings_path
 
 
-def no_current_lines(_uow: UnitOfWork, _ref: str) -> LineSnapshot | None:
-    """No line resolves, so a line-keyed decision is refused rather than stored
-    without its snapshot.
-
-    shortcut: there is no line table yet; prompt 21 replaces this default with the
-    provider over ``txn``.
-    """
-    return None
-
-
 def build_context(
-    role: Role, *, snapshot_provider: SnapshotProvider = no_current_lines
+    role: Role, *, snapshot_provider: SnapshotProvider = txn_snapshot
 ) -> FinanceContext:
     data = db.data_dir()
     ctx = FinanceContext(

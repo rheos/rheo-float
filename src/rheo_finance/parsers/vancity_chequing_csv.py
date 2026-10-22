@@ -20,7 +20,8 @@ running balance. The export may list rows newest first; lines are kept oldest fi
   first, carrying the balance between them (the printed balance less the deposit).
 
 A file that is not this layout (another column count, a header row, a date or an amount
-that does not read, a row moving no money, rows out of date order) is ``NotRecognised``.
+that does not read, a row moving no money, rows out of date order, a CSV the reader
+cannot read, such as a cell over its size limit) is ``NotRecognised``.
 """
 
 from __future__ import annotations
@@ -92,7 +93,12 @@ def _amount(cell: str) -> Decimal | None:
 def _rows(text: str) -> dict[str, list[_Row]]:
     """The rows by account identifier, in file order."""
     by_account: dict[str, list[_Row]] = defaultdict(list)
-    for cells in csv.reader(io.StringIO(text)):
+    try:
+        # A cell over the reader's size limit raises csv.Error, not ValueError.
+        rows = list(csv.reader(io.StringIO(text)))
+    except csv.Error:
+        raise NotRecognised("not a Vancity chequing export") from None
+    for cells in rows:
         if not any(cell.strip() for cell in cells):
             continue
         if len(cells) != COLUMNS or not cells[0].strip():

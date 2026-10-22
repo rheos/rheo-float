@@ -113,6 +113,7 @@ RESTRICTED_SUFFIXES = (
 # Numeric columns that are not restricted, each with the reviewed reason.
 NUMERIC_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("decision", "business_pct"): "a business-use percentage, not an amount",
+    ("txn", "business_pct"): "a business-use percentage, not an amount",
 }
 # Decimal output fields that are not restricted ("<operation> <Model>.<path>").
 DECIMAL_OUTPUT_EXCEPTIONS: dict[str, str] = {}

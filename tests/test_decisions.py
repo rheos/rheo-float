@@ -32,6 +32,7 @@ from rheo_finance.decision import (
     DecisionRefused,
     MerchantKey,
 )
+from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.operations import RoleRefused, dispatch
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
@@ -778,4 +779,4 @@ def test_the_production_context_reads_db_env_and_opens_nothing(
     assert ctx.role is Role.OWNER
     assert ctx.paths.data == tmp_path
     assert ctx._databases is not None
-    assert ctx.snapshot_provider is composition.no_current_lines
+    assert ctx.snapshot_provider is txn_snapshot

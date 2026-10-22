@@ -15,6 +15,7 @@ run. It never skips: a skipped database test passes vacuously.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import secrets
 import threading
@@ -76,11 +77,70 @@ def _test_urls() -> tuple[URL, URL]:
     return urls
 
 
+CHAIN_STAMP = "migration chain sha256 "
+
+
+def migration_chain_digest() -> str:
+    """The sha256 over every revision file's name and bytes, in name order."""
+    digest = hashlib.sha256()
+    for path in sorted((db.MIGRATIONS_DIR / "versions").glob("*.py")):
+        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def _container_owned(owner: URL, reader: URL) -> bool:
+    """True when the test URLs are the ``db.env`` ones for their database: the local
+    container, whose superuser may drop and recreate it."""
+    name = owner.database or ""
+    try:
+        expected = (db.owner_url(name), db.reader_url(name))
+    except db.DbError:
+        return False
+    return tuple(
+        url.render_as_string(hide_password=False) for url in expected
+    ) == tuple(url.render_as_string(hide_password=False) for url in (owner, reader))
+
+
+def _chain_stamp(name: str) -> str:
+    return db.psql(
+        "SELECT coalesce(shobj_description(oid, 'pg_database'), '')"
+        f" FROM pg_database WHERE datname = '{name}';"
+    ).strip()
+
+
+def _fresh_test_database(owner: URL, reader: URL) -> None:
+    """Recreate the test database when it was migrated from other revision text.
+
+    Alembic records only the revision id, so a revision whose text changed before any
+    live database ran it (a re-pin on an unmerged branch) leaves ``finance_test`` with
+    the old schema under the new id. The database's comment holds the digest of the
+    chain that built it; when it differs, the database is dropped, set up as ``db
+    init`` does and migrated again. Only a ``*_test`` database in the local container
+    is ever dropped, never the live one. The drop uses FORCE, so a suite running at the
+    same moment from a checkout with another chain loses its connections. Test URLs
+    that name another server are migrated as they stand.
+    """
+    name = owner.database or ""
+    assert name.endswith("_test") and name != db.LIVE_DATABASE
+    assert db.DATABASE_NAME.fullmatch(name)
+    if not _container_owned(owner, reader):
+        return
+    expected = CHAIN_STAMP + migration_chain_digest()
+    if _chain_stamp(name) == expected:
+        return
+    db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')
+    db.init(databases=(name,))
+    db.migrate(owner)
+    db.psql(f"COMMENT ON DATABASE \"{name}\" IS '{expected}';")
+
+
 @pytest.fixture(scope="session")
 def test_database() -> DatabaseUnderTest:
-    """Migrate ``finance_test`` to head once for the whole session."""
+    """Migrate ``finance_test`` to head once for the whole session, recreating it
+    first when it was built from other revision text."""
     owner, reader = _test_urls()
     try:
+        _fresh_test_database(owner, reader)
         head = db.migrate(owner)
     except db.DbError as exc:
         pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)

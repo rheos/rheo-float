@@ -14,7 +14,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
-from rheo_finance import db
+from rheo_finance import db, init_data
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command", metavar="<command>", title="commands"
     )
     db.add_parser(commands)
+    init_data.add_parser(commands)
     return parser
 
 

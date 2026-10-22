@@ -367,6 +367,14 @@ def test_the_handler_refuses_a_spec_digest_other_than_the_current_one(
         dispatch("finance.sink.approve", payload, Role.OWNER, ctx=owner)
 
 
+def test_the_handler_refuses_a_missing_spec_digest_when_a_spec_exists(
+    owner: FinanceContext, provider: TicketSink, builder: TicketPreview
+) -> None:
+    payload = approval(get_preview(owner)) | {"spec_digest": None}
+    with pytest.raises(SinkRefused, match=CHANGED):
+        dispatch("finance.sink.approve", payload, Role.OWNER, ctx=owner)
+
+
 def test_approve_records_one_decision_and_the_sink_then_sends_once(
     cli_owner: FinanceContext,
     owner_conn: Connection,
@@ -500,6 +508,39 @@ def test_disable_needs_no_terminal_and_turns_the_sink_off(
         select(schema.sink_spec.c.spec_digest).where(schema.sink_spec.c.sink == SINK)
     )
     assert written == spec_digest(provider(UnitOfWork(owner_conn)))
+
+
+@pytest.mark.parametrize("failure", ["python", "sql"])
+def test_disable_lands_even_when_the_providers_spec_refresh_fails(
+    failure: str,
+    owner: FinanceContext,
+    owner_conn: Connection,
+    provider: TicketSink,
+    builder: TicketPreview,
+    sink_settings: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-65: the owner can disable at any time. A provider that raises, or one whose
+    SQL fails and would abort the transaction, cannot roll the disable back."""
+    sink_settings(mot=True)
+    dispatch(
+        "finance.sink.approve", approval(get_preview(owner)), Role.OWNER, ctx=owner
+    )
+    uow = UnitOfWork(owner_conn)
+    assert gate.is_enabled(uow, SINK)
+    fake_clock(owner).advance(dt.timedelta(minutes=1))
+
+    def broken(inner: UnitOfWork) -> SinkSpec:
+        if failure == "sql":
+            inner.execute(text("SELECT 1 / 0"))
+        raise RuntimeError("the provider failed")
+
+    monkeypatch.setitem(SINK_SPECS, SINK, broken)
+    out = dispatch("finance.sink.disable", {"sink": SINK}, Role.OWNER, ctx=owner)
+    assert isinstance(out, Recorded)
+    assert out.spec_refreshed is False
+    assert len(sink_decisions(owner_conn, "sink_disable")) == 1
+    assert gate.is_enabled(uow, SINK) is False  # the provider is not even asked
 
 
 # --- report_sink and finance.sink.state ----------------------------------------------

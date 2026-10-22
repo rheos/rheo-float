@@ -11,8 +11,11 @@
   ``cli.approve`` is its one caller, and it runs only in a terminal.
 - ``disable`` (MUTATE, owner only) records ``sink_disable``; it needs no terminal.
 
-Both writes also rewrite the derived ``sink_spec`` table, so ``report_sink`` is
-current right after them rather than after the next derive.
+Both writes also refresh the derived ``sink_spec`` table, so ``report_sink`` is
+current right after them rather than after the next derive. A disable is recorded
+first and refreshes only its sink's row, in a savepoint: a provider that fails cannot
+roll the disable back (FR-65, disable at any time); the output says when the refresh
+did not happen.
 
 The enabled setting is read from ``$FINANCE_DATA_DIR/settings.toml`` at each call, as
 the gate reads it, so what these report is what the gate sees. No operation here sets
@@ -35,7 +38,7 @@ from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.settings import SINKS, load_settings
 from rheo_finance.sinks.preview import PREVIEW_BUILDERS, PreviewItem, build_preview
 from rheo_finance.sinks.spec import current_spec, spec_digest
-from rheo_finance.sinks.store import write_sink_specs
+from rheo_finance.sinks.store import write_sink_spec, write_sink_specs
 from rheo_finance.storage.ids import uuid7
 from rheo_finance.storage.schema import decision, report_sink, report_sink_spec
 from rheo_finance.tier import Tier
@@ -120,6 +123,8 @@ class Recorded(BaseModel):
     decision_id: Annotated[uuid.UUID, Tiered(P)]
     sink: Annotated[str, Tiered(P)]
     setting_enabled: Annotated[bool, Tiered(P)]
+    # False when the sink_spec refresh failed; the next derive rewrites the row.
+    spec_refreshed: Annotated[bool, Tiered(P)] = True
 
 
 def _setting(sink: str) -> bool:
@@ -231,10 +236,21 @@ def approve(ctx: FinanceContext, uow: UnitOfWork, data: ApproveIn) -> Recorded:
 
 
 def disable(ctx: FinanceContext, uow: UnitOfWork, data: SinkIn) -> Recorded:
-    write_sink_specs(uow)
     decision_id = _write(ctx, uow, DecisionKind.SINK_DISABLE, {"sink": data.sink})
+    refreshed = True
+    try:
+        with uow.savepoint():
+            write_sink_spec(uow, data.sink)
+    except Exception:
+        # The disable stands whatever the provider does; the refresh is cosmetic
+        # (report_sink reads a disabled sink as not approved without it), and the
+        # output reports it rather than letting it vanish.
+        refreshed = False
     return Recorded(
-        decision_id=decision_id, sink=data.sink, setting_enabled=_setting(data.sink)
+        decision_id=decision_id,
+        sink=data.sink,
+        setting_enabled=_setting(data.sink),
+        spec_refreshed=refreshed,
     )
 
 

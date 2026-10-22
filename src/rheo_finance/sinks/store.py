@@ -3,8 +3,10 @@
 ``write_sink_specs`` replaces every row with one per registered provider: the spec's
 digest (the same ``spec_digest`` the gate computes) and its parts as public text, so a
 reader-side view can tell a stale approval without running code. Derive calls it as its
-last step, and ``finance.sink.approve`` and ``finance.sink.disable`` call it too, so
-``report_sink`` is current right after an approval. ``computed_at`` is the database's
+last step, and ``finance.sink.approve`` calls it too, so ``report_sink`` is current
+right after an approval. ``finance.sink.disable`` rewrites only its sink's row
+(``write_sink_spec``), after the disable is recorded and in a savepoint, so a failing
+provider can never undo a disable. ``computed_at`` is the database's
 transaction time and is left out of the ledger digest.
 """
 
@@ -28,6 +30,14 @@ def spec_row(spec: SinkSpec) -> dict[str, object]:
         "policy_version": spec.payload_policy_version,
         "data_inputs": "\n".join(f"{name}={value}" for name, value in spec.data_inputs),
     }
+
+
+def write_sink_spec(uow: UnitOfWork, sink: str) -> None:
+    """Rewrite ``sink``'s row alone: its provider's spec, or no row without one."""
+    spec = current_spec(uow, sink)
+    uow.execute(delete(sink_spec).where(sink_spec.c.sink == sink))
+    if spec is not None:
+        uow.execute(insert(sink_spec).values(**spec_row(spec)))
 
 
 def write_sink_specs(uow: UnitOfWork) -> None:

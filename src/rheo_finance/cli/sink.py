@@ -102,7 +102,13 @@ def _cmd_disable(args: argparse.Namespace) -> int:
                 f"{label}: disabled; the next tick sends nothing to {args.sink}.",
                 f"Recorded as decision {out.decision_id}.",
                 f"Turning it on again takes `finance sink approve {args.sink}`.",
-            ]
+            ],
+            []
+            if out.spec_refreshed
+            else [
+                "The sink's spec row was not refreshed (its provider failed);"
+                " the next derive rewrites it."
+            ],
         )
     )
     return 0

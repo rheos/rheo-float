@@ -50,14 +50,16 @@ def enabled_digest(uow: UnitOfWork, sink: str) -> str | None:
         return None
     if not load_settings().sink_enabled_setting(sink):
         return None
-    spec = current_spec(uow, sink)
-    if spec is None:
-        return None
+    # The decision before the spec: a disabled sink never runs its provider, so a
+    # provider that fails cannot keep a disable from reading as disabled.
     newest = _newest_sink_decision(uow, sink)
     if newest is None:
         return None
     kind, approved_digest, reversed_ = newest
     if kind != DecisionKind.SINK_APPROVE.value or reversed_:
+        return None
+    spec = current_spec(uow, sink)
+    if spec is None:
         return None
     digest = spec_digest(spec)
     return digest if approved_digest == digest else None

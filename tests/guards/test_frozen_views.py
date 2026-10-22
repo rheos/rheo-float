@@ -1,15 +1,21 @@
-"""Views live in frozen SQL in their revisions, and the code still compiles to it.
+"""Revisions are frozen, views live in frozen SQL in them, and the code still compiles
+to that SQL.
+
+Every revision file is pinned by the sha256 of its bytes in ``PINNED``. Editing a
+revision a database may already have run fails here. A deliberate edit before the
+revision is applied anywhere (a review fix on an unmerged phase branch, say) re-pins
+its hash in the same change; a new revision adds its pin.
 
 A revision that creates or recreates a view holds its body in a module-level ``VIEWS``
 dict. For every view a code module compiles (``sinks.views.VIEW_SELECTS``), the newest
 revision's body must equal what the code compiles to now, whitespace aside. So a rule
 changed in code, ``reversed_clause`` included, fails here until a new revision
-recreates the view with the new body; and a revision can never change under a
-database that already ran it.
+recreates the view with the new body.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 from types import ModuleType
@@ -18,6 +24,21 @@ from rheo_finance import migrations
 from rheo_finance.sinks.views import VIEW_SELECTS, view_sql
 
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
+
+PINNED = {
+    "0001_finance_schema.py": (
+        "0f3e7fdad37e31b8efbfade234d6c3d2bf44d9db10fae40d43b56e2a33e88f4d"
+    ),
+    "0002_decisions.py": (
+        "d98e325011730c9aac5f5ca10c4f140bff8c552a020d17e7ee26840a8d99973f"
+    ),
+    "0003_sink_spec.py": (
+        "edf559eb46725a3d1f0e388582537b2382211affff6baeab42757fa9a239e385"
+    ),
+    "0004_sink_views.py": (
+        "570690ba75b1777b1c91cb4d4c5144de9206cbcaafc1dfca8405c3ee816bed76"
+    ),
+}
 
 
 def _load(path: Path) -> ModuleType:
@@ -73,3 +94,16 @@ def test_no_revision_imports_application_code() -> None:
         source = path.read_text(encoding="utf-8")
         assert "from rheo_finance" not in source, path.name
         assert "import rheo_finance" not in source, path.name
+
+
+def test_every_revision_file_is_pinned_and_unchanged() -> None:
+    found = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(VERSIONS.glob("[0-9]*.py"))
+    }
+    assert set(found) == set(PINNED), "pin every revision file, and only those"
+    changed = sorted(name for name, digest in found.items() if PINNED[name] != digest)
+    assert changed == [], (
+        "a revision file changed; a database that ran it will not see the edit."
+        " Add a new revision instead, or re-pin only if it was never applied."
+    )

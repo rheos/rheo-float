@@ -10,7 +10,8 @@ transaction itself.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -53,9 +54,10 @@ _Params = Mapping[str, Any] | Sequence[Mapping[str, Any]]
 class UnitOfWork:
     """The one transaction ``dispatch`` opened for an operation, as a handler sees it.
 
-    It offers ``execute``, ``scalar`` and ``scalars`` on that transaction's connection
-    and nothing else, so a handler has no ``commit``, ``rollback`` or ``close`` to end
-    the transaction with: ending it is dispatch's job. A ``COMMIT`` sent as SQL cannot
+    It offers ``execute``, ``scalar`` and ``scalars`` on that transaction's connection,
+    and ``savepoint`` for a step whose failure must not undo the rest, and nothing
+    else, so a handler has no ``commit``, ``rollback`` or ``close`` to end the
+    transaction with: ending it is dispatch's job. A ``COMMIT`` sent as SQL cannot
     be stopped from here; dispatch detects it and raises.
     """
 
@@ -78,6 +80,18 @@ class UnitOfWork:
         self, statement: Executable, parameters: _Params | None = None
     ) -> ScalarResult[Any]:
         return self._connection.scalars(statement, parameters)
+
+    @contextmanager
+    def savepoint(self) -> Iterator[None]:
+        """Run a block in a savepoint: an error inside rolls back only the block, and
+        is re-raised; the transaction around it stays open either way."""
+        nested = self._connection.begin_nested()
+        try:
+            yield
+        except BaseException:
+            nested.rollback()
+            raise
+        nested.commit()
 
 
 # A line reference to its snapshot, or None when no current line has that reference.

@@ -11,7 +11,11 @@ either, or it would reach them through it. The scan reads every module's source:
 
 One step further down: the operation name ``finance.sink.approve`` (what a dispatch
 call takes) and the handler ``sinks.ops.approve`` appear only in ``cli.approve`` (the
-caller) and ``sinks.ops`` (where it is defined and registered).
+caller) and ``sinks.ops`` (where it is defined and registered); inside ``sinks.ops``
+the handler is named only as the approve spec's ``handler``. And the kind
+``sink_approve`` (a string holding it, or ``SINK_APPROVE``) appears, outside
+docstrings, only in ``sinks.ops`` (the one writer) and the modules allowed below, so no
+other module can insert an approval row raw.
 """
 
 from __future__ import annotations
@@ -223,3 +227,131 @@ def test_cli_main_really_imports_approve() -> None:
     # The control: the scan finds the one importer that is allowed.
     path = PACKAGE / "cli" / "main.py"
     assert "rheo_finance.cli.approve" in imported_names(MAIN, path)
+
+
+# --- the sink_approve kind and the approve handler -----------------------------------
+
+KIND = "sink_approve"
+# Who may name the kind, and why. Everyone else is refused, readers included.
+KIND_ALLOWED = {
+    OPS: "the one writer of sink_approve rows",
+    "rheo_finance.decision": "the kind enum, its column matrix and record's refusal",
+    "rheo_finance.sinks.gate": "reads the newest sink decision's kind",
+    "rheo_finance.sinks.views": "the report_sink select compares the kind",
+    "rheo_finance.migrations.versions.0002_decisions": "the frozen kind CHECK",
+    "rheo_finance.migrations.versions.0004_sink_views": "the frozen view SQL",
+}
+
+
+def _docstrings(tree: ast.Module) -> set[int]:
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                found.add(id(body[0].value))
+    return found
+
+
+def names_the_kind(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docs = _docstrings(tree)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docs
+            and KIND in node.value
+        ):
+            return True
+        if (isinstance(node, ast.Attribute) and node.attr == KIND.upper()) or (
+            isinstance(node, ast.Name) and node.id == KIND.upper()
+        ):
+            return True
+    return False
+
+
+def test_only_the_allowed_modules_name_the_sink_approve_kind() -> None:
+    naming = {module for module, path in _modules() if names_the_kind(path)}
+    assert naming - set(KIND_ALLOWED) == set()
+    # The control: the writer itself is found, so the scan is not blind.
+    assert OPS in naming
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "insert(decision).values(kind='sink_approve', sink='mot')\n",
+        "insert(decision).values(kind=DecisionKind.SINK_APPROVE.value)\n",
+        "from rheo_finance.decision import K\nK.SINK_APPROVE\n",
+        'uow.execute(text("INSERT INTO finance.decision (kind) VALUES'
+        " ('sink_approve')\"))\n",
+    ],
+)
+def test_the_kind_scan_catches_each_form(source: str, tmp_path: Path) -> None:
+    path = tmp_path / "x.py"
+    path.write_text(source, encoding="utf-8")
+    assert names_the_kind(path)
+
+
+def test_the_kind_scan_ignores_docstrings(tmp_path: Path) -> None:
+    path = tmp_path / "x.py"
+    path.write_text('"""Mentions sink_approve."""\n', encoding="utf-8")
+    assert not names_the_kind(path)
+
+
+def _handler_uses(tree: ast.Module) -> list[ast.Name]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and node.id == "approve"
+        and isinstance(node.ctx, ast.Load)
+    ]
+
+
+def _approve_spec_handlers(tree: ast.Module) -> list[ast.expr]:
+    """The ``handler=`` value of each ``OperationSpec(name="finance.sink.approve")``."""
+    found: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "OperationSpec"
+        ):
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            name = keywords.get("name")
+            if (
+                isinstance(name, ast.Constant)
+                and name.value == APPROVE_OPERATION
+                and "handler" in keywords
+            ):
+                found.append(keywords["handler"])
+    return found
+
+
+def test_inside_sinks_ops_the_approve_handler_is_named_only_by_its_spec() -> None:
+    path = PACKAGE / "sinks" / "ops.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    uses = _handler_uses(tree)
+    handlers = _approve_spec_handlers(tree)
+    assert len(handlers) == 1
+    assert [id(node) for node in uses] == [id(node) for node in handlers]
+
+
+def test_the_handler_scan_finds_a_second_caller(tmp_path: Path) -> None:
+    source = (
+        "def approve(ctx, uow, data): ...\n"
+        "def tick(ctx, uow): approve(ctx, uow, None)\n"
+        "register(OperationSpec(name='finance.sink.approve', handler=approve))\n"
+    )
+    tree = ast.parse(source)
+    assert len(_handler_uses(tree)) == 2
+    assert len(_approve_spec_handlers(tree)) == 1

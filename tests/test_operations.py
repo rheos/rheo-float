@@ -22,6 +22,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import DataError
 
 from rheo_finance.context import ConnectionName, FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass
@@ -312,15 +313,30 @@ def test_a_handler_cannot_commit_through_its_unit_of_work(
     assert probe_rows(owner_engine, probe_table) == 0
 
 
-def test_a_unit_of_work_offers_three_methods_of_its_own(
+def test_a_unit_of_work_offers_four_methods_of_its_own(
     owner_conn: Connection,
 ) -> None:
     uow = UnitOfWork(owner_conn)
     public = sorted(name for name in dir(uow) if not name.startswith("_"))
-    assert public == ["execute", "scalar", "scalars"]
+    assert public == ["execute", "savepoint", "scalar", "scalars"]
     for name in public:
         # Bound to the unit of work, not to the raw connection behind it.
         assert getattr(uow, name).__self__ is uow, name
+    assert uow.scalar(text("SELECT 1")) == 1
+
+
+def test_a_savepoint_undoes_only_its_block_and_hands_out_nothing(
+    owner_conn: Connection,
+) -> None:
+    # The block gets no transaction object to commit or roll back, and a failure in
+    # it leaves the transaction around it open and usable.
+    uow = UnitOfWork(owner_conn)
+    with pytest.raises(DataError), uow.savepoint() as handed:
+        assert handed is None
+        uow.execute(text("SELECT 1 / 0"))
+    with pytest.raises(RuntimeError), uow.savepoint():
+        raise RuntimeError("a failure in plain code")
+    assert owner_conn.in_transaction()
     assert uow.scalar(text("SELECT 1")) == 1
 
 

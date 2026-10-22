@@ -298,7 +298,7 @@ def assert_no_key(exc: BaseException) -> None:
 
 def assert_unchained(exc: BaseException) -> None:
     """The urllib error, whose text the client does not control, is not attached."""
-    assert exc.__cause__ is None and exc.__suppress_context__
+    assert exc.__cause__ is None and exc.__context__ is None
 
 
 def test_a_key_never_appears_in_a_transport_error(
@@ -361,3 +361,26 @@ def test_the_key_reaches_the_stub_as_sent(
     )
     (seen,) = stub_server.requests
     assert seen.headers["X-Api-Key"] == KEY
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Authorization": f"Bearer {KEY}\n"},  # a value http.client refuses
+        {f"X-{KEY}\n": "1"},  # a name it refuses
+    ],
+)
+def test_an_invalid_header_is_a_request_failure_without_the_key(
+    headers: dict[str, str],
+    enabled: None,
+    uow: UnitOfWork,
+    provider: StubSink,
+    stub_server: StubServer,
+) -> None:
+    with pytest.raises(RequestFailed) as caught:
+        client(uow, provider).request(
+            "GET", stub_server.url("/series/FXUSDCAD"), headers=headers
+        )
+    assert_no_key(caught.value)
+    assert_unchained(caught.value)
+    assert stub_server.requests == []

@@ -14,7 +14,8 @@ at another origin raises ``HostRefused``; one on the same origin is returned to 
 caller as it came. Any other status is returned too.
 
 Errors never carry a header value or a query value: the client builds its own
-messages, scrubs any text it quotes, and raises without chaining the urllib error.
+messages, scrubs any text it quotes, and raises with no urllib error attached, as
+neither ``__cause__`` nor ``__context__``.
 """
 
 from __future__ import annotations
@@ -236,16 +237,23 @@ class Client:
         outgoing = urllib.request.Request(
             url, data=body, headers=headers, method=method
         )
+        # The failure is raised after the except block, so the urllib error (whose
+        # text may quote a header value) is not even kept as __context__.
+        failure: str | None = None
         try:
             with self._opener.open(outgoing, timeout=self.timeout) as raw:
                 status = int(raw.status)
                 received = tuple((k, v) for k, v in raw.headers.items())
                 content = raw.read()
+        except ValueError:
+            # http.client refuses a bad header name or value (a newline in it, say)
+            # before it connects, and its message quotes the value: say no more.
+            failure = "a header name or value is invalid"
         except (OSError, http.client.HTTPException, urllib.error.URLError) as exc:
             detail = _scrub(str(getattr(exc, "reason", exc)), secrets)[:_ERROR_MAX]
-            raise RequestFailed(
-                f"{where} failed: {type(exc).__name__}: {detail}".rstrip(": ")
-            ) from None
+            failure = f"{type(exc).__name__}: {detail}".rstrip(": ")
+        if failure is not None:
+            raise RequestFailed(f"{where} failed: {failure}")
         response = Response(status=status, headers=received, body=content)
         if 300 <= status < 400:
             location = response.header("Location")

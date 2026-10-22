@@ -321,8 +321,11 @@ class MerchantKey:
     key: str
 
 
-def _reversed(row: Table) -> ColumnElement[bool]:
-    """True when a ``reverse`` names ``row`` or the bulk run that recorded it."""
+def reversed_clause(row: Table) -> ColumnElement[bool]:
+    """True when a ``reverse`` names ``row`` or the bulk run that recorded it.
+
+    The one statement of what reversed means; ``effective``, ``reverse`` and the sink
+    gate all build on it."""
     rev = decision.alias("rev")
     return exists().where(
         rev.c.kind == K.REVERSE.value,
@@ -379,7 +382,9 @@ def effective(
         match = row.c[columns.pop()] == target
     statement = (
         select(row)
-        .where(row.c.kind.in_([each.value for each in kinds]), match, ~_reversed(row))
+        .where(
+            row.c.kind.in_([each.value for each in kinds]), match, ~reversed_clause(row)
+        )
         .order_by(row.c.decided_at.desc(), row.c.id.desc())
         .limit(1)
     )
@@ -561,9 +566,9 @@ def reverse(ctx: FinanceContext, uow: UnitOfWork, data: ReverseIn) -> ReverseOut
     if data.decision_id is not None:
         found = (
             uow.execute(
-                select(decision.c.kind, _reversed(decision).label("reversed")).where(
-                    decision.c.id == data.decision_id
-                )
+                select(
+                    decision.c.kind, reversed_clause(decision).label("reversed")
+                ).where(decision.c.id == data.decision_id)
             )
             .mappings()
             .first()
@@ -592,7 +597,8 @@ def reverse(ctx: FinanceContext, uow: UnitOfWork, data: ReverseIn) -> ReverseOut
         if _bulk_reversed(uow, data.bulk_id):
             raise DecisionRefused("reverse: that bulk run is already reversed")
         undone = int(
-            uow.scalar(select(func.count()).where(in_bulk, ~_reversed(decision))) or 0
+            uow.scalar(select(func.count()).where(in_bulk, ~reversed_clause(decision)))
+            or 0
         )
 
     now = ctx.clock.now_utc()

@@ -21,10 +21,10 @@ raise before any socket. Their messages name the sink, never a key or header val
 
 from __future__ import annotations
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import select
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.decision import DecisionKind
+from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.settings import SINKS, load_settings
 from rheo_finance.sinks.spec import current_spec, spec_digest
 from rheo_finance.storage.schema import decision
@@ -68,19 +68,12 @@ def _newest_sink_decision(
 ) -> tuple[str, str | None, bool] | None:
     """(kind, spec_digest, reversed) of the newest sink decision for ``sink``,
     reversed or not; newest is by ``decided_at``, then id."""
-    rev = decision.alias("rev")
-    reversed_ = exists().where(
-        rev.c.kind == DecisionKind.REVERSE.value,
-        or_(
-            rev.c.reverses_id == decision.c.id,
-            and_(
-                decision.c.bulk_id.is_not(None),
-                rev.c.reverses_bulk_id == decision.c.bulk_id,
-            ),
-        ),
-    )
     row = uow.execute(
-        select(decision.c.kind, decision.c.spec_digest, reversed_.label("reversed"))
+        select(
+            decision.c.kind,
+            decision.c.spec_digest,
+            reversed_clause(decision).label("reversed"),
+        )
         .where(
             decision.c.kind.in_([kind.value for kind in SINK_DECISIONS]),
             decision.c.sink == sink,

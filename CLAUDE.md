@@ -51,8 +51,13 @@ and, in data-shaped files, digit runs of 8 or more that do not start with `999` 
 
 ```sh
 uv sync
-uv run ruff check && uv run mypy --strict src tests && uv run pytest -q
+uv run finance db up && uv run finance db init   # once per machine; both are idempotent
+uv run ruff check && uv run mypy --strict src tests scripts && uv run pytest -q
 ```
+
+`docker-compose.yml` pins the compose project (`rheo-finance`), the container
+(`rheo-finance-postgres`) and the volume (`finance-pgdata`), so every checkout, the primary
+clone and any worktree alike, shares one container and one database on 127.0.0.1:55440.
 
 That full line is the phase-gate check. Database tests run against the local Postgres container,
 database `finance_test`, each test inside a rolled-back transaction, with a fake clock. Tests make

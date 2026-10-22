@@ -1,0 +1,92 @@
+"""Database fixtures: ``finance_test`` migrated once per session, a rolled-back owner
+connection per test, and a reader engine.
+
+DSNs come from ``FINANCE_TEST_OWNER_DSN`` and ``FINANCE_TEST_READER_DSN`` when both are
+set, else from ``$FINANCE_DATA_DIR/db.env`` re-targeted at ``finance_test``. A database
+that cannot be reached fails every test that needs it, loudly and with the command to
+run. It never skips: a skipped database test passes vacuously.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+from dataclasses import dataclass
+
+import pytest
+from sqlalchemy import Connection, Engine, create_engine, text
+from sqlalchemy.engine import URL
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
+
+from rheo_finance import db
+
+TEST_REMEDY = (
+    "the test database is unreachable: run `uv run finance db up && uv run finance db"
+    " init`, or set FINANCE_TEST_OWNER_DSN and FINANCE_TEST_READER_DSN"
+)
+
+
+@dataclass(frozen=True)
+class DatabaseUnderTest:
+    owner_url: URL
+    reader_url: URL
+    head: str
+
+
+def _test_urls() -> tuple[URL, URL]:
+    owner = os.environ.get("FINANCE_TEST_OWNER_DSN", "").strip()
+    reader = os.environ.get("FINANCE_TEST_READER_DSN", "").strip()
+    try:
+        if owner and reader:
+            urls = (db.to_sqlalchemy_url(owner), db.to_sqlalchemy_url(reader))
+        else:
+            urls = (db.owner_url(db.TEST_DATABASE), db.reader_url(db.TEST_DATABASE))
+    except db.DbError as exc:
+        pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)
+    for url in urls:
+        # Tests migrate and write; never let them aim at the live ledger.
+        if not (url.database or "").endswith("_test"):
+            pytest.fail("test DSNs must name a database ending in _test", pytrace=False)
+    return urls
+
+
+@pytest.fixture(scope="session")
+def test_database() -> DatabaseUnderTest:
+    """Migrate ``finance_test`` to head once for the whole session."""
+    owner, reader = _test_urls()
+    try:
+        head = db.migrate(owner)
+    except db.DbError as exc:
+        pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)
+    return DatabaseUnderTest(owner_url=owner, reader_url=reader, head=head)
+
+
+@pytest.fixture(scope="session")
+def owner_engine(test_database: DatabaseUnderTest) -> Iterator[Engine]:
+    engine = create_engine(test_database.owner_url, poolclass=NullPool)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def owner_conn(owner_engine: Engine) -> Iterator[Connection]:
+    """An owner connection inside a transaction that is rolled back after the test."""
+    with owner_engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            yield connection
+        finally:
+            transaction.rollback()
+
+
+@pytest.fixture(scope="session")
+def reader_engine(test_database: DatabaseUnderTest) -> Iterator[Engine]:
+    engine = create_engine(test_database.reader_url, poolclass=NullPool)
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except OperationalError as exc:
+        pytest.fail(f"{TEST_REMEDY} (reader: {exc.orig})", pytrace=False)
+    yield engine
+    engine.dispose()

@@ -14,6 +14,8 @@ import argparse
 import sys
 from collections.abc import Callable
 
+from rheo_finance import db
+
 Handler = Callable[[argparse.Namespace], int]
 
 HEADLINE = "finance: Float, a local-first personal finance ledger."
@@ -24,7 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="finance",
         description=HEADLINE,
     )
-    parser.add_subparsers(dest="command", metavar="<command>", title="commands")
+    commands = parser.add_subparsers(
+        dest="command", metavar="<command>", title="commands"
+    )
+    db.add_parser(commands)
     return parser
 
 

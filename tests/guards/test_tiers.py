@@ -56,6 +56,7 @@ def test_every_metadata_column_has_a_tier() -> None:
 def test_the_metadata_mirrors_every_table_in_the_database(
     owner_conn: Connection,
 ) -> None:
+    catalogue.load_all()  # as above: a table-defining module is loaded run alone too
     in_database = {
         (table, column)
         for table, column in owner_conn.execute(

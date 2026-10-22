@@ -31,7 +31,7 @@ from rheo_finance.manual.headers import MANUAL_FILES
 from rheo_finance.manual.stage2 import load_accounts
 from rheo_finance.operations import RoleRefused, dispatch
 from rheo_finance.settings import parse_settings
-from rheo_finance.storage.schema import archive_skip, document
+from rheo_finance.storage.schema import account_identifier, archive_skip, document
 
 MakeContext = Callable[[Role], FinanceContext]
 OPERATION = "finance.document.file"
@@ -68,7 +68,7 @@ def documents(conn: Connection) -> list[tuple[str, str, str, str, str, str]]:
             document.c.format,
             document.c.status,
             document.c.extraction,
-        ).order_by(document.c.path)
+        ).order_by(document.c.path, document.c.issuer)
     )
     return [
         (str(path), str(issuer), str(kind), str(fmt), str(status), str(extraction))
@@ -276,6 +276,7 @@ SKIPPED = {
     "coinstats/synthetic_pot-2024-01-31.json": "portfolio name",
     "wise/99912345678.pdf": "11-digit run",
     "wise/99991399.pdf": "8 digits, month 13",
+    "wise/99991231.pdf": "a YYYYMMDD shape whose year is out of range",
 }
 ADOPTED = {
     "vancity/20240131.pdf": "8 digits that are a date",
@@ -305,7 +306,7 @@ def test_an_identifier_bearing_path_is_skipped_counted_and_stored_nowhere(
         ("coinstats", "identifier_in_path", 1),
         ("mbna", "identifier_in_path", 1),
         ("vancity", "identifier_in_path", 2),
-        ("wise", "identifier_in_path", 2),
+        ("wise", "identifier_in_path", 3),
     ]
     assert [(s.directory, s.reason, s.count) for s in out.skipped] == skips(owner_conn)
 
@@ -331,6 +332,87 @@ def test_an_identifier_bearing_path_is_skipped_counted_and_stored_nowhere(
     haystacks = [*stored, out.model_dump_json(), *caplog.messages]
     found = [needle for needle in needles if any(needle in hay for hay in haystacks)]
     assert found == []
+
+
+def test_identifiers_in_the_manual_file_are_refused_before_stage_2_has_run(
+    owner_conn: Connection,
+    rolled_back_context: MakeContext,
+    archive: Path,
+    tmp_path: Path,
+) -> None:
+    # The context's data directory is tmp_path; account_identifier stays empty.
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    (manual / IDENTIFIERS_FILE).write_text(
+        "\n".join(
+            [
+                ",".join(MANUAL_FILES[IDENTIFIERS_FILE]),
+                "test-chequing,9991234,number,,",
+                "test-savings,99912,number,,",
+                # Invalid rows still name real identifiers.
+                "test-other,Synthetic Pot,portfolio_name,not-a-date,",
+                "test-short,9997777",
+                "paid-outside,CASH,internal,,",
+            ]
+        )
+        + "\n"
+    )
+    skipped = [
+        "vancity/statement-9991234.pdf",
+        "vancity/(999) 1234.pdf",
+        "vancity/999,1234.pdf",
+        "vancity/999\u20131234.pdf",
+        "vancity/999+1234.pdf",
+        "vancity/999/1234.pdf",
+        "vancity/ref-7999127.pdf",
+        "coinstats/synthetic_pot.json",
+        "mbna/9997777.pdf",
+    ]
+    adopted = ["vancity/cash-2024.pdf", "vancity/2024-01-31.pdf"]
+    for number, relative in enumerate([*skipped, *adopted]):
+        write_file(archive, relative, f"synthetic file {number}".encode())
+    assert owner_conn.scalar(select(func.count()).select_from(account_identifier)) == 0
+
+    out = file_op(rolled_back_context, archive)
+
+    assert sorted(row[0] for row in documents(owner_conn)) == sorted(adopted)
+    assert skips(owner_conn) == [
+        ("coinstats", "identifier_in_path", 1),
+        ("mbna", "identifier_in_path", 1),
+        ("vancity", "identifier_in_path", 7),
+    ]
+    stored = " ".join(
+        f"{path} {issuer}"
+        for path, issuer in owner_conn.execute(
+            select(document.c.path, document.c.issuer)
+        )
+    )
+    assert "1234" not in stored and "pot" not in stored and "7777" not in stored
+    assert "1234" not in out.model_dump_json()
+
+
+def test_an_unreadable_file_or_directory_is_counted_and_the_walk_goes_on(
+    owner_conn: Connection, rolled_back_context: MakeContext, archive: Path
+) -> None:
+    locked_file = write_file(archive, "vancity/2024-01-31.pdf", b"%PDF locked")
+    write_file(archive, "mbna/private-sub/2024-01-31.pdf", b"%PDF locked dir")
+    locked_dir = archive / "mbna/private-sub"
+    write_file(archive, "virgin-plus/2024-02-10.pdf", b"%PDF readable")
+    locked_file.chmod(0)
+    locked_dir.chmod(0)
+    try:
+        out = file_op(rolled_back_context, archive)
+    finally:
+        locked_dir.chmod(0o755)
+        locked_file.chmod(0o644)
+
+    assert out.registered == 1
+    assert [row[0] for row in documents(owner_conn)] == ["virgin-plus/2024-02-10.pdf"]
+    assert skips(owner_conn) == [
+        ("mbna", "unreadable", 1),
+        ("vancity", "unreadable", 1),
+    ]
+    assert "private-sub" not in out.model_dump_json()
 
 
 def test_the_skip_counts_are_rewritten_on_every_walk(

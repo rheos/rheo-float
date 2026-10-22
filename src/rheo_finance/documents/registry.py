@@ -1,15 +1,21 @@
 """The archive walk and the document registry, and ``finance.document.file`` (FR-2).
 
+The identifiers the check refuses come from the manual identifiers file itself and
+from ``account_identifier``, so the walk never depends on derivation stage 2 having
+run first (a rebuild registers files before stage 2 loads the registry).
+
 The walk adopts the files under ``finance.paths.archive`` where they sit: it opens
 each one for reading only, to hash it, and never moves, renames or writes one. Every
-file gets one of three outcomes.
+file it meets is skipped, registered or known, and every walk then rechecks the paths
+already stored, withholding any it now refuses.
 
 - **Skipped and counted.** The adopted-path check (``PathCheck``) runs on the
   archive-relative path before anything else: a path carrying a registered account
   identifier, or a run of 8 or more digits that is not a ``YYYYMMDD`` date, is not
   registered. Neither is a symlink or anything else that is not a regular file, a file
-  outside every mapped directory (``issuers.ISSUER_DIRS``), or an iCloud placeholder
-  whose bytes are not on disk. Each lands in ``archive_skip`` as a count by issuer
+  outside every mapped directory (``issuers.ISSUER_DIRS``), an iCloud placeholder
+  whose bytes are not on disk, or a file or directory that vanished or cannot be read
+  mid-walk. Each lands in ``archive_skip`` as a count by issuer
   directory and reason, and its path is kept nowhere: not in a table, the output, an
   event or an error message.
 - **Registered.** A ``document`` row keyed by the file's sha256, status ``filed``, or
@@ -34,14 +40,16 @@ documents and are passed over, except the iCloud placeholders counted above.
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import hashlib
+import io
 import os
 import re
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Final, Literal
@@ -52,6 +60,9 @@ from sqlalchemy import delete, insert, select, update
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.documents.issuers import Placement, place, skip_directory
+from rheo_finance.manual.accounts import IDENTIFIERS_FILE, AccountIdentifierRow
+from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
+from rheo_finance.manual.loader import load_csv
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import account_identifier, archive_skip, document
@@ -68,8 +79,9 @@ REGISTRY_DATE: Final = dt.date(2000, 1, 1)
 WITHHELD_PATH: Final = "(withheld)"
 
 SkipReason = Literal[
-    "identifier_in_path", "unmapped_directory", "not_a_regular_file", "not_downloaded"
-]
+    "identifier_in_path", "unmapped_directory", "not_a_regular_file", "not_downloaded",
+    "unreadable",
+]  # fmt: skip
 DocumentStatus = Literal[
     "filed", "parsed", "rejected", "unparsed", "needs_manual_entry", "superseded"
 ]
@@ -78,8 +90,9 @@ DOCUMENT_STATUSES: Final[tuple[DocumentStatus, ...]] = (
 )  # fmt: skip
 
 _DIGIT_RUN = re.compile(r"\d+")
-# Digit runs joined by single separators, such as ``999-1234`` or ``999 1234``.
-_DIGIT_GROUP = re.compile(r"\d+(?:[\s._-]\d+)+")
+# Digit runs joined by separators, such as ``999-1234``, ``(999) 1234``,
+# ``999,1234`` or ``999/1234`` (a split across a directory boundary).
+_DIGIT_GROUP = re.compile(r"\d+(?:[\s._,()+/\u2013-]+\d+)+")
 # An identifier that is a bare number: digits with optional spaces, dots or hyphens.
 _NUMBER = re.compile(r"[\d\s.-]*\d[\d\s.-]*")
 _SEPARATORS = re.compile(r"[\s._-]+")
@@ -128,7 +141,9 @@ class PathCheck:
     ``YYYYMMDD`` date, or contains a registered identifier. An identifier that is a bare
     number (digits with spaces, dots or hyphens) matches when its digits appear inside
     one digit run of the path, or when it equals two or more consecutive whole runs of
-    one separated group (``999-1234`` for ``9991234``; a run is never split, so a
+    one separated group (``999-1234``, ``(999) 1234`` or ``999/1234`` for
+    ``9991234``: spaces, dots, underscores, hyphens, en dashes, commas, parentheses,
+    plus signs and slashes separate; a run is never split, so a
     date such as ``2024-01-31`` does not hide a number from its middle). Any other
     identifier (a masked card, a file token, a
     portfolio name) matches when it appears in the path, both compared without case,
@@ -170,16 +185,55 @@ def _joined_runs(runs: list[str]) -> Iterator[str]:
             yield "".join(runs[start:end])
 
 
-def registered_identifiers(uow: UnitOfWork) -> tuple[str, ...]:
-    """Every identifier in ``account_identifier`` (loaded by
-    ``manual.stage2.load_accounts``) but the built-in account's ``internal`` one."""
-    return tuple(
+def file_identifiers(data_dir: Path) -> set[str]:
+    """The identifier text of every row of ``<data>/manual/account_identifiers.csv``
+    whose kind is not ``internal``, read only.
+
+    The rows ``load_csv`` validates, and the identifier cell of every other row too:
+    a row the registry rejects (a bad date, an unknown account) still names a real
+    identifier, and a path carrying it must not be stored. A missing file gives none.
+    """
+    path = data_dir / MANUAL_DIR_NAME / IDENTIFIERS_FILE
+    found = {
+        row.identifier
+        for row in load_csv(path, AccountIdentifierRow).rows
+        if row.kind != "internal"
+    }
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return found
+    text = raw.decode("utf-8-sig", errors="replace")
+    columns = list(MANUAL_FILES[IDENTIFIERS_FILE])
+    rows = csv.reader(io.StringIO(text, newline=""))
+    header = [cell.strip() for cell in next(rows, [])]
+    # A broken header still leaves the columns where the file's layout puts them.
+    names = header if "identifier" in header else columns
+    at = names.index("identifier")
+    kind_at = names.index("kind") if "kind" in names else None
+
+    def cell(cells: list[str], index: int | None) -> str:
+        return cells[index].strip() if index is not None and index < len(cells) else ""
+
+    for cells in rows:
+        identifier = cell(cells, at)
+        if identifier and cell(cells, kind_at) != "internal":
+            found.add(identifier)
+    return found
+
+
+def registered_identifiers(uow: UnitOfWork, data_dir: Path) -> tuple[str, ...]:
+    """The identifiers the adopted-path check refuses: those in the manual
+    identifiers file (``file_identifiers``) and those in ``account_identifier``,
+    without the built-in account's ``internal`` one."""
+    stored = set(
         uow.scalars(
             select(account_identifier.c.identifier).where(
                 account_identifier.c.kind != "internal"
             )
         )
     )
+    return tuple(sorted(stored | file_identifiers(data_dir)))
 
 
 # --- the walk -------------------------------------------------------------------------
@@ -200,10 +254,11 @@ class Walk:
     skipped: Counter[tuple[str, SkipReason]] = field(default_factory=Counter)
 
 
-def _entries(root: Path) -> Iterator[Path]:
+def _entries(root: Path, on_error: Callable[[OSError], None]) -> Iterator[Path]:
     """Every non-hidden entry under ``root`` but the directories walked into, in sorted
-    order. A symlinked directory is yielded, not followed, so the walk counts it."""
-    for current, dirs, names in os.walk(root, followlinks=False):
+    order. A symlinked directory is yielded, not followed, so the walk counts it. A
+    directory that cannot be listed goes to ``on_error``."""
+    for current, dirs, names in os.walk(root, onerror=on_error, followlinks=False):
         base = Path(current)
         shown = sorted(name for name in dirs if not name.startswith("."))
         dirs[:] = [name for name in shown if not (base / name).is_symlink()]
@@ -221,7 +276,17 @@ def _sha256(path: Path) -> str:
 def walk(root: Path, check: PathCheck) -> Walk:
     """Read the archive under ``root``; write nothing."""
     result = Walk()
-    for path in _entries(root):
+
+    def unlisted(error: OSError) -> None:
+        # Counted by mapped directory only; the error and its file name go no further.
+        where = Path(str(error.filename)) if error.filename else root
+        try:
+            relative = PurePosixPath(where.relative_to(root).as_posix())
+        except ValueError:
+            relative = PurePosixPath(".")
+        result.skipped[skip_directory(relative / "_"), "unreadable"] += 1
+
+    for path in _entries(root, unlisted):
         relative = PurePosixPath(path.relative_to(root).as_posix())
         directory = skip_directory(relative)
         # The identifier check comes first: whatever else is wrong with a path that
@@ -241,7 +306,13 @@ def walk(root: Path, check: PathCheck) -> Walk:
         if placement is None:
             result.skipped[directory, "unmapped_directory"] += 1
             continue
-        result.found.append(Found(str(relative), placement, _sha256(path)))
+        try:
+            sha = _sha256(path)
+        except OSError:
+            # Vanished or unreadable since it was listed: counted, never named.
+            result.skipped[directory, "unreadable"] += 1
+            continue
+        result.found.append(Found(str(relative), placement, sha))
     return result
 
 
@@ -274,10 +345,12 @@ def _new_row(found: Found, now: dt.datetime) -> dict[str, object]:
     }
 
 
-def file_archive(uow: UnitOfWork, root: Path, now: dt.datetime) -> Filed:
+def file_archive(
+    uow: UnitOfWork, root: Path, data_dir: Path, now: dt.datetime
+) -> Filed:
     """Walk the archive at ``root``, register new bytes, follow moved ones, withhold
     stored paths the check now refuses and rewrite ``archive_skip``."""
-    check = PathCheck(registered_identifiers(uow))
+    check = PathCheck(registered_identifiers(uow, data_dir))
     walked = walk(root, check)
     paths_by_sha: dict[str, list[Found]] = {}
     for found in walked.found:
@@ -395,7 +468,7 @@ def file_documents(ctx: FinanceContext, uow: UnitOfWork, _data: FileIn) -> FileO
     root = ctx.settings.get_path(ARCHIVE_KEY)
     if root is None or not root.is_dir():
         raise DocumentRefused(f"the {ARCHIVE_KEY} directory does not exist")
-    filed = file_archive(uow, root, ctx.clock.now_utc())
+    filed = file_archive(uow, root, ctx.paths.data, ctx.clock.now_utc())
     return FileOut(
         registered=filed.registered,
         known=filed.known,

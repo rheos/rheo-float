@@ -47,6 +47,9 @@ PINNED = {
     "0007_documents.py": (
         "52457353a3934c1487ba58e7f28b9a1062a7bfabc5398b44ce60ada249e3f17d"
     ),
+    "0008_archive_skip_unreadable.py": (
+        "6efcdf6ff35187de0e550654fc1f492dfbb68f24617800b90b11e3dc7de9ec37"
+    ),
 }
 
 

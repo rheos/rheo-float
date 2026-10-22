@@ -27,7 +27,10 @@
 .env*
 .venv/
 __pycache__/
-.bureau/
+# Bureau run data stays local. The standing gate runner, .bureau/regression/run.sh, is
+# tracked; scripts/repo_check.py refuses any other path under .bureau/.
+/.bureau/runs/
+/.bureau/archive/
 
 # Local-only context: describes the owner's real accounts and setup. Never committed.
 project-context.md

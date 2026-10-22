@@ -382,6 +382,65 @@ def test_non_data_files_with_long_digit_runs_pass(repo: Repo) -> None:
     assert_passes(repo.check())
 
 
+# Rule 3: nothing under .bureau/ but the gate runner and its fixtures.
+
+RUNNER = ".bureau/regression/run.sh"
+RUNNER_BODY = "#!/bin/sh\nset -eu\nexit 0\n"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".bureau/runs/x/state.json",
+        ".bureau/notes.txt",
+        ".bureau/archive/x/log.md",
+        ".bureau/regression/notes.md",  # not an NN-<slug>.md fixture name
+        ".bureau/regression/01-fixture.txt",
+        ".bureau/regression/sub/01-fixture.md",
+        ".bureau/regression/run.sh.bak",
+        ".BUREAU/notes.md",  # one directory on a case-insensitive filesystem
+        "docs/.bureau/runs/x/log.md",  # a nested .bureau is refused too
+        ".bureau",  # a plain file named .bureau
+    ],
+)
+def test_staged_path_under_bureau_fails(repo: Repo, path: str) -> None:
+    repo.stage(path, "fake run data\n")
+    assert_fails(repo.check(), path, "under .bureau/")
+
+
+@pytest.mark.parametrize("path", [".bureau/runs/x/state.json", ".bureau/notes.txt"])
+def test_tracked_path_under_bureau_fails(repo: Repo, path: str) -> None:
+    repo.stage(path, "fake run data\n")
+    repo.commit()
+    assert_passes(repo.check("--staged"))  # nothing staged now
+    assert_fails(repo.check("--tracked"), path, "under .bureau/")
+
+
+def test_bureau_failure_names_path_and_rule_only(repo: Repo) -> None:
+    repo.stage(".bureau/notes.txt", "fake run data\n")
+    result = repo.check()
+    assert "fake run data" not in output(result)
+    assert re.search(r"\.bureau/notes\.txt:[0-9]", output(result)) is None
+
+
+@pytest.mark.parametrize("mode", ["--staged", "--tracked"])
+def test_runner_and_fixtures_under_bureau_pass(repo: Repo, mode: str) -> None:
+    repo.stage(RUNNER, RUNNER_BODY)
+    repo.git("update-index", "--chmod=+x", RUNNER)
+    repo.stage(".bureau/regression/01-clean-run.md", "name: fake\n")
+    repo.stage(".bureau/regression/123-other.md", "name: fake\n")
+    if mode == "--tracked":
+        repo.commit()
+    assert_passes(repo.check(mode))
+
+
+def test_symlinked_runner_fails(repo: Repo) -> None:
+    (repo.root / ".bureau" / "regression").mkdir(parents=True)
+    (repo.root / RUNNER).symlink_to("../runs/x/state.json")
+    repo.git("add", "-f", RUNNER)
+    assert_fails(repo.check(), RUNNER, "under .bureau/")
+
+
 # Modes.
 
 
@@ -472,3 +531,18 @@ def test_gitignore_covers_the_data_paths() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert sorted(result.stdout.split()) == sorted(data)
+
+
+def test_gitignore_keeps_bureau_run_data_out_but_not_the_runner() -> None:
+    ignored = [".bureau/runs/x", ".bureau/runs/x/state.json", ".bureau/archive/x"]
+    kept = [".bureau/regression/run.sh", ".bureau/regression/01-clean-run.md"]
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", *ignored, *kept],
+        cwd=REPO_ROOT,
+        env=git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert sorted(result.stdout.split()) == sorted(ignored)

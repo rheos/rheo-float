@@ -62,6 +62,8 @@ spaces or hyphens. Fixtures are text: a data file with NUL bytes that is not UTF
 fails as unscannable. `.claude/*.json` is not scanned. Never bypass it with `--no-verify`; fix
 the file instead.
 
+It also refuses any path under a `.bureau/` directory except `.bureau/regression/run.sh` and `.bureau/regression/NN-<slug>.md` fixtures, so Bureau run data never gets tracked.
+
 ## Running the tests
 
 ```sh
@@ -70,9 +72,11 @@ uv run finance db up && uv run finance db init   # once per machine; both are id
 uv run ruff check && uv run mypy --strict src tests scripts && uv run pytest -q
 ```
 
-That full line is the phase-gate check. Database tests run against the local Postgres container,
-database `finance_test`, each test inside a rolled-back transaction, with a fake clock. Tests make
-no network calls except to local stub servers.
+That full line is the phase-gate check. `.bureau/regression/run.sh` runs it, then the repo check
+in `--tracked` mode, and prints counts only; the Bureau's integration gate calls that script.
+Database tests run against the local Postgres container, database `finance_test`, each test inside
+a rolled-back transaction, with a fake clock. Tests make no network calls except to local stub
+servers.
 
 `finance db init` sets up both databases (`finance` and `finance_test`); `--database NAME`
 (repeatable) limits it to the ones named, so a checkout that only runs the suite can pass

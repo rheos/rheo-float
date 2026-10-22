@@ -25,6 +25,11 @@ Rule 2, over data-shaped files only (everything under ``tests/fixtures/`` and
 The epoch allow-pattern is exactly ``1[0-9]{12}`` (2001 to 2033); do not widen it.
 Fractional digit runs (an 8-decimal quantity) are digit runs too and need the 999
 prefix in fixtures. Claude Code's settings files (``.claude/*.json``) are not checked.
+Rule 3, over every file checked: a path with a ``.bureau`` component anywhere in it
+(compared without case) fails unless it is exactly ``.bureau/regression/run.sh`` or a
+fixture ``.bureau/regression/NN-<slug>.md`` (two or three digits), as a regular file.
+Bureau run data (``.bureau/runs/``, ``.bureau/archive/``) is gitignored; this rule
+keeps the rest of that tree out of the index too.
 
 Content is read from the git index, so ``--staged`` checks exactly what the commit
 will hold. Failure output names the path, the line number and the rule. It never
@@ -57,6 +62,10 @@ STATEMENT_EXTENSIONS = frozenset(
 )
 DATA_EXTENSIONS = frozenset({".csv", ".tsv", ".json", ".txt", ".eml"})
 
+BUREAU_DIR = ".bureau"
+BUREAU_RUNNER = ".bureau/regression/run.sh"
+BUREAU_FIXTURE = re.compile(r"\.bureau/regression/[0-9]{2,3}-[A-Za-z0-9._-]+\.md")
+
 FAKE_PREFIX = b"999"
 # A run of digits with no letter or digit on either side, so a run inside a hex hash
 # or an identifier does not match.
@@ -83,6 +92,10 @@ RULE_OUTSIDE = "fixture outside tests/fixtures/synthetic/"
 RULE_DIGITS = "run of 8 or more digits that is not 999-prefixed, a date or an epoch"
 RULE_CARD = "Luhn-valid card-shaped number"
 RULE_UNSCANNABLE = "data file holds NUL bytes and does not decode as UTF-16 or UTF-32"
+RULE_BUREAU = (
+    "path under .bureau/ that is not .bureau/regression/run.sh or a"
+    " .bureau/regression/NN-<slug>.md fixture"
+)
 
 UTF32_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")
 UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
@@ -176,6 +189,14 @@ def is_statement_type(path: str) -> bool:
     if suffix == ".json":
         return not path.startswith(REFERENCE_DIR)
     return suffix in STATEMENT_EXTENSIONS
+
+
+def is_bureau_refused(entry: Entry) -> bool:
+    """True for a path under any ``.bureau`` other than the runner and its fixtures."""
+    if BUREAU_DIR not in (part.lower() for part in PurePosixPath(entry.path).parts):
+        return False
+    allowed = entry.path == BUREAU_RUNNER or bool(BUREAU_FIXTURE.fullmatch(entry.path))
+    return not (allowed and entry.mode.startswith("100"))
 
 
 def is_data_shaped(path: str) -> bool:
@@ -373,6 +394,8 @@ def check(staged_only: bool) -> tuple[list[Failure], int]:
             failures.append(Failure(path, None, RULE_OUTSIDE))
         if is_statement_type(path):
             failures.append(Failure(path, None, RULE_STATEMENT))
+        if is_bureau_refused(entries[path]):
+            failures.append(Failure(path, None, RULE_BUREAU))
         if scannable(path):
             failures.extend(scan_content(path, blobs[entries[path].sha]))
     return failures, len(checked)

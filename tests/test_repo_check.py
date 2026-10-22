@@ -165,6 +165,18 @@ def test_json_under_reference_is_not_statement_type(repo: Repo) -> None:
     assert_passes(repo.check())
 
 
+def test_fixture_outside_the_synthetic_directory_fails_when_staged(repo: Repo) -> None:
+    repo.stage("tests/fixtures/other/layout.txt", "fake layout\n")
+    assert_fails(repo.check(), "tests/fixtures/other/layout.txt", "outside")
+
+
+def test_fixture_outside_the_synthetic_directory_fails_when_tracked(repo: Repo) -> None:
+    repo.stage("tests/fixtures/layout.txt", "fake layout\n")
+    repo.commit()
+    assert_passes(repo.check("--staged"))  # nothing staged now
+    assert_fails(repo.check("--tracked"), "tests/fixtures/layout.txt", "outside")
+
+
 def test_listed_synthetic_csv_passes(repo: Repo) -> None:
     repo.manifest("tests/fixtures/synthetic/rows.csv")
     repo.stage("tests/fixtures/synthetic/rows.csv", "date,ref\n20260131,99912345678\n")
@@ -438,19 +450,13 @@ def test_this_repo_passes_the_tracked_check() -> None:
 
 
 def test_gitignore_covers_the_data_paths() -> None:
-    data = [
-        "data/statement.txt",
-        "statements/2026-01.pdf",
-        "exports/ledger.csv",
-        "mail/batch.jsonl",
-        "bank.qfx",
-        "bank.ofx",
-        "ledger.sqlite",
-        ".env",
-        "project-context.md",
-        "HANDOFF.md",
-    ]
-    kept = [f"{SYNTHETIC}layout.csv", f"{SYNTHETIC}layout.pdf"]
+    folders = ["data", "dumps", "packs", "staging", "mail-inbox", "logs"]
+    types = ["pdf", "csv", "jsonl", "qfx", "ofx", "sqlite", "db", "eml", "dump", "sql"]
+    types += ["heic", "jpg", "jpeg", "png", "xlsx", "xls", "zip"]
+    data = [f"{folder}/notes.txt" for folder in folders]
+    data += [f"exports/file.{each}" for each in types]
+    data += [".env", "project-context.md", "HANDOFF.md"]
+    kept = [f"{SYNTHETIC}layout.{each}" for each in ("txt", *types)]
     result = subprocess.run(
         ["git", "check-ignore", "--no-index", *data, *kept],
         cwd=REPO_ROOT,

@@ -7,7 +7,9 @@ Rule 1, over every file checked:
   * a statement-type extension outside ``tests/fixtures/synthetic/`` fails (the
     spec's list plus jpeg, png, xlsx, xls and zip, a deliberate tightening);
   * a file under ``tests/fixtures/synthetic/`` not listed in its ``MANIFEST.toml``
-    fails.
+    fails;
+  * any other file under ``tests/fixtures/`` fails: every fixture is synthetic and
+    lives in that one directory, so the manifest rule cannot be stepped around.
 Rule 2, over data-shaped files only (everything under ``tests/fixtures/`` and
 ``src/rheo_finance/reference/``, plus csv, tsv, json, txt and eml files anywhere):
   * a run of 8 or more digits bounded by non-alphanumerics that does not start with the
@@ -45,7 +47,8 @@ from pathlib import PurePosixPath
 SYNTHETIC_DIR = "tests/fixtures/synthetic/"
 MANIFEST_PATH = SYNTHETIC_DIR + "MANIFEST.toml"
 REFERENCE_DIR = "src/rheo_finance/reference/"
-DATA_DIRS = ("tests/fixtures/", REFERENCE_DIR)
+FIXTURES_DIR = "tests/fixtures/"
+DATA_DIRS = (FIXTURES_DIR, REFERENCE_DIR)
 
 STATEMENT_EXTENSIONS = frozenset(
     {".pdf", ".csv", ".eml", ".dump", ".sql", ".qfx", ".ofx", ".jsonl", ".heic", ".jpg"}
@@ -76,6 +79,7 @@ EPOCH_MS = re.compile(rb"1[0-9]{12}")
 RULE_STATEMENT = "statement-type file outside tests/fixtures/synthetic/"
 RULE_UNLISTED = "fixture not listed in MANIFEST.toml"
 RULE_MANIFEST = "MANIFEST.toml does not parse"
+RULE_OUTSIDE = "fixture outside tests/fixtures/synthetic/"
 RULE_DIGITS = "run of 8 or more digits that is not 999-prefixed, a date or an epoch"
 RULE_CARD = "Luhn-valid card-shaped number"
 RULE_UNSCANNABLE = "data file holds NUL bytes and does not decode as UTF-16 or UTF-32"
@@ -365,6 +369,8 @@ def check(staged_only: bool) -> tuple[list[Failure], int]:
                 failures.append(Failure(path, None, RULE_UNLISTED))
 
     for path in checked:
+        if path.startswith(FIXTURES_DIR) and not path.startswith(SYNTHETIC_DIR):
+            failures.append(Failure(path, None, RULE_OUTSIDE))
         if is_statement_type(path):
             failures.append(Failure(path, None, RULE_STATEMENT))
         if scannable(path):

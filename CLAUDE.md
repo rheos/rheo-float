@@ -54,7 +54,8 @@ The hook runs the check in `--staged` mode before every commit. Run it yourself 
 tree with `uv run python scripts/repo_check.py --tracked`. It reads content from the git index.
 It blocks statement-type files (pdf, csv, eml, dump, sql, qfx, ofx, jsonl, heic, jpg, jpeg, png,
 xlsx, xls, zip, json outside `src/rheo_finance/reference/`) outside `tests/fixtures/synthetic/`,
-any fixture not listed in that directory's `MANIFEST.toml`, and, in data-shaped files, digit runs
+any fixture not listed in that directory's `MANIFEST.toml`, any other file under
+`tests/fixtures/` (every fixture lives in `synthetic/`), and, in data-shaped files, digit runs
 of 8 or more that do not start with `999` (dates as `YYYYMMDD` and 13-digit millisecond epochs
 pass; fractional runs count too) and Luhn-valid card numbers, contiguous or in card groups with
 spaces or hyphens. Fixtures are text: a data file with NUL bytes that is not UTF-16 or UTF-32
@@ -69,6 +70,10 @@ uv run finance db up && uv run finance db init   # once per machine; both are id
 uv run ruff check && uv run mypy --strict src tests scripts && uv run pytest -q
 ```
 
+That full line is the phase-gate check. Database tests run against the local Postgres container,
+database `finance_test`, each test inside a rolled-back transaction, with a fake clock. Tests make
+no network calls except to local stub servers.
+
 `finance db init` sets up both databases (`finance` and `finance_test`); `--database NAME`
 (repeatable) limits it to the ones named, so a checkout that only runs the suite can pass
 `--database finance_test` and leave the live ledger alone.
@@ -77,17 +82,14 @@ uv run ruff check && uv run mypy --strict src tests scripts && uv run pytest -q
 (`rheo-finance-postgres`) and the volume (`finance-pgdata`), so every checkout, the primary
 clone and any worktree alike, shares one container and one database on 127.0.0.1:55440.
 
-That full line is the phase-gate check. Database tests run against the local Postgres container,
-database `finance_test`, each test inside a rolled-back transaction, with a fake clock. Tests make
-no network calls except to local stub servers.
-
 ## Sinks and the approval boundary
 
 Every sink (every outbound connection: reminders, notifications, rate and price fetches, vendor
 APIs, mail) is off until the owner runs `finance sink approve <sink>` in a terminal and sets
 `finance.sinks.<sink>.enabled = true` in their settings. `finance confirm bulk` is the other
-interactive-only command. Never run either from a session, and never set a sink's `enabled` key to
-true outside a test fixture.
+interactive-only command; it arrives in Phase 5, and only `finance sink approve` exists today.
+Never run either from a session, and never set a sink's `enabled` key to true outside a test
+fixture.
 
 The real boundary: both commands refuse unless stdin and stdout are terminals, and that check only
 stops a plain Bash-tool call. A Claude session can open a terminal (terminal tools, `script`,

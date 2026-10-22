@@ -3,8 +3,9 @@
 ``write_sink_specs`` replaces every row with one per registered provider: the spec's
 digest (the same ``spec_digest`` the gate computes) and its parts as public text, so a
 reader-side view can tell a stale approval without running code. Derive calls it as its
-last step. ``computed_at`` is the database's transaction time and is left out of the
-ledger digest.
+last step, and ``finance.sink.approve`` and ``finance.sink.disable`` call it too, so
+``report_sink`` is current right after an approval. ``computed_at`` is the database's
+transaction time and is left out of the ledger digest.
 """
 
 from __future__ import annotations

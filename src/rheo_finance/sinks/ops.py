@@ -4,11 +4,15 @@
   only, and adds the ``enabled`` setting from the settings file.
 - ``preview`` (READ, owner connection) builds what the sink would send or request and
   its clock-free digest, and sends nothing.
-- ``approve`` (MUTATE, owner only) recomputes the preview in its own transaction and
-  records a ``sink_approve`` decision only when the digest still starts with the typed
-  prefix. ``decision.record`` refuses that kind, so this module writes the row itself.
+- ``approve`` (MUTATE, owner only) recomputes the preview and the spec in its own
+  transaction and records a ``sink_approve`` decision only when the preview digest
+  still starts with the typed prefix and the spec digest is still the one the preview
+  showed. ``decision.record`` refuses that kind, so this module writes the row itself.
   ``cli.approve`` is its one caller, and it runs only in a terminal.
 - ``disable`` (MUTATE, owner only) records ``sink_disable``; it needs no terminal.
+
+Both writes also rewrite the derived ``sink_spec`` table, so ``report_sink`` is
+current right after them rather than after the next derive.
 
 The enabled setting is read from ``$FINANCE_DATA_DIR/settings.toml`` at each call, as
 the gate reads it, so what these report is what the gate sees. No operation here sets
@@ -31,6 +35,7 @@ from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.settings import SINKS, load_settings
 from rheo_finance.sinks.preview import PREVIEW_BUILDERS, PreviewItem, build_preview
 from rheo_finance.sinks.spec import current_spec, spec_digest
+from rheo_finance.sinks.store import write_sink_specs
 from rheo_finance.storage.ids import uuid7
 from rheo_finance.storage.schema import decision, report_sink, report_sink_spec
 from rheo_finance.tier import Tier
@@ -58,9 +63,13 @@ class SinkIn(BaseModel):
 
 
 class ApproveIn(SinkIn):
-    """The sink and the first 8 hex of the preview digest the owner typed."""
+    """The sink, the first 8 hex of the preview digest the owner typed, and the spec
+    digest of that preview (passed by ``cli.approve``, not typed)."""
 
     digest_prefix: Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
+    # None when the preview showed no spec: the handler then refuses, as it does for a
+    # sink with nothing to approve.
+    spec_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None
 
 
 class StateIn(BaseModel):
@@ -98,6 +107,8 @@ class Preview(BaseModel):
     items: Annotated[list[PreviewItem], Tiered(R)]
     text: Annotated[str, Tiered(R)]
     digest: Annotated[str, Tiered(P)]
+    # The digest of the spec the preview showed; None when the sink declares none.
+    spec_digest: Annotated[str | None, Tiered(P)]
     requests: Annotated[list[str], Tiered(P)]
     key_file: Annotated[str | None, Tiered(P)]
     setting_enabled: Annotated[bool, Tiered(P)]
@@ -163,6 +174,7 @@ def preview(ctx: FinanceContext, uow: UnitOfWork, data: SinkIn) -> Preview:
         items=built.items,
         text=built.report.text(),
         digest=built.digest,
+        spec_digest=None if spec is None else spec_digest(spec),
         requests=[] if spec is None else [each.as_line() for each in spec.requests],
         key_file=None if spec is None else spec.key_file,
         setting_enabled=setting,
@@ -201,15 +213,17 @@ def approve(ctx: FinanceContext, uow: UnitOfWork, data: ApproveIn) -> Recorded:
         )
     setting = _setting(data.sink)
     built = build_preview(ctx, uow, data.sink, source, spec, setting_enabled=setting)
-    if not built.digest.startswith(data.digest_prefix):
+    current = spec_digest(spec)
+    if not built.digest.startswith(data.digest_prefix) or current != data.spec_digest:
         raise SinkRefused(f"{data.sink}: {CHANGED}")
+    write_sink_specs(uow)
     decision_id = _write(
         ctx,
         uow,
         DecisionKind.SINK_APPROVE,
         {
             "sink": data.sink,
-            "spec_digest": spec_digest(spec),
+            "spec_digest": current,
             "preview_digest": built.digest,
         },
     )
@@ -217,6 +231,7 @@ def approve(ctx: FinanceContext, uow: UnitOfWork, data: ApproveIn) -> Recorded:
 
 
 def disable(ctx: FinanceContext, uow: UnitOfWork, data: SinkIn) -> Recorded:
+    write_sink_specs(uow)
     decision_id = _write(ctx, uow, DecisionKind.SINK_DISABLE, {"sink": data.sink})
     return Recorded(
         decision_id=decision_id, sink=data.sink, setting_enabled=_setting(data.sink)
@@ -263,6 +278,7 @@ register(
         safety_class=SafetyClass.MUTATE,
         roles=frozenset({Role.OWNER}),
         connection="owner",
+        owner_only=True,
         description=(
             "Record the owner's approval of a sink against the preview digest they"
             " typed. Reached only from `finance sink approve` in a terminal."

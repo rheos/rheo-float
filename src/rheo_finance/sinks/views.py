@@ -14,10 +14,11 @@ approval and its digest differs from the sink's ``sink_spec.spec_digest`` (a mis
 spec row counts as differing), so the reader can tell a stale approval from views
 alone. The ``enabled`` setting lives in a file, so the handler combines it.
 
-The views are compiled from these selects when the migration runs. A later change to
-``reversed_clause`` or to the rule here needs a revision that recreates the view; the
-sink operation tests compare the view with the gate case by case, so they fail while
-the two disagree.
+Migration 0004 holds what these selects compiled to as frozen SQL. A guard test
+compares ``view_sql`` of each select with the newest revision's frozen body, so a
+change here or to ``reversed_clause`` fails until a new revision recreates the view.
+The sink operation tests also compare the migrated view with the gate case by case, on
+a database migrated fresh from the revisions.
 """
 
 from __future__ import annotations
@@ -71,6 +72,13 @@ def report_sink_select() -> Select[tuple[object, ...]]:
             false(),
         ).label("stale"),
     ).select_from(sink_spec.join(newest, newest.c.sink == sink_spec.c.sink, full=True))
+
+
+# Each view this module defines, by name, for the frozen-SQL guard test.
+VIEW_SELECTS = {
+    "report_sink_spec": report_sink_spec_select,
+    "report_sink": report_sink_select,
+}
 
 
 def view_sql(statement: Select[tuple[object, ...]]) -> str:

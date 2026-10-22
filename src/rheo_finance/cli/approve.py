@@ -79,7 +79,9 @@ def run(
     try:
         out = operations.dispatch(
             "finance.sink.approve",
-            {"sink": sink, "digest_prefix": code},
+            # The spec digest the preview showed rides along untyped, so a spec
+            # widened while the owner typed is refused, not approved unseen.
+            {"sink": sink, "digest_prefix": code, "spec_digest": preview.spec_digest},
             Role.OWNER,
             ctx=ctx,
         )

@@ -58,6 +58,7 @@ def make_spec(
     connection: ConnectionName,
     tool_name: str | None = None,
     handler: Callable[..., Any] = no_op,
+    owner_only: bool = False,
 ) -> OperationSpec:
     return OperationSpec(
         name=name,
@@ -69,6 +70,7 @@ def make_spec(
         connection=connection,
         tool_name=tool_name,
         description="A fixture operation.",
+        owner_only=owner_only,
     )
 
 
@@ -248,22 +250,23 @@ def test_a_spec_that_breaks_a_rule_is_refused(
         frozenset({Role.OWNER, Role.MEMBER}),
     ],
 )
-def test_the_sink_approval_lists_the_owner_and_no_one_else(
+def test_an_owner_only_spec_lists_the_owner_and_no_one_else(
     roles: frozenset[Role],
 ) -> None:
     with pytest.raises(ValidationError, match="lists a role other than owner"):
         make_spec(
-            "finance.sink.approve",
+            "finance.fixture.approve",
             safety_class=SafetyClass.MUTATE,
             roles=roles,
             connection="owner",
+            owner_only=True,
         )
 
 
-def test_every_owner_only_spec_is_registered_for_the_owner_alone() -> None:
-    specs = catalogue.load_all()
-    for name in operations.OWNER_ONLY:
-        assert specs[name].roles == {Role.OWNER}, name
+def test_the_sink_approval_is_registered_owner_only() -> None:
+    spec = catalogue.load_all()["finance.sink.approve"]
+    assert spec.owner_only is True
+    assert spec.roles == {Role.OWNER}
 
 
 @pytest.mark.parametrize(

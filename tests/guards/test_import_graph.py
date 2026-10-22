@@ -8,6 +8,10 @@ rates, connector or feature module reaches them. Nothing may import ``cli.main``
 either, or it would reach them through it. The scan reads every module's source: an
 ``import``, a ``from`` import (relative ones resolved), and a string naming the module
 (an ``importlib`` call) all count.
+
+One step further down: the operation name ``finance.sink.approve`` (what a dispatch
+call takes) and the handler ``sinks.ops.approve`` appear only in ``cli.approve`` (the
+caller) and ``sinks.ops`` (where it is defined and registered).
 """
 
 from __future__ import annotations
@@ -39,21 +43,25 @@ def _is_package(path: Path) -> bool:
     return path.name == "__init__.py"
 
 
+def _from_base(node: ast.ImportFrom, module: str, path: Path) -> str:
+    """The absolute module a ``from`` import names, relative levels resolved."""
+    if not node.level:
+        return node.module or ""
+    package = module if _is_package(path) else module.rpartition(".")[0]
+    parts = package.split(".")
+    base_parts = parts[: len(parts) - (node.level - 1)]
+    return ".".join(base_parts + ([node.module] if node.module else []))
+
+
 def imported_names(module: str, path: Path) -> set[str]:
     """Every dotted module name ``module`` imports or names in a string."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    package = module if _is_package(path) else module.rpartition(".")[0]
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                parts = package.split(".")
-                base_parts = parts[: len(parts) - (node.level - 1)]
-                base = ".".join(base_parts + ([node.module] if node.module else []))
-            else:
-                base = node.module or ""
+            base = _from_base(node, module, path)
             found.add(base)
             found.update(f"{base}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -100,6 +108,90 @@ def test_the_forbidden_packages_hold_no_importer() -> None:
             )
         )
         assert offenders == [], target
+
+
+APPROVE_OPERATION = "finance.sink.approve"
+OPS = "rheo_finance.sinks.ops"
+APPROVE_ALLOWED = {"rheo_finance.cli.approve", OPS}
+
+
+def _dotted(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        head = _dotted(node.value)
+        return None if head is None else f"{head}.{node.attr}"
+    return None
+
+
+def reaches_the_approval(module: str, path: Path) -> list[str]:
+    """How ``module`` names the approval: the operation name, or the ops handler."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    how: list[str] = []
+    ops_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == OPS:
+                    ops_aliases.add(alias.asname or OPS)
+        elif isinstance(node, ast.ImportFrom):
+            base = _from_base(node, module, path)
+            for alias in node.names:
+                if base == OPS and alias.name == "approve":
+                    how.append("imports sinks.ops.approve")
+                if f"{base}.{alias.name}" == OPS:
+                    ops_aliases.add(alias.asname or alias.name)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value in {
+            APPROVE_OPERATION,
+            f"{OPS}.approve",
+        }:
+            how.append(f"names {node.value!r}")
+        elif isinstance(node, ast.Attribute) and node.attr == "approve":
+            owner = _dotted(node.value)
+            if owner is not None and owner in ops_aliases:
+                how.append(f"uses {owner}.approve")
+    return how
+
+
+def test_only_cli_approve_and_sinks_ops_name_the_approval() -> None:
+    offenders = {
+        module: how
+        for module, path in _modules()
+        if module not in APPROVE_ALLOWED and (how := reaches_the_approval(module, path))
+    }
+    assert offenders == {}
+
+
+def test_the_approval_scan_finds_the_allowed_ones() -> None:
+    # The control: the caller and the definition are found, so the scan is not blind.
+    found = {
+        module: reaches_the_approval(module, path)
+        for module, path in _modules()
+        if module in APPROVE_ALLOWED
+    }
+    assert found["rheo_finance.cli.approve"] == ["names 'finance.sink.approve'"]
+    assert "names 'finance.sink.approve'" in found[OPS]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from rheo_finance import operations\n"
+        "operations.dispatch('finance.sink.approve', {}, role, ctx=ctx)\n",
+        "from rheo_finance.sinks.ops import approve\n",
+        "from ..sinks.ops import approve\n",
+        "from rheo_finance.sinks import ops\nops.approve(ctx, uow, data)\n",
+        "from rheo_finance.sinks import ops as o\no.approve(ctx, uow, data)\n",
+        "import rheo_finance.sinks.ops as o\no.approve(ctx, uow, data)\n",
+        "import rheo_finance.sinks.ops\nrheo_finance.sinks.ops.approve(c, u, d)\n",
+        "resolve('rheo_finance.sinks.ops.approve')\n",
+    ],
+)
+def test_the_approval_scan_catches_each_form(source: str, tmp_path: Path) -> None:
+    path = tmp_path / "x.py"
+    path.write_text(source, encoding="utf-8")
+    assert reaches_the_approval("rheo_finance.jobs.x", path) != []
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import os
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import Connection, create_engine, select, text
+from sqlalchemy import Connection, create_engine, insert, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.pool import NullPool
 
@@ -46,6 +47,7 @@ from rheo_finance.sinks.preview import (
 from rheo_finance.sinks.spec import SINK_SPECS, RequestTemplate, SinkSpec, spec_digest
 from rheo_finance.sinks.store import write_sink_specs
 from rheo_finance.storage import schema
+from rheo_finance.storage.ids import uuid7
 
 if TYPE_CHECKING:
     from conftest import StubServer
@@ -61,16 +63,17 @@ catalogue.load_all()
 
 
 class TicketSink:
-    """The ``mot`` provider: the stub's host and the two ticket requests."""
+    """The ``mot`` provider (or ``name``'s): the stub's host and two ticket requests."""
 
     __test__ = False
 
-    def __init__(self, host: str) -> None:
+    def __init__(self, host: str, name: str = SINK) -> None:
         self.hosts: tuple[str, ...] = (host,)
+        self.name = name
 
     def __call__(self, _uow: UnitOfWork) -> SinkSpec:
         return SinkSpec(
-            name=SINK,
+            name=self.name,
             hosts=self.hosts,
             requests=(
                 RequestTemplate(method="POST", path="/api/tickets"),
@@ -155,6 +158,15 @@ def get_preview(ctx: FinanceContext) -> Preview:
     out = dispatch("finance.sink.preview", {"sink": SINK}, Role.OWNER, ctx=ctx)
     assert isinstance(out, Preview)
     return out
+
+
+def approval(preview: Preview, sink: str = SINK) -> dict[str, str | None]:
+    """The ``finance.sink.approve`` input ``cli.approve`` sends for ``preview``."""
+    return {
+        "sink": sink,
+        "digest_prefix": preview.digest[:8],
+        "spec_digest": preview.spec_digest,
+    }
 
 
 def sink_decisions(
@@ -280,7 +292,12 @@ def test_the_command_refuses_under_a_plain_call_with_no_terminal(
     builder: TicketPreview,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The real isatty: under pytest stdin is not a terminal.
+    # The real isatty. Under a plain pytest run stdout is captured, so this refuses;
+    # under `pytest -s` in a terminal it would wait on the keyboard instead.
+    if os.isatty(0) and os.isatty(1):
+        pytest.skip(
+            "stdin and stdout are terminals here; the fake-terminal tests cover it"
+        )
     assert main(["sink", "approve", SINK]) == 1
     assert "runs only in a terminal" in capsys.readouterr().err
     assert sink_decisions(owner_conn) == []
@@ -320,6 +337,34 @@ def test_approve_refuses_when_the_pending_items_changed(
     err = capsys.readouterr().err
     assert f"mot: {CHANGED}" in err
     assert sink_decisions(owner_conn) == []
+
+
+def test_approve_refuses_when_the_spec_widened_after_the_preview(
+    cli_owner: FinanceContext,
+    owner_conn: Connection,
+    provider: TicketSink,
+    builder: TicketPreview,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The typed line is only the preview digest8; the spec digest the preview showed
+    rides along, so a sink widened while the owner typed is refused, not approved."""
+    code = get_preview(cli_owner).digest[:8]
+
+    def a_build_widens_the_sink() -> None:
+        provider.hosts += ("tickets.example.test",)
+
+    typed = typing(f"approve mot {code}", before=a_build_widens_the_sink)
+    assert approve.run(SINK, isatty=terminal, read_line=typed) == 1
+    assert f"mot: {CHANGED}" in capsys.readouterr().err
+    assert sink_decisions(owner_conn) == []
+
+
+def test_the_handler_refuses_a_spec_digest_other_than_the_current_one(
+    owner: FinanceContext, provider: TicketSink, builder: TicketPreview
+) -> None:
+    payload = approval(get_preview(owner)) | {"spec_digest": "9" * 64}
+    with pytest.raises(SinkRefused, match=CHANGED):
+        dispatch("finance.sink.approve", payload, Role.OWNER, ctx=owner)
 
 
 def test_approve_records_one_decision_and_the_sink_then_sends_once(
@@ -377,15 +422,10 @@ def test_approve_with_the_setting_off_says_so_and_does_not_set_it(
 def test_the_handler_recomputes_and_refuses_a_stale_prefix(
     owner: FinanceContext, provider: TicketSink, builder: TicketPreview
 ) -> None:
-    code = get_preview(owner).digest[:8]
+    payload = approval(get_preview(owner))
     builder.amount = Decimal("1.00")
     with pytest.raises(SinkRefused, match=CHANGED):
-        dispatch(
-            "finance.sink.approve",
-            {"sink": SINK, "digest_prefix": code},
-            Role.OWNER,
-            ctx=owner,
-        )
+        dispatch("finance.sink.approve", payload, Role.OWNER, ctx=owner)
 
 
 @pytest.mark.parametrize("role", [Role.SERVICE, Role.MEMBER])
@@ -397,29 +437,36 @@ def test_dispatch_refuses_approve_for_any_role_but_the_owner(
     builder: TicketPreview,
     sink_settings: Callable[..., None],
 ) -> None:
-    owner = rolled_back_context(Role.OWNER)
-    code = get_preview(owner).digest[:8]
+    payload = approval(get_preview(rolled_back_context(Role.OWNER)))
     with pytest.raises(RoleRefused, match="refuses role"):
-        dispatch(
-            "finance.sink.approve",
-            {"sink": SINK, "digest_prefix": code},
-            role,
-            ctx=rolled_back_context(role),
-        )
+        dispatch("finance.sink.approve", payload, role, ctx=rolled_back_context(role))
     assert sink_decisions(owner_conn) == []
 
 
 def test_approve_refuses_a_sink_with_no_spec(
     owner: FinanceContext, builder: TicketPreview
 ) -> None:
-    code = get_preview(owner).digest[:8]
+    payload = approval(get_preview(owner))
+    assert payload["spec_digest"] is None
     with pytest.raises(SinkRefused, match="nothing to approve"):
-        dispatch(
-            "finance.sink.approve",
-            {"sink": SINK, "digest_prefix": code},
-            Role.OWNER,
-            ctx=owner,
-        )
+        dispatch("finance.sink.approve", payload, Role.OWNER, ctx=owner)
+
+
+def test_approve_rewrites_sink_spec_so_report_sink_is_current_at_once(
+    cli_owner: FinanceContext,
+    owner_conn: Connection,
+    provider: TicketSink,
+    builder: TicketPreview,
+) -> None:
+    assert report_row(owner_conn) is None  # no derive has run in this test
+    code = get_preview(cli_owner).digest[:8]
+    assert (
+        approve.run(SINK, isatty=terminal, read_line=typing(f"approve mot {code}")) == 0
+    )
+    row = report_row(owner_conn)
+    assert row is not None
+    assert row["approved_at"] == T0
+    assert row["stale"] is False
 
 
 # --- disable -------------------------------------------------------------------------
@@ -442,20 +489,26 @@ def test_disable_needs_no_terminal_and_turns_the_sink_off(
     fake_clock(cli_owner).advance(dt.timedelta(minutes=1))
     capsys.readouterr()
 
+    provider.hosts += ("tickets.example.test",)
     assert main(["sink", "disable", SINK]) == 0
     out = capsys.readouterr().out
     assert out.startswith("finance sink disable mot: disabled;")
     assert len(sink_decisions(owner_conn, "sink_disable")) == 1
     assert gate.is_enabled(UnitOfWork(owner_conn), SINK) is False
+    # Disable rewrote sink_spec too: it holds the widened spec's digest.
+    written = owner_conn.scalar(
+        select(schema.sink_spec.c.spec_digest).where(schema.sink_spec.c.sink == SINK)
+    )
+    assert written == spec_digest(provider(UnitOfWork(owner_conn)))
 
 
 # --- report_sink and finance.sink.state ----------------------------------------------
 
 
-def report_row(conn: Connection) -> dict[str, object] | None:
+def report_row(conn: Connection, sink: str = SINK) -> dict[str, object] | None:
     found = (
         conn.execute(
-            select(schema.report_sink).where(schema.report_sink.c.sink == SINK)
+            select(schema.report_sink).where(schema.report_sink.c.sink == sink)
         )
         .mappings()
         .first()
@@ -463,45 +516,81 @@ def report_row(conn: Connection) -> dict[str, object] | None:
     return None if found is None else dict(found)
 
 
+AGREE_SINK = "telegram"  # not mot: the reader test commits mot rows to the scratch DB
+
+
 def test_report_sink_agrees_with_the_gate_case_by_case(
-    owner: FinanceContext,
-    owner_conn: Connection,
-    provider: TicketSink,
-    builder: TicketPreview,
+    scratch_database: DatabaseUnderTest,
+    stub_server: StubServer,
+    monkeypatch: pytest.MonkeyPatch,
     sink_settings: Callable[..., None],
-    record_sink_approval: Callable[..., uuid.UUID],
-    insert_decision: Callable[..., uuid.UUID],
+    tmp_path: Path,
 ) -> None:
     """Approve, widen, approve again, disable, approve, reverse: after each step the
-    view's "approved and current" equals the gate's verdict (the setting is true)."""
-    uow = UnitOfWork(owner_conn)
-    sink_settings(mot=True)
+    view's "approved and current" equals the gate's verdict (the setting is true).
+
+    On the scratch database, migrated fresh from the frozen revisions in this run (so a
+    view changed in code but not in a revision is what is tested against), inside one
+    transaction that is rolled back."""
+    provider = TicketSink(stub_server.host, name=AGREE_SINK)
+    monkeypatch.setitem(SINK_SPECS, AGREE_SINK, provider)
+    sink_settings(telegram=True)
+    owner = scratch_context(scratch_database, Role.OWNER, tmp_path)
     hour = dt.timedelta(hours=1)
+    engine = create_engine(scratch_database.owner_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            uow = UnitOfWork(conn)
 
-    def check(approved: bool, stale: bool) -> None:
-        write_sink_specs(uow)
-        row = report_row(owner_conn)
-        assert row is not None
-        assert (row["approved_at"] is not None) is approved
-        assert row["stale"] is stale
-        assert gate.is_enabled(uow, SINK) is (approved and not stale)
+            def decide(kind: str, at: dt.datetime, **columns: object) -> uuid.UUID:
+                decision_id = uuid7(at)
+                conn.execute(
+                    insert(schema.decision).values(
+                        id=decision_id,
+                        kind=kind,
+                        decided_at=at,
+                        sink=AGREE_SINK,
+                        **columns,
+                    )
+                )
+                return decision_id
 
-    check(approved=False, stale=False)  # a spec, no decision
-    first = record_sink_approval(SINK, spec_digest(provider(uow)), at=T0)
-    check(approved=True, stale=False)
-    provider.hosts += ("tickets.example.test",)
-    check(approved=True, stale=True)
-    record_sink_approval(SINK, spec_digest(provider(uow)), at=T0 + hour)
-    check(approved=True, stale=False)
-    insert_decision("sink_disable", at=T0 + 2 * hour, sink=SINK)
-    check(approved=False, stale=False)
-    newest = record_sink_approval(SINK, spec_digest(provider(uow)), at=T0 + 3 * hour)
-    check(approved=True, stale=False)
-    # Reversing the newest approval does not fall back to the older ones.
-    fake_clock(owner).set(T0 + 4 * hour)
-    reverse_decision(owner, uow, ReverseIn(decision_id=newest))
-    check(approved=False, stale=False)
-    assert first != newest
+            def approve_at(at: dt.datetime) -> uuid.UUID:
+                current = spec_digest(provider(uow))
+                return decide(
+                    "sink_approve", at, spec_digest=current, preview_digest="9" * 64
+                )
+
+            def check(approved: bool, stale: bool) -> None:
+                write_sink_specs(uow)
+                row = report_row(conn, AGREE_SINK)
+                assert row is not None
+                assert (row["approved_at"] is not None) is approved
+                assert row["stale"] is stale
+                assert gate.is_enabled(uow, AGREE_SINK) is (approved and not stale)
+
+            try:
+                check(approved=False, stale=False)  # a spec, no decision
+                first = approve_at(T0)
+                check(approved=True, stale=False)
+                provider.hosts += ("tickets.example.test",)
+                check(approved=True, stale=True)
+                approve_at(T0 + hour)
+                check(approved=True, stale=False)
+                decide("sink_disable", T0 + 2 * hour)
+                check(approved=False, stale=False)
+                newest = approve_at(T0 + 3 * hour)
+                check(approved=True, stale=False)
+                # Reversing the newest approval does not fall back to the older ones.
+                fake_clock(owner).set(T0 + 4 * hour)
+                reverse_decision(owner, uow, ReverseIn(decision_id=newest))
+                check(approved=False, stale=False)
+                assert first != newest
+            finally:
+                transaction.rollback()
+    finally:
+        engine.dispose()
 
 
 def test_state_runs_on_the_reader_and_lists_every_sink(
@@ -568,16 +657,12 @@ def test_report_sink_under_the_reader_dsn_shows_stale_after_a_provider_change(
         return mot.approval, mot.enabled
 
     try:
-        derive()
         assert mot_state() == ("none", False)
-        code = get_preview(owner).digest[:8]
         recorded = dispatch(
-            "finance.sink.approve",
-            {"sink": SINK, "digest_prefix": code},
-            Role.OWNER,
-            ctx=owner,
+            "finance.sink.approve", approval(get_preview(owner)), Role.OWNER, ctx=owner
         )
         assert isinstance(recorded, Recorded)
+        # No derive ran: the approval rewrote sink_spec, so the reader sees it current.
         assert mot_state() == ("current", True)
 
         provider.hosts += ("tickets.example.test",)  # a later build widens the sink

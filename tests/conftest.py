@@ -106,6 +106,22 @@ def scratch_database(test_database: DatabaseUnderTest) -> Iterator[DatabaseUnder
 
     owner = test_database.owner_url.set(database=name)
     reader = test_database.reader_url.set(database=name)
+    # db init sets the cluster-wide role passwords from db.env. If the test URLs came
+    # from FINANCE_TEST_*_DSN and name other roles, passwords or a server, init could
+    # reset passwords the live database uses: stop before it runs.
+    try:
+        from_env_file = (db.owner_url(name), db.reader_url(name))
+    except db.DbError as exc:
+        pytest.fail(f"scratch database: cannot read db.env ({exc})", pytrace=False)
+    if tuple(
+        url.render_as_string(hide_password=False) for url in from_env_file
+    ) != tuple(url.render_as_string(hide_password=False) for url in (owner, reader)):
+        pytest.fail(
+            "scratch database: db.env and the test DSNs (FINANCE_TEST_OWNER_DSN,"
+            " FINANCE_TEST_READER_DSN) name different roles, passwords or servers;"
+            " db init would set the role passwords from db.env, so it does not run",
+            pytrace=False,
+        )
     try:
         # Setup sits inside the cleanup scope: a database init created before a
         # failed migrate is dropped too.

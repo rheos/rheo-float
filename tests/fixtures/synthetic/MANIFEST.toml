@@ -3,6 +3,8 @@
 # more start with 999, except YYYYMMDD dates and 13-digit millisecond epochs.
 # Fractional digit runs count too: an 8-decimal quantity like 0.99912345 needs the 999
 # prefix after the point.
+# Fixtures are text (layout text, CSV, JSON), never binary: a data file holding NUL
+# bytes that is not UTF-16 or UTF-32 fails the check as unscannable.
 
 [[fixture]]
 path = "tests/fixtures/synthetic/statement_layout.txt"

@@ -238,6 +238,28 @@ def test_grouped_card_with_neighbours_or_odd_separators_fails(
     assert_fails(repo.check(), f"{FIXTURE}:1", "Luhn", LUHN_GROUPED_SPACES)
 
 
+def test_row_of_three_digit_integers_passes(repo: Repo) -> None:
+    # Groups 4 to 8 join to a Luhn-valid 15 digits, which the old any-window check
+    # flagged; 3-3-3-3-3 is no card layout.
+    repo.manifest(FIXTURE)
+    repo.stage(FIXTURE, "qty 120 345 250 410 875 330 615 104\n")
+    assert_passes(repo.check())
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        "9991 234567 89000",  # 4-6-5
+        "9991-234567-8906",  # 4-6-4
+        "9991 2345 6789 0123 40",  # 4-4-4-4-2; its first 16 digits fail Luhn
+    ],
+)
+def test_other_card_layouts_are_checked(repo: Repo, number: str) -> None:
+    repo.manifest(FIXTURE)
+    repo.stage(FIXTURE, f"ref 12 card {number} 7\n")
+    assert_fails(repo.check(), f"{FIXTURE}:1", "Luhn", number)
+
+
 def test_grouped_number_that_fails_luhn_passes(repo: Repo) -> None:
     repo.manifest(FIXTURE)
     repo.stage(FIXTURE, f"ref: {NOT_LUHN_GROUPED}\n")
@@ -280,6 +302,13 @@ def test_utf16_bom_decodes_text_the_interleave_check_would_miss(repo: Repo) -> N
     text = "\u6578" * 40 + f" {PLAIN_RUN}\n"
     repo.stage_bytes(FIXTURE, text.encode("utf-16"))
     assert_fails(repo.check(), f"{FIXTURE}:1", "8 or more digits", PLAIN_RUN)
+
+
+def test_utf16_file_holding_nul_characters_fails_as_unscannable(repo: Repo) -> None:
+    repo.manifest(FIXTURE)
+    repo.stage_bytes(FIXTURE, "ref 1234\u00005678 end\n".encode("utf-16"))
+    result = repo.check()
+    assert_fails(result, FIXTURE, "does not decode")
 
 
 def test_wide_encoded_card_fails(repo: Repo) -> None:

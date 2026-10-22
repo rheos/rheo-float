@@ -14,9 +14,10 @@ Rule 2, over data-shaped files only (everything under ``tests/fixtures/`` and
     fake prefix ``999`` fails, unless it is a ``YYYYMMDD`` calendar date or a 13-digit
     millisecond epoch (``1`` then 12 digits);
   * a Luhn-valid 13 to 19 digit number fails, written contiguously or split into
-    groups of 3 to 6 digits with spaces or hyphens between them. Every window of
-    adjacent groups is checked, so a neighbouring number cannot hide a card. The
-    contiguous 13-digit epoch shape is never Luhn-checked.
+    card groups (4-4-4-4, 4-4-4-4-1 to 3, 4-6-5, 4-6-4) with spaces or hyphens
+    between them. Every such window is checked wherever it sits among other groups,
+    so a neighbouring number cannot hide a card. The contiguous 13-digit epoch shape
+    is never Luhn-checked.
   * a data-shaped file that holds NUL bytes and does not decode as UTF-16 or UTF-32
     fails as unscannable; UTF-16 and UTF-32 files are decoded and scanned.
 The epoch allow-pattern is exactly ``1[0-9]{12}`` (2001 to 2033); do not widen it.
@@ -57,11 +58,19 @@ FAKE_PREFIX = b"999"
 # A run of digits with no letter or digit on either side, so a run inside a hex hash
 # or an identifier does not match.
 DIGIT_RUN = re.compile(rb"(?<![A-Za-z0-9])[0-9]{8,}(?![A-Za-z0-9])")
-# Card-style groups (4-4-4-4, 4-6-5, 4-4-4-4-3): bounded runs of 3 to 6 digits with
-# only spaces or hyphens between them. A group of any other length ends the chain,
-# which keeps ISO dates (2026-01-31) and columns of YYYYMMDD dates out.
+# Grouped cards: bounded digit runs with only spaces or hyphens between them, checked
+# only in the printed card layouts below. A group longer than 6 digits ends the chain,
+# and no layout matches ISO dates (4-2-2) or rows of plain 3-digit numbers.
 BOUNDED_RUN = re.compile(rb"(?<![A-Za-z0-9])[0-9]+(?![A-Za-z0-9])")
 GROUP_GAP = re.compile(rb"[ -]+")
+CARD_LAYOUTS = (
+    (4, 4, 4, 4),
+    (4, 4, 4, 4, 1),
+    (4, 4, 4, 4, 2),
+    (4, 4, 4, 4, 3),
+    (4, 6, 5),
+    (4, 6, 4),
+)
 EPOCH_MS = re.compile(rb"1[0-9]{12}")
 
 RULE_STATEMENT = "statement-type file outside tests/fixtures/synthetic/"
@@ -202,7 +211,7 @@ def card_shaped(digits: bytes) -> bool:
 
 
 def group_chains(line: bytes) -> Iterator[list[bytes]]:
-    """Chains of adjacent 3-to-6 digit groups separated only by spaces or hyphens."""
+    """Chains of adjacent groups of up to 6 digits separated by spaces or hyphens."""
     chain: list[bytes] = []
     last_end = -1
     for m in BOUNDED_RUN.finditer(line):
@@ -212,7 +221,7 @@ def group_chains(line: bytes) -> Iterator[list[bytes]]:
             if len(chain) > 1:
                 yield chain
             chain = []
-        if 3 <= len(group) <= 6:
+        if len(group) <= 6:
             chain.append(group)
             last_end = m.end()
         else:
@@ -224,14 +233,12 @@ def group_chains(line: bytes) -> Iterator[list[bytes]]:
 
 
 def grouped_card(chain: list[bytes]) -> bool:
-    """True when any window of two or more adjacent groups is a Luhn-valid 13-19."""
+    """True when any window of adjacent groups in a card layout passes Luhn."""
+    lengths = tuple(len(group) for group in chain)
     for start in range(len(chain)):
-        digits = chain[start]
-        for group in chain[start + 1 :]:
-            digits += group
-            if len(digits) > 19:
-                break
-            if len(digits) >= 13 and luhn_valid(digits):
+        for layout in CARD_LAYOUTS:
+            end = start + len(layout)
+            if lengths[start:end] == layout and luhn_valid(b"".join(chain[start:end])):
                 return True
     return False
 

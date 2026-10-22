@@ -41,6 +41,9 @@ PINNED = {
     "0005_accounts.py": (
         "60f7a37270474d8c54ed2247313391276ae4f69db3ee5bd3962f7da643e06cda"
     ),
+    "0006_filed_years.py": (
+        "a699171f54b3ba2c7bda6432ec20f0a4e9cec35daa5b8c3a8ee535fb2026720d"
+    ),
 }
 
 

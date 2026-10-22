@@ -39,7 +39,12 @@ from pydantic import (
     model_validator,
 )
 
-from rheo_finance.manual.loader import LoadResult, RowError, split_list
+from rheo_finance.manual.loader import (
+    LoadResult,
+    RowError,
+    duplicate_lines,
+    split_list,
+)
 
 ACCOUNTS_FILE: Final = "accounts.csv"
 IDENTIFIERS_FILE: Final = "account_identifiers.csv"
@@ -166,14 +171,6 @@ class Registry:
     errors: tuple[RowError, ...]
 
 
-def _duplicates[K](keyed: list[tuple[int, K]]) -> set[int]:
-    """The line numbers whose key appears on more than one line."""
-    lines: dict[K, list[int]] = defaultdict(list)
-    for line, key in keyed:
-        lines[key].append(line)
-    return {line for group in lines.values() if len(group) > 1 for line in group}
-
-
 def build_registry(
     accounts: LoadResult[AccountRow], identifiers: LoadResult[AccountIdentifierRow]
 ) -> Registry:
@@ -184,7 +181,7 @@ def build_registry(
 
     # Accounts: unique slugs, and none taking the built-in account's.
     account_rows = accounts.numbered()
-    bad_accounts = _duplicates([(line, row.slug) for line, row in account_rows])
+    bad_accounts = duplicate_lines([(line, row.slug) for line, row in account_rows])
     for line in sorted(bad_accounts):
         reject(ACCOUNTS_FILE, line, "slug: another row has the same slug")
     for line, row in account_rows:
@@ -203,7 +200,7 @@ def build_registry(
         if ident.kind == "internal":
             reject(IDENTIFIERS_FILE, line, "kind: internal is for the built-in account")
             bad_identifiers.add(line)
-    repeated = _duplicates(
+    repeated = duplicate_lines(
         [(line, (ident.kind, ident.identifier)) for line, ident in identifier_rows]
     )
     for line in sorted(repeated):

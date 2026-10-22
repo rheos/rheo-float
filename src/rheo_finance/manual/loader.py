@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -65,6 +67,15 @@ def split_list(value: object) -> object:
             part.strip() for part in value.split(LIST_SEPARATOR) if part.strip()
         )
     return value
+
+
+def duplicate_lines[K](keyed: Iterable[tuple[int, K]]) -> set[int]:
+    """The line numbers whose key appears on more than one line, for the rules that
+    reject every row of a repeated key."""
+    lines: dict[K, list[int]] = defaultdict(list)
+    for line, key in keyed:
+        lines[key].append(line)
+    return {line for group in lines.values() if len(group) > 1 for line in group}
 
 
 def _reason(exc: ValidationError) -> str:

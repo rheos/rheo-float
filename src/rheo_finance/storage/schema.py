@@ -247,3 +247,15 @@ _tiers(
     manual_entry_error,
     dict.fromkeys(("id", "file", "line_no", "reason"), Tier.INTERNAL),
 )
+
+# --- filed tax years (derived, stage 2; migration 0006) -------------------------------
+
+filed_year = Table(
+    "filed_year",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("year", Integer, nullable=False, unique=True),
+    Column("filed_on", Date),
+    Column("note", Text),
+)
+_tiers(filed_year, {"id": P, "year": P, "filed_on": P, "note": R})

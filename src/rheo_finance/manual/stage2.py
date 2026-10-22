@@ -1,9 +1,16 @@
-"""Derivation stage 2, the manual load: the account registry part.
+"""Derivation stage 2, the manual load, from the files under ``<data>/manual/``.
 
-``load_accounts`` reads ``accounts.csv`` and ``account_identifiers.csv`` from
-``<data>/manual/``, applies the registry rules (``manual.accounts``) and rewrites the
-derived tables ``account`` and ``account_identifier``, and the ``manual_entry_error``
-rows of those two files (another file's errors are its own loader's to rewrite).
+Each loader rewrites the ``manual_entry_error`` rows of its own files and no others
+(another file's errors are its own loader's to rewrite):
+
+- ``load_accounts``: ``accounts.csv`` and ``account_identifiers.csv`` through the
+  registry rules (``manual.accounts``) into ``account`` and ``account_identifier``;
+- ``load_cash_lines``: ``transactions.csv``, checked against the loaded registry and
+  held for stage 3 (``manual.cash_lines``);
+- ``load_document_periods``: ``document_periods.csv``, held for stage 6
+  (``manual.document_periods``);
+- ``load_filed_years``: ``filed_years.csv`` into ``filed_year``
+  (``manual.filed_years``).
 
 Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
 no date of their own). An account is keyed by its slug. An identifier is keyed by its
@@ -30,10 +37,33 @@ from rheo_finance.manual.accounts import (
     Registry,
     build_registry,
 )
+from rheo_finance.manual.cash_lines import (
+    TRANSACTIONS_FILE,
+    CashLineRow,
+    CashLines,
+    build_cash_lines,
+)
+from rheo_finance.manual.document_periods import (
+    DOCUMENT_PERIODS_FILE,
+    DocumentPeriodRow,
+    DocumentPeriods,
+    build_document_periods,
+)
+from rheo_finance.manual.filed_years import (
+    FILED_YEARS_FILE,
+    FiledYearRow,
+    FiledYears,
+    build_filed_years,
+)
 from rheo_finance.manual.headers import MANUAL_DIR_NAME
 from rheo_finance.manual.loader import RowError, load_csv
 from rheo_finance.storage.ids import derived_id
-from rheo_finance.storage.schema import account, account_identifier, manual_entry_error
+from rheo_finance.storage.schema import (
+    account,
+    account_identifier,
+    filed_year,
+    manual_entry_error,
+)
 
 REGISTRY_DATE: Final = dt.date(2000, 1, 1)
 
@@ -100,14 +130,65 @@ def load_accounts(uow: UnitOfWork, data_dir: Path) -> Registry:
     )
     uow.execute(delete(account_identifier))
     uow.execute(delete(account))
-    uow.execute(
-        delete(manual_entry_error).where(
-            manual_entry_error.c.file.in_((ACCOUNTS_FILE, IDENTIFIERS_FILE))
-        )
-    )
     uow.execute(insert(account), [_account_values(row) for row in registry.accounts])
     uow.execute(insert(account_identifier), _identifier_values(registry.identifiers))
-    if registry.errors:
+    _rewrite_errors(uow, (ACCOUNTS_FILE, IDENTIFIERS_FILE), registry.errors)
+    return registry
+
+
+def load_cash_lines(uow: UnitOfWork, data_dir: Path, registry: Registry) -> CashLines:
+    """The ``transactions.csv`` lines whose account is in ``registry``, for stage 3."""
+    cash = build_cash_lines(
+        load_csv(data_dir / MANUAL_DIR_NAME / TRANSACTIONS_FILE, CashLineRow),
+        {row.slug for row in registry.accounts},
+    )
+    _rewrite_errors(uow, (TRANSACTIONS_FILE,), cash.errors)
+    return cash
+
+
+def load_document_periods(uow: UnitOfWork, data_dir: Path) -> DocumentPeriods:
+    """The ``document_periods.csv`` periods, for stage 6."""
+    periods = build_document_periods(
+        load_csv(data_dir / MANUAL_DIR_NAME / DOCUMENT_PERIODS_FILE, DocumentPeriodRow)
+    )
+    _rewrite_errors(uow, (DOCUMENT_PERIODS_FILE,), periods.errors)
+    return periods
+
+
+def filed_year_id(year: int) -> uuid.UUID:
+    # The registry date, not the year: derived_id's time field starts in 1970.
+    return derived_id(REGISTRY_DATE, ("filed_year", year))
+
+
+def load_filed_years(uow: UnitOfWork, data_dir: Path) -> FiledYears:
+    """Rewrite ``filed_year`` from ``filed_years.csv``."""
+    filed = build_filed_years(
+        load_csv(data_dir / MANUAL_DIR_NAME / FILED_YEARS_FILE, FiledYearRow)
+    )
+    uow.execute(delete(filed_year))
+    if filed.years:
+        uow.execute(
+            insert(filed_year),
+            [
+                {
+                    "id": filed_year_id(row.year),
+                    "year": row.year,
+                    "filed_on": row.filed_on,
+                    "note": row.note,
+                }
+                for row in filed.years
+            ],
+        )
+    _rewrite_errors(uow, (FILED_YEARS_FILE,), filed.errors)
+    return filed
+
+
+def _rewrite_errors(
+    uow: UnitOfWork, files: tuple[str, ...], errors: tuple[RowError, ...]
+) -> None:
+    """Replace the ``manual_entry_error`` rows of ``files``, and only theirs."""
+    uow.execute(delete(manual_entry_error).where(manual_entry_error.c.file.in_(files)))
+    if errors:
         uow.execute(
             insert(manual_entry_error),
             [
@@ -117,7 +198,6 @@ def load_accounts(uow: UnitOfWork, data_dir: Path) -> Registry:
                     "line_no": error.line_no,
                     "reason": error.reason,
                 }
-                for error in registry.errors
+                for error in errors
             ],
         )
-    return registry

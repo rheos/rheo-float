@@ -241,6 +241,32 @@ def test_a_spec_that_breaks_a_rule_is_refused(
 
 
 @pytest.mark.parametrize(
+    "roles",
+    [
+        OWNER_AND_SERVICE,
+        frozenset({Role.SERVICE}),
+        frozenset({Role.OWNER, Role.MEMBER}),
+    ],
+)
+def test_the_sink_approval_lists_the_owner_and_no_one_else(
+    roles: frozenset[Role],
+) -> None:
+    with pytest.raises(ValidationError, match="lists a role other than owner"):
+        make_spec(
+            "finance.sink.approve",
+            safety_class=SafetyClass.MUTATE,
+            roles=roles,
+            connection="owner",
+        )
+
+
+def test_every_owner_only_spec_is_registered_for_the_owner_alone() -> None:
+    specs = catalogue.load_all()
+    for name in operations.OWNER_ONLY:
+        assert specs[name].roles == {Role.OWNER}, name
+
+
+@pytest.mark.parametrize(
     "name", ["fixture.bad", "finance.bad", "finance.Bad.get", "finance.a.b.c", "x.a.b"]
 )
 def test_a_name_off_the_pattern_is_refused(name: str) -> None:

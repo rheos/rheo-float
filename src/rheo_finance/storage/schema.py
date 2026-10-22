@@ -9,6 +9,7 @@ next to it.
 from __future__ import annotations
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -145,3 +146,39 @@ _tiers(
         "key_file": P, "policy_version": P, "data_inputs": P, "computed_at": P,
     },
 )  # fmt: skip
+
+# --- sink report views (migration 0004) ---------------------------------------------
+# Views, mirrored here so a handler can select from them and the mirror and tier guards
+# cover their columns. Nothing writes them; the reader may select from them.
+
+report_sink_spec = Table(
+    "report_sink_spec",
+    metadata,
+    Column("sink", Text),
+    Column("spec_digest", Text),
+    Column("hosts", Text),
+    Column("request_templates", Text),
+    Column("key_file", Text),
+    Column("policy_version", Integer),
+    Column("data_inputs", Text),
+)
+_tiers(
+    report_sink_spec,
+    {
+        "sink": P, "spec_digest": P, "hosts": P, "request_templates": P,
+        "key_file": P, "policy_version": P, "data_inputs": P,
+    },
+)  # fmt: skip
+
+report_sink = Table(
+    "report_sink",
+    metadata,
+    Column("sink", Text),
+    Column("approved_at", DateTime(timezone=True)),
+    Column("spec_digest", Text),
+    Column("stale", Boolean),
+)
+_tiers(
+    report_sink,
+    {"sink": P, "approved_at": P, "spec_digest": P, "stale": P},
+)

@@ -2,7 +2,9 @@
 connection per test, and a reader engine.
 
 Also the sink fixtures: a settings file under a temporary ``$FINANCE_DATA_DIR``, a
-direct approval record, and a local stub HTTP server.
+direct approval record, and a local stub HTTP server; and ``scratch_database``, a
+throwaway database for the one kind of test that must commit rows (reading them back
+under the reader DSN).
 
 DSNs come from ``FINANCE_TEST_OWNER_DSN`` and ``FINANCE_TEST_READER_DSN`` when both are
 set, else from ``$FINANCE_DATA_DIR/db.env`` re-targeted at ``finance_test``. A database
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -82,6 +85,37 @@ def test_database() -> DatabaseUnderTest:
     except db.DbError as exc:
         pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)
     return DatabaseUnderTest(owner_url=owner, reader_url=reader, head=head)
+
+
+@pytest.fixture(scope="module")
+def scratch_database(test_database: DatabaseUnderTest) -> Iterator[DatabaseUnderTest]:
+    """A throwaway database, set up as ``db init`` does and migrated to head, dropped
+    after the module.
+
+    A reader connection cannot see rows inside another connection's rolled-back
+    transaction, so a test that checks a view under the reader DSN commits its rows
+    here: never in ``finance_test``, never in the live ledger. Values are synthetic.
+    Module-scoped, so it is set up before any test's ``$FINANCE_DATA_DIR`` changes
+    (``db init`` reads ``db.env`` from there).
+    """
+    name = f"finance_scratch_{secrets.token_hex(4)}_test"
+    assert name != db.LIVE_DATABASE and name != db.TEST_DATABASE
+
+    def drop() -> None:
+        db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')
+
+    owner = test_database.owner_url.set(database=name)
+    reader = test_database.reader_url.set(database=name)
+    try:
+        drop()
+        db.init(databases=(name,))
+        head = db.migrate(owner)
+    except db.DbError as exc:
+        pytest.fail(f"{TEST_REMEDY} (scratch database: {exc})", pytrace=False)
+    try:
+        yield DatabaseUnderTest(owner_url=owner, reader_url=reader, head=head)
+    finally:
+        drop()
 
 
 @pytest.fixture(scope="session")

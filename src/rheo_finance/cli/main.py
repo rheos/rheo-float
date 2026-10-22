@@ -16,7 +16,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from rheo_finance import db, init_data
+from rheo_finance.cli import approve as approve_cli
 from rheo_finance.cli import decision as decision_cli
+from rheo_finance.cli import sink as sink_cli
 from rheo_finance.render import Report, emit, emit_error, failure_line
 
 if TYPE_CHECKING:
@@ -59,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     db.add_parser(commands)
     init_data.add_parser(commands)
     decision_cli.add_parser(commands)
+    # cli.approve is imported here and nowhere else (the import-graph guard).
+    sink_cli.add_parser(commands, approve=approve_cli.cmd_approve)
     return parser
 
 

@@ -7,7 +7,8 @@ Each spec names its connection. The rules, checked when a spec is built:
 
 - a spec that lists role ``member`` uses the ``reader`` connection;
 - a MUTATE or DRAFT spec uses the ``owner`` connection;
-- a ``tool_name`` appears only on a READ spec on the ``reader`` connection.
+- a ``tool_name`` appears only on a READ spec on the ``reader`` connection;
+- a spec named in ``OWNER_ONLY`` lists role ``owner`` and no other.
 
 A READ spec declares ``reader`` only when its handler selects from ``report_*`` views
 alone. Nothing here can check that from the outside: the reader role's grants do, since
@@ -41,6 +42,9 @@ from rheo_finance.contracts import Role, SafetyClass
 
 NAME_SHAPE = re.compile(r"finance\.[a-z_]+\.[a-z_]+")
 TOOL_NAME_SHAPE = re.compile(r"finance_[a-z_]+")
+# Operations only the owner may run: an approval a job (role service) could reach would
+# let a scheduled tick turn a sink on. Prompt 77 adds the bulk confirm.
+OWNER_ONLY: frozenset[str] = frozenset({"finance.sink.approve"})
 
 
 class OperationError(Exception):
@@ -177,6 +181,8 @@ class OperationSpec(BaseModel):
             raise ValueError(f"{self.name}: lists no role")
         if not self.description.strip():
             raise ValueError(f"{self.name}: has no description")
+        if self.name in OWNER_ONLY and self.roles != {Role.OWNER}:
+            raise ValueError(f"{self.name}: lists a role other than owner")
         if Role.MEMBER in self.roles and self.connection != "reader":
             raise ValueError(f"{self.name}: lists role member, so it must use reader")
         if self.safety_class is not SafetyClass.READ and self.connection != "owner":

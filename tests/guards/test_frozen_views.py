@@ -44,6 +44,9 @@ PINNED = {
     "0006_filed_years.py": (
         "a699171f54b3ba2c7bda6432ec20f0a4e9cec35daa5b8c3a8ee535fb2026720d"
     ),
+    "0007_documents.py": (
+        "52457353a3934c1487ba58e7f28b9a1062a7bfabc5398b44ce60ada249e3f17d"
+    ),
 }
 
 

@@ -259,3 +259,46 @@ filed_year = Table(
     Column("note", Text),
 )
 _tiers(filed_year, {"id": P, "year": P, "filed_on": P, "note": R})
+
+# --- document registry (migration 0007) -----------------------------------------------
+
+document = Table(
+    "document",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("path", Text, nullable=False),
+    Column("sha256", Text, nullable=False, unique=True),
+    Column("kind", Text, nullable=False),
+    Column("issuer", Text, nullable=False),
+    Column("format", Text, nullable=False),
+    Column("official", Boolean, nullable=False, server_default="true"),
+    Column("status", Text, nullable=False),
+    Column("parser_id", Text),
+    Column("parser_version", Text),
+    Column("extraction", Text, nullable=False, server_default="none"),
+    Column("reject_reason", Text),
+    Column("period_start", Date),
+    Column("period_end", Date),
+    Column("message_id", Text),
+    Column("imported_at", DateTime(timezone=True), nullable=False),
+)
+_tiers(
+    document,
+    {
+        "id": P, "path": P, "sha256": P, "kind": P, "issuer": P, "format": P,
+        "official": P, "status": P, "parser_id": P, "parser_version": P,
+        "extraction": P, "reject_reason": Tier.INTERNAL, "period_start": P,
+        "period_end": P, "message_id": R, "imported_at": P,
+    },
+)  # fmt: skip
+
+# Derived on every archive walk: skipped files counted by issuer directory and reason,
+# never by path.
+archive_skip = Table(
+    "archive_skip",
+    metadata,
+    Column("directory", Text, primary_key=True),
+    Column("reason", Text, primary_key=True),
+    Column("count", Integer, nullable=False),
+)
+_tiers(archive_skip, {"directory": P, "reason": P, "count": P})

@@ -1,0 +1,17 @@
+# Financial data never enters this repo: statements, exports, ledger dumps, keys.
+data/
+*.pdf
+*.csv
+*.qfx
+*.ofx
+*.jsonl
+*.sqlite
+*.db
+.env*
+.venv/
+__pycache__/
+.bureau/
+
+# Local-only context: describes the owner's real accounts and setup. Never committed.
+project-context.md
+HANDOFF.md

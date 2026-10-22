@@ -13,16 +13,35 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from rheo_finance import db, init_data
+from rheo_finance.render import emit
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsWrite
 
 Handler = Callable[[argparse.Namespace], int]
 
 HEADLINE = "finance: Float, a local-first personal finance ledger."
 
 
+class GuardedParser(argparse.ArgumentParser):
+    """An ArgumentParser whose help, usage and error text goes through ``render.emit``.
+
+    argparse writes every message through ``_print_message``; subparsers inherit this
+    class, so ``finance <command> --help`` is guarded too.
+    """
+
+    def _print_message(
+        self, message: str, file: SupportsWrite[str] | None = None
+    ) -> None:
+        if message:
+            emit(message, file or sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser: argparse.ArgumentParser = GuardedParser(
         prog="finance",
         description=HEADLINE,
     )

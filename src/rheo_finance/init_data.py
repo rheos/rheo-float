@@ -20,6 +20,7 @@ from typing import Final
 
 from rheo_finance import db
 from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
+from rheo_finance.render import Report, emit
 from rheo_finance.settings import SETTINGS_FILE_NAME, settings_template
 
 DIRECTORIES: Final[tuple[str, ...]] = (
@@ -89,21 +90,21 @@ def _cmd_init_data(_args: argparse.Namespace) -> int:
     try:
         result = init_data()
     except OSError as exc:
-        print(f"finance init-data: failed. {exc}", file=sys.stderr)
+        emit(f"finance init-data: failed. {exc}", sys.stderr)
         return 1
     if result.created:
-        print(
+        headline = (
             f"finance init-data: created {len(result.created)} item(s) in"
             f" {result.data_dir}; left {len(result.kept)} existing item(s)"
             " as they were."
         )
     else:
-        print(
+        headline = (
             f"finance init-data: {result.data_dir} is already set up;"
             f" left {len(result.kept)} existing item(s) as they were."
         )
-    for path in result.tightened:
-        print(f"Tightened {path} to mode 0700.")
+    tightened = [f"Tightened {path} to mode 0700." for path in result.tightened]
+    emit(Report([headline], tightened))
     return 0
 
 

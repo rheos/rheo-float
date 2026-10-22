@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rheo_finance.render import Report, emit
+
 if TYPE_CHECKING:
     from alembic.config import Config
     from sqlalchemy.engine import URL
@@ -498,7 +500,7 @@ def migrate(url: URL | None = None) -> str:
 
 
 def _fail(command: str, exc: DbError) -> int:
-    print(f"finance db {command}: failed. {exc}", file=sys.stderr)
+    emit(f"finance db {command}: failed. {exc}", sys.stderr)
     return 1
 
 
@@ -507,11 +509,15 @@ def _cmd_up(_args: argparse.Namespace) -> int:
         result = up()
     except DbError as exc:
         return _fail("up", exc)
-    print(f"finance db up: Postgres is ready on {HOST}:{PORT} (container {CONTAINER}).")
+    headline = [
+        f"finance db up: Postgres is ready on {HOST}:{PORT} (container {CONTAINER})."
+    ]
     if result.env_file_created:
-        print(f"Wrote {result.env_file} (mode 0600) with generated passwords.")
-    for note in result.notes:
-        print(note[0].upper() + note[1:] + ".")
+        headline.append(
+            f"Wrote {result.env_file} (mode 0600) with generated passwords."
+        )
+    notes = [note[0].upper() + note[1:] + "." for note in result.notes]
+    emit(Report(headline, notes))
     return 0
 
 
@@ -521,11 +527,14 @@ def _cmd_init(args: argparse.Namespace) -> int:
     except DbError as exc:
         return _fail("init", exc)
     if not changes:
-        print("finance db init: already set up, nothing changed.")
+        emit(Report(["finance db init: already set up, nothing changed."]))
         return 0
-    print(f"finance db init: {len(changes)} change(s).")
-    for change in changes:
-        print(f"- {change}")
+    emit(
+        Report(
+            [f"finance db init: {len(changes)} change(s)."],
+            [f"- {change}" for change in changes],
+        )
+    )
     return 0
 
 
@@ -534,7 +543,7 @@ def _cmd_migrate(_args: argparse.Namespace) -> int:
         head = migrate()
     except DbError as exc:
         return _fail("migrate", exc)
-    print(f"finance db migrate: database {LIVE_DATABASE} is at head ({head}).")
+    emit(Report([f"finance db migrate: database {LIVE_DATABASE} is at head ({head})."]))
     return 0
 
 

@@ -42,7 +42,7 @@ from rheo_finance.context import (
     UnitOfWork,
 )
 from rheo_finance.contracts import Role
-from rheo_finance.settings import default_settings
+from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
 
@@ -177,9 +177,16 @@ def make_context(
 ) -> Callable[[Role], FinanceContext]:
     """A ``FinanceContext`` for a role over ``finance_test``, with a fake clock."""
 
+    # The archive and Downloads point at paths that do not exist, so an operation
+    # dispatched with these settings never reads or writes the real directories.
+    unset = parse_settings(
+        f'[finance.paths]\narchive = "{tmp_path / "archive-unset"}"\n'
+        f'downloads = "{tmp_path / "downloads-unset"}"\n'
+    )
+
     def build(role: Role) -> FinanceContext:
         ctx = FinanceContext(
-            settings=default_settings(),
+            settings=unset,
             clock=FakeClock(dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)),
             paths=FinancePaths(data=tmp_path),
             role=role,

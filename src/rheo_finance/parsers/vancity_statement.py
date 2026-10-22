@@ -22,6 +22,7 @@ compared by ``institution_key`` (case and spacing aside).
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 from typing import Final
 
@@ -129,6 +130,11 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
     )
 
 
+def filing_date(text: str) -> dt.date:
+    """The statement's period end, the date the filer names a new copy by."""
+    return vancity_statement(text).period_end
+
+
 PARSER: Final = register_parser(
     Parser(
         parser_id="vancity.statement",
@@ -136,5 +142,6 @@ PARSER: Final = register_parser(
         format="pdf",
         version="1",
         parse=parse,
+        filing_date=filing_date,
     )
 )

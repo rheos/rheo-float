@@ -110,6 +110,11 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
     )
 
 
+def filing_date(text: str) -> dt.date:
+    """The bill date, the date the filer names a new copy by."""
+    return _date(reference_bill(text)["bill_date"])
+
+
 PARSER: Final = register_parser(
     Parser(
         parser_id="virgin_plus.bill",
@@ -117,5 +122,6 @@ PARSER: Final = register_parser(
         format="pdf",
         version="1",
         parse=parse,
+        filing_date=filing_date,
     )
 )

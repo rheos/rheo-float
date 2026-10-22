@@ -1,5 +1,8 @@
 """The archive walk and the document registry, and ``finance.document.file`` (FR-2).
 
+The operation runs the Downloads filer (``documents.filer``) first and then the walk,
+so a file it copies in is registered by the same run.
+
 The identifiers the check refuses come from the manual identifiers file itself and
 from ``account_identifier``, so the walk never depends on derivation stage 2 having
 run first (a rebuild registers files before stage 2 loads the registry). The file is
@@ -484,6 +487,25 @@ class SkipCount(BaseModel):
     count: Annotated[int, Tiered(P)]
 
 
+class DownloadsOut(BaseModel):
+    """What the Downloads filer did (``documents.filer``), as counts only.
+    ``scanned`` is false when ``finance.paths.downloads`` does not exist."""
+
+    model_config = ConfigDict(frozen=True)
+
+    scanned: Annotated[bool, Tiered(P)]
+    filed: Annotated[int, Tiered(P)]
+    known: Annotated[int, Tiered(P)]
+    # The name the date gives was refused by the adopted-path check; not filed.
+    refused: Annotated[int, Tiered(P)]
+    # Of a format a filing rule reads, but no rule could date it; not filed.
+    unrecognised: Annotated[int, Tiered(P)]
+    unreadable: Annotated[int, Tiered(P)]
+    # VCTY_*.pdf and VirginPDF*.pdf, left to the monitors; waiting: a day or more old.
+    monitor_skipped: Annotated[int, Tiered(P)]
+    monitor_waiting: Annotated[int, Tiered(P)]
+
+
 class FileOut(BaseModel):
     """Counts only: no path appears in the output."""
 
@@ -497,13 +519,24 @@ class FileOut(BaseModel):
     # Stored paths replaced by WITHHELD_PATH in this walk.
     withheld: Annotated[int, Tiered(P)]
     skipped: Annotated[list[SkipCount], Tiered(P)]
+    downloads: Annotated[DownloadsOut, Tiered(P)]
 
 
 def file_documents(ctx: FinanceContext, uow: UnitOfWork, _data: FileIn) -> FileOut:
+    """File new Downloads into the archive, then walk the archive, so a file filed
+    now is registered by the same run."""
+    # Imported here: the filer reads the parser registry, which imports this module.
+    from rheo_finance.documents import filer
+
     root = ctx.settings.get_path(ARCHIVE_KEY)
     if root is None or not root.is_dir():
         raise DocumentRefused(f"the {ARCHIVE_KEY} directory does not exist")
-    filed = file_archive(uow, root, ctx.paths.data, ctx.clock.now_utc())
+    now = ctx.clock.now_utc()
+    check = PathCheck(registered_identifiers(uow, ctx.paths.data))
+    downloads = filer.file_downloads(
+        uow, ctx.settings.get_path(filer.DOWNLOADS_KEY), root, check, now
+    )
+    filed = file_archive(uow, root, ctx.paths.data, now)
     return FileOut(
         registered=filed.registered,
         known=filed.known,
@@ -514,6 +547,16 @@ def file_documents(ctx: FinanceContext, uow: UnitOfWork, _data: FileIn) -> FileO
             SkipCount(directory=directory, reason=reason, count=count)
             for directory, reason, count in filed.skipped
         ],
+        downloads=DownloadsOut(
+            scanned=downloads.scanned,
+            filed=downloads.filed,
+            known=downloads.known,
+            refused=len(downloads.refused),
+            unrecognised=len(downloads.unrecognised),
+            unreadable=downloads.unreadable,
+            monitor_skipped=downloads.monitor_skipped,
+            monitor_waiting=downloads.monitor_waiting,
+        ),
     )
 
 
@@ -527,8 +570,10 @@ register(
         roles=frozenset({Role.OWNER, Role.SERVICE}),
         connection="owner",
         description=(
-            "Adopt the archive in place: register each new file by sha256 and count"
-            " the files whose path carries an identifier, by directory only."
+            "Copy dateable new files from Downloads into the archive (never the"
+            " monitors' files), then adopt the archive in place: register each new"
+            " file by sha256 and count the files whose path carries an identifier,"
+            " by directory only."
         ),
     )
 )

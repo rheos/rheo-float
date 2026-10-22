@@ -203,6 +203,11 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
     )
 
 
+def filing_date(text: str) -> dt.date:
+    """The last row's date, the date the filer names a new copy by."""
+    return max(row.date for rows in _rows(text).values() for row in rows)
+
+
 PARSER: Final = register_parser(
     Parser(
         parser_id="vancity.chequing_csv",
@@ -210,5 +215,6 @@ PARSER: Final = register_parser(
         format="csv",
         version="1",
         parse=parse,
+        filing_date=filing_date,
     )
 )

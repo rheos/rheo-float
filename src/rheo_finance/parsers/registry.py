@@ -107,13 +107,18 @@ PARSER_MODULES: Final[tuple[str, ...]] = (
 @dataclass(frozen=True)
 class Parser:
     """A fixed-rule parser for files of ``format`` under issuer directory ``issuer``.
-    ``parser_id`` and ``version`` are stored on every document it parses."""
+    ``parser_id`` and ``version`` are stored on every document it parses.
+
+    ``filing_date``, when set, reads from the same text the date a new file is filed
+    under (``documents.filer``): a statement's period end or a bill's date. It needs no
+    account registry and raises ``NotRecognised`` where ``parse`` would."""
 
     parser_id: str
     issuer: str
     format: str
     version: str
     parse: Parse
+    filing_date: Callable[[str], dt.date] | None = None
 
 
 PARSERS: dict[str, Parser] = {}

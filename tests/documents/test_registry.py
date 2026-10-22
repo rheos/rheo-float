@@ -52,7 +52,11 @@ def file_op(
 ) -> FileOut:
     ctx = dataclasses.replace(
         rolled_back_context(role),
-        settings=parse_settings(f'[finance.paths]\narchive = "{archive}"\n'),
+        # Downloads is a path that does not exist: the filer has its own tests.
+        settings=parse_settings(
+            f'[finance.paths]\narchive = "{archive}"\n'
+            f'downloads = "{archive.parent / "downloads-unset"}"\n'
+        ),
     )
     out = dispatch(OPERATION, {}, role, ctx=ctx)
     assert isinstance(out, FileOut)

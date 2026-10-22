@@ -22,7 +22,10 @@ from __future__ import annotations
 import re
 from typing import Any, Self
 
+import psycopg
+from psycopg import pq
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from sqlalchemy import Connection, text
 
 from rheo_finance.context import (
     ConnectionName,
@@ -121,6 +124,18 @@ def register(spec: OperationSpec) -> None:
     SPECS[spec.name] = spec
 
 
+def _server_in_transaction(connection: Connection) -> bool:
+    """Whether the server still holds this connection's transaction open.
+
+    A handler's SQL ``COMMIT`` or ``ROLLBACK`` ends it on the server while SQLAlchemy
+    still counts it active, and anything the handler wrote before it has landed.
+    """
+    driver = connection.connection.driver_connection
+    if not isinstance(driver, psycopg.Connection):
+        raise TypeError("dispatch expects a psycopg 3 connection")
+    return driver.info.transaction_status is not pq.TransactionStatus.IDLE
+
+
 def _location(loc: tuple[int | str, ...]) -> str:
     return ".".join(str(part) for part in loc) or "<input>"
 
@@ -173,8 +188,11 @@ def dispatch(
     with ctx.databases.engine(spec.connection).connect() as connection:
         transaction = connection.begin()
         try:
+            # psycopg sends BEGIN with the first statement: open the server transaction
+            # now, so an idle server after the handler means the handler ended it.
+            connection.execute(text("SELECT 1"))
             result = spec.handler(ctx, UnitOfWork(connection), data)
-            if not transaction.is_active:
+            if not transaction.is_active or not _server_in_transaction(connection):
                 raise HandlerEndedTransaction(
                     f"{name}: the handler ended its transaction"
                 )

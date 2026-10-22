@@ -283,7 +283,7 @@ def test_a_name_registers_once(empty_registry: dict[str, OperationSpec]) -> None
 def count_versions(_ctx: FinanceContext, uow: UnitOfWork, _data: Empty) -> Rows:
     # A base table: the reader may select from report views and nothing else.
     query = text("SELECT count(*) FROM finance.alembic_version_finance")
-    return Rows(count=int(uow.connection.execute(query).scalar_one()))
+    return Rows(count=int(uow.execute(query).scalar_one()))
 
 
 def test_a_reader_spec_that_reads_a_base_table_fails_with_a_permission_error(

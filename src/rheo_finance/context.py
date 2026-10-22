@@ -44,20 +44,21 @@ class LineSnapshot(BaseModel):
 
 
 class UnitOfWork:
-    """One connection inside the one transaction ``dispatch`` opened for an operation.
+    """The one transaction ``dispatch`` opened for an operation, as a handler sees it.
 
-    Handlers run statements on ``connection``. Committing or rolling back is dispatch's
-    job: a handler that ends the transaction is refused after it returns.
+    It offers the connection's ``execute``, ``scalar`` and ``scalars`` and nothing else,
+    so a handler has no ``commit``, ``rollback`` or ``close`` to end the transaction
+    with: ending it is dispatch's job. A ``COMMIT`` sent as SQL cannot be stopped from
+    here; dispatch detects it and raises.
     """
 
-    __slots__ = ("_connection",)
+    __slots__ = ("execute", "scalar", "scalars")
 
     def __init__(self, connection: Connection) -> None:
-        self._connection = connection
-
-    @property
-    def connection(self) -> Connection:
-        return self._connection
+        # The bound methods keep SQLAlchemy's typed overloads.
+        self.execute = connection.execute
+        self.scalar = connection.scalar
+        self.scalars = connection.scalars
 
 
 # A line reference to its snapshot, or None when no current line has that reference.

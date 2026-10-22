@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 
 from rheo_finance.context import ConnectionName, FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass
@@ -68,9 +68,7 @@ def make_spec(
 
 
 def current_user(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
-    return Answer(
-        value=str(uow.connection.execute(text("SELECT current_user")).scalar())
-    )
+    return Answer(value=str(uow.execute(text("SELECT current_user")).scalar()))
 
 
 @pytest.fixture
@@ -226,7 +224,7 @@ def test_a_handler_that_returns_commits(
     probe_table: str,
 ) -> None:
     def insert(_ctx: FinanceContext, uow: UnitOfWork, data: Probe) -> Answer:
-        uow.connection.execute(
+        uow.execute(
             text(f"INSERT INTO {probe_table} (label) VALUES (:label)"),
             {"label": data.label},
         )
@@ -248,8 +246,8 @@ def test_a_handler_error_rolls_back_and_is_reraised(
     probe_table: str,
 ) -> None:
     def insert_then_fail(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
-        uow.connection.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
-        uow.connection.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('b')"))
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('b')"))
         raise HandlerBroke("after two writes")
 
     register(
@@ -269,7 +267,7 @@ def test_a_wrong_output_type_rolls_back(
     probe_table: str,
 ) -> None:
     def insert_wrong(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Unrelated:
-        uow.connection.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
         return Unrelated()
 
     register(
@@ -280,15 +278,52 @@ def test_a_wrong_output_type_rolls_back(
     assert probe_rows(owner_engine, probe_table) == 0
 
 
-def test_a_handler_may_not_end_its_transaction(
-    empty_registry: dict[str, OperationSpec], make_context: MakeContext
+def test_a_handler_cannot_commit_through_its_unit_of_work(
+    empty_registry: dict[str, OperationSpec],
+    make_context: MakeContext,
+    owner_engine: Engine,
+    probe_table: str,
 ) -> None:
-    def commits(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
-        uow.connection.commit()
+    def write_and_commit(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
+        uow.commit()  # type: ignore[attr-defined]  # the attempt under test
         return Answer(value="committed")
 
     register(
-        make_spec("finance.probe.commits", commits, safety_class=SafetyClass.MUTATE)
+        make_spec(
+            "finance.probe.commits", write_and_commit, safety_class=SafetyClass.MUTATE
+        )
+    )
+    with pytest.raises(AttributeError):
+        dispatch("finance.probe.commits", {}, Role.OWNER, ctx=make_context(Role.OWNER))
+    assert probe_rows(owner_engine, probe_table) == 0
+
+
+def test_a_unit_of_work_offers_no_way_to_end_its_transaction(
+    owner_conn: Connection,
+) -> None:
+    uow = UnitOfWork(owner_conn)
+    for name in ("commit", "rollback", "close", "begin", "connection"):
+        assert not hasattr(uow, name), name
+
+
+def test_a_commit_statement_from_a_handler_is_detected(
+    empty_registry: dict[str, OperationSpec],
+    make_context: MakeContext,
+    probe_table: str,
+) -> None:
+    # A COMMIT sent as SQL cannot be stopped client-side; dispatch reports it.
+    def sql_commit(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Answer:
+        uow.execute(text(f"INSERT INTO {probe_table} (label) VALUES ('a')"))
+        uow.execute(text("COMMIT"))
+        return Answer(value="committed")
+
+    register(
+        make_spec(
+            "finance.probe.sql_commit", sql_commit, safety_class=SafetyClass.MUTATE
+        )
     )
     with pytest.raises(HandlerEndedTransaction):
-        dispatch("finance.probe.commits", {}, Role.OWNER, ctx=make_context(Role.OWNER))
+        dispatch(
+            "finance.probe.sql_commit", {}, Role.OWNER, ctx=make_context(Role.OWNER)
+        )

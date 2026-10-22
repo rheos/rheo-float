@@ -31,6 +31,7 @@ from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rheo_finance import db
+from rheo_finance.tier import Tier
 
 SETTINGS_FILE_NAME: Final = "settings.toml"
 TIMEZONE_KEY: Final = "finance.locale.timezone"
@@ -46,14 +47,6 @@ SINKS: Final[tuple[str, ...]] = (
     "stripe",
 )
 WEEKDAYS: Final[tuple[str, ...]] = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-
-
-class Tier(StrEnum):
-    """Sensitivity of a stored value (FR-46): public, internal or restricted."""
-
-    PUBLIC = "public"
-    INTERNAL = "internal"
-    RESTRICTED = "restricted"
 
 
 class ValueType(StrEnum):
@@ -116,8 +109,14 @@ def _check_value(key: str, value_type: ValueType, value: object) -> SettingValue
                 except ValueError:
                     pass
         case ValueType.TIME:
-            if isinstance(value, dt.time) and value.tzinfo is None:
-                return value.replace(second=0, microsecond=0)
+            # Minutes are the finest grain: a time with seconds is refused, not cut.
+            if (
+                isinstance(value, dt.time)
+                and value.tzinfo is None
+                and value.second == 0
+                and value.microsecond == 0
+            ):
+                return value
             if isinstance(value, str) and (match := _HH_MM.fullmatch(value)):
                 return dt.time(int(match[1]), int(match[2]))
     raise SettingsError(

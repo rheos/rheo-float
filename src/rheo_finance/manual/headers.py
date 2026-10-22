@@ -1,9 +1,10 @@
 """The manual-entry files (FR-10): file name to its ordered header columns.
 
-``finance init-data`` writes each file header-only from this table, and the loaders that
-later prompts add read their columns from it, so the header Robin edits and the header
-the code expects cannot drift. Column names come from SPEC "Files, paths and settings"
-> Manual-entry files. A line ref column holds a ``finance.txn:<uuid>`` reference.
+``finance init-data`` writes each file header-only from this table, and the loaders
+that later prompts add read their columns from it, so the header the owner edits and
+the header the code expects cannot drift. Column names come from SPEC "Files, paths
+and settings" > Manual-entry files. A line ref column holds a ``finance.txn:<uuid>``
+reference.
 """
 
 from __future__ import annotations

@@ -12,11 +12,11 @@ from rheo_finance.settings import (
     SINKS,
     SPECS,
     SettingsError,
-    Tier,
     load_settings,
     settings_hash,
     settings_template,
 )
+from rheo_finance.tier import Tier
 
 SINK_KEYS = [f"finance.sinks.{sink}.enabled" for sink in SINKS]
 
@@ -79,6 +79,7 @@ def test_the_file_overrides_defaults_and_floats_stay_decimal(tmp_path: Path) -> 
             tmp_path,
             "finance.reminders.min_due_date = 2026-03-01\n"
             'finance.digest.time = "07:30"\n'
+            "finance.backup.time = 01:15:00\n"
             "[finance.transfers]\n"
             "fee_tolerance_abs = 7.25\n",
         )
@@ -87,6 +88,7 @@ def test_the_file_overrides_defaults_and_floats_stay_decimal(tmp_path: Path) -> 
     assert isinstance(value, Decimal) and value == Decimal("7.25")
     assert settings.get_date("finance.reminders.min_due_date") == dt.date(2026, 3, 1)
     assert settings.get_time("finance.digest.time") == dt.time(7, 30)
+    assert settings.get_time("finance.backup.time") == dt.time(1, 15)
 
 
 def test_a_syntax_error_names_the_line(tmp_path: Path) -> None:
@@ -123,6 +125,7 @@ def test_an_unknown_key_is_an_error_naming_it(
         "finance.payments.early_days = true\n",
         'finance.digest.weekday = "MONDAY"\n',
         'finance.backup.time = "25:00"\n',
+        "finance.backup.time = 08:00:30\n",
         "finance.transfers.fee_tolerance_abs = nan\n",
     ],
 )

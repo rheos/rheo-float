@@ -1,1 +1,1 @@
-"""Manual-entry files Robin maintains in the data directory (FR-10)."""
+"""Manual-entry files the owner maintains in the data directory (FR-10)."""

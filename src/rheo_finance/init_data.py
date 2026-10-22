@@ -2,7 +2,7 @@
 
 Creates the data directory and its subdirectories (mode 0700), a fully commented
 ``settings.toml`` and the header-only manual-entry CSVs under ``manual/``. Idempotent:
-a file that exists is never rewritten, so a second run leaves Robin's edits alone. A
+a file that exists is never rewritten, so a second run leaves the owner's edits alone. A
 directory it manages that is readable by group or others is tightened to 0700.
 """
 

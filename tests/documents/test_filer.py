@@ -10,6 +10,7 @@ UTF-8). Every value is synthetic.
 
 from __future__ import annotations
 
+import csv
 import dataclasses
 import datetime as dt
 import hashlib
@@ -333,6 +334,79 @@ def test_a_matching_file_with_unreadable_fields_is_unrecognised_and_the_scan_goe
     assert downloads_state(dirs) == before
     assert (out.downloads.filed, out.downloads.unrecognised) == (2, 1)
     assert "a-broken" not in out.model_dump_json()
+
+
+def test_a_csv_cell_over_the_reader_limit_is_unrecognised_and_the_scan_goes_on(
+    rolled_back_context: MakeContext, dirs: Dirs
+) -> None:
+    # csv.Error is not a ValueError: a field over the reader's size limit must still
+    # mean "this rule cannot date this file", not abort the scan.
+    giant = EXPORT.replace(b"POS PURCHASE", b"x" * 200_000, 1)
+    assert len(giant) > csv.field_size_limit()
+    download(dirs, "a-giant.csv", giant, age=HOUR)
+    download(dirs, "b-export.csv", EXPORT, age=HOUR)
+    before = downloads_state(dirs)
+
+    out = file_op(rolled_back_context, dirs)
+
+    assert tree(dirs.archive) == {"vancity/2026-02-16.csv": sha(EXPORT)}
+    assert downloads_state(dirs) == before
+    assert (out.downloads.filed, out.downloads.unrecognised) == (1, 1)
+    assert "a-giant" not in out.model_dump_json()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_downloads_directory_that_cannot_be_listed_does_not_stop_the_archive_walk(
+    rolled_back_context: MakeContext, dirs: Dirs, owner_conn: Connection
+) -> None:
+    placed = dirs.archive / "vancity" / "2026-01-10.pdf"
+    placed.parent.mkdir()
+    placed.write_bytes(STATEMENT)
+    download(dirs, "export.csv", EXPORT, age=HOUR)
+    dirs.downloads.chmod(0o000)
+    try:
+        out = file_op(rolled_back_context, dirs)
+        waiting = filer.monitor_files_waiting(dirs.downloads, NOW)
+    finally:
+        dirs.downloads.chmod(0o700)
+
+    assert out.downloads.scanned is False
+    assert out.downloads.filed == 0
+    assert waiting == 0
+    assert out.registered == 1  # the walk still ran
+    assert registered_paths(owner_conn) == ["vancity/2026-01-10.pdf"]
+    assert tree(dirs.archive) == {"vancity/2026-01-10.pdf": sha(STATEMENT)}
+
+
+def test_bytes_registered_under_a_legacy_archive_name_are_known(
+    rolled_back_context: MakeContext, dirs: Dirs, owner_conn: Connection
+) -> None:
+    legacy = dirs.archive / "vancity" / "statement-from-the-old-days.pdf"
+    legacy.parent.mkdir()
+    legacy.write_bytes(STATEMENT)
+    first = file_op(rolled_back_context, dirs)  # the walk registers the legacy name
+    assert first.registered == 1
+    archived = tree(dirs.archive)
+    download(dirs, "e-statement.pdf", STATEMENT, age=HOUR)
+
+    out = file_op(rolled_back_context, dirs)
+
+    assert (out.downloads.filed, out.downloads.known) == (0, 1)
+    assert tree(dirs.archive) == archived  # no second copy under the dated name
+    assert registered_paths(owner_conn) == ["vancity/statement-from-the-old-days.pdf"]
+
+
+def test_two_identical_downloads_in_one_scan_are_read_once(
+    rolled_back_context: MakeContext, dirs: Dirs, stub_pdftotext: list[str]
+) -> None:
+    download(dirs, "a.pdf", STATEMENT, age=HOUR)
+    download(dirs, "b.pdf", STATEMENT, age=HOUR)
+
+    out = file_op(rolled_back_context, dirs)
+
+    assert (out.downloads.filed, out.downloads.known) == (1, 1)
+    assert stub_pdftotext == ["a.pdf"]  # the second copy is known before text is read
+    assert tree(dirs.archive) == {"vancity/2026-01-10.pdf": sha(STATEMENT)}
 
 
 def test_the_returned_list_names_the_unrecognised_and_refused_files(

@@ -34,6 +34,7 @@ counts, and no Downloads name goes into a table, an event or an error message.
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import hashlib
 import itertools
@@ -65,7 +66,7 @@ MONITOR_WAIT: Final = dt.timedelta(hours=24)
 @dataclass(frozen=True)
 class DownloadsFiled:
     """What one scan did. ``scanned`` is false when the Downloads directory does not
-    exist, and then every count is zero."""
+    exist or cannot be listed, and then every count is zero."""
 
     scanned: bool = False
     filed: int = 0
@@ -107,11 +108,14 @@ def monitor_files_waiting(downloads: Path | None, now: dt.datetime) -> int:
     mtimes only, so status can call it without the filer."""
     if downloads is None or not downloads.is_dir():
         return 0
-    return sum(
-        1
-        for path, info in _files(downloads)
-        if is_monitor_file(path.name) and _waiting(info, now)
-    )
+    try:
+        return sum(
+            1
+            for path, info in _files(downloads)
+            if is_monitor_file(path.name) and _waiting(info, now)
+        )
+    except OSError:
+        return 0  # a directory that cannot be listed has no waiting files to report
 
 
 def filing_rules() -> tuple[Parser, ...]:
@@ -147,10 +151,10 @@ def _dated(
     """The first rule that dates the file, and the date; None when none does.
 
     A rule that matches the layout but finds a field it cannot read (a date that is not
-    a date, an amount that is not a number) raises ``ValueError`` or ``ArithmeticError``
-    out of its parse: that means this rule cannot date this file, so the next rule
-    tries, and the file is unrecognised when none does. One bad file must not stop the
-    scan.
+    a date, an amount that is not a number, a CSV cell over the reader's size limit)
+    raises ``ValueError``, ``ArithmeticError`` or ``csv.Error`` out of its parse: that
+    means this rule cannot date this file, so the next rule tries, and the file is
+    unrecognised when none does. One bad file must not stop the scan.
     """
     text: str | None = None
     for rule in rules:
@@ -163,7 +167,7 @@ def _dated(
                 return None
         try:
             return rule, rule.filing_date(text)
-        except (NotRecognised, ValueError, ArithmeticError):
+        except (NotRecognised, ValueError, ArithmeticError, csv.Error):
             continue
     return None
 
@@ -241,13 +245,19 @@ def file_downloads(
     if downloads is None or not downloads.is_dir():
         return DownloadsFiled()
     extract = extract_pdf or pdf_text
+    try:
+        # Listed before anything is filed: a directory that cannot be listed (no
+        # permission) is not scanned, and the archive walk still runs.
+        entries = list(_files(downloads))
+    except OSError:
+        return DownloadsFiled()
     rules = filing_rules()
     formats = {rule.format for rule in rules}
     seen: set[str] = set()
     counts = {"filed": 0, "known": 0, "unreadable": 0, "skipped": 0, "waiting": 0}
     refused: list[str] = []
     unrecognised: list[str] = []
-    for path, info in _files(downloads):
+    for path, info in entries:
         if is_monitor_file(path.name):
             counts["skipped"] += 1
             counts["waiting"] += _waiting(info, now)

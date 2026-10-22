@@ -12,12 +12,16 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from sqlalchemy import Connection
 
-from rheo_finance.context import UnitOfWork
+from rheo_finance import operations
+from rheo_finance.clock import FakeClock
+from rheo_finance.context import FinanceContext, UnitOfWork
+from rheo_finance.contracts import Role
 from rheo_finance.http import (
     AllowlistRefused,
     Client,
@@ -32,6 +36,7 @@ if TYPE_CHECKING:
 
 SINK = "rates"
 T0 = dt.datetime(2026, 1, 15, 9, 0, tzinfo=dt.UTC)
+HOUR = dt.timedelta(hours=1)
 KEY = "999-synthetic-key-0f3a9c"
 SERIES = ("GET", "/series/:code")
 ALLOWLIST = (SERIES,)
@@ -110,6 +115,14 @@ def test_an_enabled_sink_sends_exactly_once(
     ]
 
 
+def test_every_declared_key_value_part_is_accepted(
+    enabled: None, uow: UnitOfWork, provider: StubSink, stub_server: StubServer
+) -> None:
+    path = "/series/FXUSDCAD?start=2026-01-01&api_key=&start=2026-02-01"
+    client(uow, provider).request("GET", stub_server.url(path))
+    assert [r.path for r in stub_server.requests] == [path]
+
+
 # --- the gate, before any socket (AC-78b, AC-78f) -------------------------------------
 
 
@@ -176,6 +189,34 @@ def test_a_client_built_on_a_wider_spec_than_the_approved_one_sends_nothing(
             "GET", stub_server.url("/series/FXUSDCAD")
         )
     assert stub_server.requests == []
+
+
+@pytest.fixture
+def owner(rolled_back_context: Callable[[Role], FinanceContext]) -> FinanceContext:
+    return replace(rolled_back_context(Role.OWNER), clock=FakeClock(T0 + HOUR))
+
+
+def test_a_reversed_newest_approval_sends_nothing_despite_an_older_one(
+    uow: UnitOfWork,
+    owner: FinanceContext,
+    provider: StubSink,
+    stub_server: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Callable[..., uuid.UUID],
+) -> None:
+    sink_settings(rates=True)
+    digest = spec_digest(provider(uow))
+    record_sink_approval(SINK, digest, at=T0 - HOUR)
+    newer = record_sink_approval(SINK, digest, at=T0)
+    operations.dispatch(
+        "finance.decision.reverse", {"decision_id": newer}, Role.OWNER, ctx=owner
+    )
+    with pytest.raises(SinkDisabled):
+        client(uow, provider).request("GET", stub_server.url("/series/FXUSDCAD"))
+    assert stub_server.requests == []
+    record_sink_approval(SINK, digest, at=T0 + 2 * HOUR)
+    client(uow, provider).request("GET", stub_server.url("/series/FXUSDCAD"))
+    assert len(stub_server.requests) == 1
 
 
 # --- hosts and schemes ----------------------------------------------------------------
@@ -264,6 +305,12 @@ def test_a_redirect_on_the_same_host_is_returned_not_followed(
         ("GET", "/series/.."),
         ("GET", "/series/FXUSDCAD?limit=5"),  # query key not declared
         ("GET", "/series/FXUSDCAD#part"),
+        ("GET", "/series/FXUSDCAD?start=1;api_key=x"),  # a ; is refused
+        ("GET", "/series/FXUSDCAD?start"),  # a part with no =
+        ("GET", "/series/FXUSDCAD?start=1&"),  # an empty part
+        ("GET", "/series/FXUSDCAD?&start=1"),
+        ("GET", "/series/FXUSDCAD?=1"),  # no key
+        ("GET", "/series/FXUSDCAD?st%61rt=1"),  # keys compare as written
     ],
 )
 def test_a_request_outside_the_allowlist_raises_before_the_socket(

@@ -15,7 +15,11 @@ caller as it came. Any other status is returned too.
 
 Errors never carry a header value or a query value: the client builds its own
 messages, scrubs any text it quotes, and raises with no urllib error attached, as
-neither ``__cause__`` nor ``__context__``.
+neither ``__cause__`` nor ``__context__``. Scrubbing covers header and query values
+only. A key in the URL path is not scrubbed, so no sink may put one there.
+
+A query is ``key=value`` parts joined by ``&``, every key one the request template
+declares; a ``;`` or a part without ``=`` is refused.
 """
 
 from __future__ import annotations
@@ -203,17 +207,22 @@ class Client:
             raise AllowlistRefused(
                 f"{self.sink}: {method} {shown} is not on the allowlist"
             )
-        keys = {key for key, _ in parse_qsl(parts.query, keep_blank_values=True)}
-        if parts.query and not keys:
-            raise AllowlistRefused(
-                f"{self.sink}: {method} {shown}: the query is malformed"
-            )
-        extra = sorted(keys - set(template.query_keys))
-        if extra:
-            named = ", ".join(_scrub(key, secrets) for key in extra)
-            raise AllowlistRefused(
-                f"{self.sink}: {method} {shown} does not take query key {named}"
-            )
+        if not parts.query:
+            return
+        if ";" in parts.query:
+            raise AllowlistRefused(f"{self.sink}: {method} {shown}: a ; in the query")
+        allowed_keys = set(template.query_keys)
+        for part in parts.query.split("&"):
+            key, equals, _value = part.partition("=")
+            if not key or not equals:
+                raise AllowlistRefused(
+                    f"{self.sink}: {method} {shown}: every query part is key=value"
+                )
+            if key not in allowed_keys:
+                raise AllowlistRefused(
+                    f"{self.sink}: {method} {shown} does not take query key"
+                    f" {_scrub(key, secrets)}"
+                )
 
     # --- the request ------------------------------------------------------------------
 
@@ -269,11 +278,13 @@ class Client:
 def _secrets(header_values: Iterable[str], url: str) -> list[str]:
     """Every header value and query value long enough to be worth scrubbing."""
     try:
-        query = parse_qsl(urlsplit(url).query, keep_blank_values=True)
+        raw_query = urlsplit(url).query
+        query = parse_qsl(raw_query, keep_blank_values=True)
     except ValueError:
-        query = []
+        raw_query, query = "", []
+    raw_values = [part.partition("=")[2] for part in raw_query.split("&")]
     found: list[str] = []
-    for value in [*header_values, *(value for _, value in query)]:
+    for value in [*header_values, *(value for _, value in query), *raw_values]:
         found += [value, *value.split()]  # "Bearer <key>" scrubs the key alone too
     # Longest first, so a value that contains another is scrubbed whole.
     return sorted(

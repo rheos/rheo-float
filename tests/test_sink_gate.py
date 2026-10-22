@@ -252,6 +252,27 @@ def test_a_reversed_approval_is_not_an_approval(
     assert gate.is_enabled(uow, SINK) is False
 
 
+def test_reversing_the_newer_of_two_approvals_does_not_fall_back_to_the_older(
+    uow: UnitOfWork,
+    owner: FinanceContext,
+    provider: TestSink,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Callable[..., uuid.UUID],
+) -> None:
+    sink_settings(rates=True)
+    digest = digest_now(uow, provider)
+    record_sink_approval(SINK, digest, at=T0 - HOUR)
+    newer = record_sink_approval(SINK, digest, at=T0)
+    assert gate.is_enabled(uow, SINK) is True
+    operations.dispatch(  # recorded at T0 + 1h
+        "finance.decision.reverse", {"decision_id": newer}, Role.OWNER, ctx=owner
+    )
+    assert gate.is_enabled(uow, SINK) is False
+    # Only a fresh approval turns it on again.
+    record_sink_approval(SINK, digest, at=T0 + 2 * HOUR)
+    assert gate.is_enabled(uow, SINK) is True
+
+
 # --- the derived sink_spec table ------------------------------------------------------
 
 

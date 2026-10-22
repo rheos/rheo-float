@@ -1,6 +1,8 @@
 # Every file under tests/fixtures/synthetic/ is listed here, or the repo check fails (FR-45).
 # Paths are relative to the repo root. Every value in a fixture is fake: digit runs of 8 or
 # more start with 999, except YYYYMMDD dates and 13-digit millisecond epochs.
+# Fractional digit runs count too: an 8-decimal quantity like 0.99912345 needs the 999
+# prefix after the point.
 
 [[fixture]]
 path = "tests/fixtures/synthetic/statement_layout.txt"

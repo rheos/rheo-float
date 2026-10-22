@@ -8,6 +8,7 @@ Luhn-valid only so the card rule has something to catch.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +49,12 @@ class Repo:
         target = self.root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+        self.git("add", "-f", path)
+
+    def stage_bytes(self, path: str, content: bytes) -> None:
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
         self.git("add", "-f", path)
 
     def manifest(self, *paths: str) -> None:
@@ -138,6 +145,12 @@ def test_staged_classify_golden_csv_fails(repo: Repo) -> None:
         "scan.JPG",
         "data/export.json",
         "tests/fixtures/loose.csv",
+        # Beyond the spec's list on purpose.
+        "photo.jpeg",
+        "shot.png",
+        "book.xlsx",
+        "book.xls",
+        "bundle.zip",
     ],
 )
 def test_every_statement_extension_outside_synthetic_fails(
@@ -206,6 +219,25 @@ def test_luhn_valid_number_with_separators_fails(repo: Repo, number: str) -> Non
     assert_fails(repo.check(), f"{FIXTURE}:1", "Luhn", number)
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"ref 123 {LUHN_GROUPED_SPACES}",  # a neighbouring group before
+        f"{LUHN_GROUPED_SPACES} 123 end",  # a neighbouring group after
+        f"id 4567 {LUHN_GROUPED_HYPHENS}-890",  # neighbours on both sides
+        "card 9991-2345 6789-0121",  # mixed separators
+        "card 9991  2345  6789  0121",  # double spaces
+        "card 9991 - 2345 - 6789 - 0121",  # spaced hyphens
+    ],
+)
+def test_grouped_card_with_neighbours_or_odd_separators_fails(
+    repo: Repo, line: str
+) -> None:
+    repo.manifest(FIXTURE)
+    repo.stage(FIXTURE, f"{line}\n")
+    assert_fails(repo.check(), f"{FIXTURE}:1", "Luhn", LUHN_GROUPED_SPACES)
+
+
 def test_grouped_number_that_fails_luhn_passes(repo: Repo) -> None:
     repo.manifest(FIXTURE)
     repo.stage(FIXTURE, f"ref: {NOT_LUHN_GROUPED}\n")
@@ -231,6 +263,44 @@ def test_eight_digit_run_not_date_nor_999_fails(repo: Repo, run: str) -> None:
     repo.manifest(FIXTURE)
     repo.stage(FIXTURE, f"line one\nref={run};\n")
     assert_fails(repo.check(), f"{FIXTURE}:2", "8 or more digits", run)
+
+
+@pytest.mark.parametrize("codec", ["utf-16", "utf-16-le", "utf-16-be", "utf-32"])
+def test_wide_encoded_fixture_is_decoded_and_scanned(repo: Repo, codec: str) -> None:
+    # "utf-16" and "utf-32" write a BOM; the -le and -be forms have none, so only the
+    # NUL-interleave pattern gives them away.
+    repo.manifest(FIXTURE)
+    repo.stage_bytes(FIXTURE, f"header\nref {PLAIN_RUN}\n".encode(codec))
+    assert_fails(repo.check(), f"{FIXTURE}:2", "8 or more digits", PLAIN_RUN)
+
+
+def test_utf16_bom_decodes_text_the_interleave_check_would_miss(repo: Repo) -> None:
+    # Mostly non-ASCII text has few NUL bytes in UTF-16, so only the BOM identifies it.
+    repo.manifest(FIXTURE)
+    text = "\u6578" * 40 + f" {PLAIN_RUN}\n"
+    repo.stage_bytes(FIXTURE, text.encode("utf-16"))
+    assert_fails(repo.check(), f"{FIXTURE}:1", "8 or more digits", PLAIN_RUN)
+
+
+def test_wide_encoded_card_fails(repo: Repo) -> None:
+    repo.manifest(FIXTURE)
+    repo.stage_bytes(FIXTURE, f"card {LUHN_GROUPED_SPACES}\n".encode("utf-16"))
+    assert_fails(repo.check(), f"{FIXTURE}:1", "Luhn", LUHN_GROUPED_SPACES)
+
+
+def test_clean_utf16_fixture_passes(repo: Repo) -> None:
+    repo.manifest(FIXTURE)
+    repo.stage_bytes(FIXTURE, "date 20260131 ref 99912345678\n".encode("utf-16"))
+    assert_passes(repo.check())
+
+
+def test_data_file_with_nul_bytes_that_does_not_decode_fails(repo: Repo) -> None:
+    repo.manifest(FIXTURE)
+    repo.stage_bytes(FIXTURE, b"\x00\x01\x02 1234\x005678\x00 9012\x00\x00\xff")
+    result = repo.check()
+    assert_fails(result, FIXTURE, "does not decode")
+    # Path and rule only: no line number after the path.
+    assert re.search(re.escape(FIXTURE) + r":[0-9]", output(result)) is None
 
 
 def test_999_prefixed_run_passes(repo: Repo) -> None:

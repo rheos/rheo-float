@@ -4,7 +4,8 @@ Usage: ``python scripts/repo_check.py --staged`` (the pre-commit hook) or ``--tr
 Exits 0 when clean and 1 on any failure. Standard library only, Python 3.11 or newer.
 
 Rule 1, over every file checked:
-  * a statement-type extension outside ``tests/fixtures/synthetic/`` fails;
+  * a statement-type extension outside ``tests/fixtures/synthetic/`` fails (the
+    spec's list plus jpeg, png, xlsx, xls and zip, a deliberate tightening);
   * a file under ``tests/fixtures/synthetic/`` not listed in its ``MANIFEST.toml``
     fails.
 Rule 2, over data-shaped files only (everything under ``tests/fixtures/`` and
@@ -12,9 +13,15 @@ Rule 2, over data-shaped files only (everything under ``tests/fixtures/`` and
   * a run of 8 or more digits bounded by non-alphanumerics that does not start with the
     fake prefix ``999`` fails, unless it is a ``YYYYMMDD`` calendar date or a 13-digit
     millisecond epoch (``1`` then 12 digits);
-  * a Luhn-valid 13 to 19 digit number fails, written contiguously or as groups joined
-    by one repeated space or hyphen. The 13-digit epoch shape is never Luhn-checked.
-Claude Code's settings files (``.claude/*.json``) are not checked at all.
+  * a Luhn-valid 13 to 19 digit number fails, written contiguously or split into
+    groups of 3 to 6 digits with spaces or hyphens between them. Every window of
+    adjacent groups is checked, so a neighbouring number cannot hide a card. The
+    contiguous 13-digit epoch shape is never Luhn-checked.
+  * a data-shaped file that holds NUL bytes and does not decode as UTF-16 or UTF-32
+    fails as unscannable; UTF-16 and UTF-32 files are decoded and scanned.
+The epoch allow-pattern is exactly ``1[0-9]{12}`` (2001 to 2033); do not widen it.
+Fractional digit runs (an 8-decimal quantity) are digit runs too and need the 999
+prefix in fixtures. Claude Code's settings files (``.claude/*.json``) are not checked.
 
 Content is read from the git index, so ``--staged`` checks exactly what the commit
 will hold. Failure output names the path, the line number and the rule. It never
@@ -41,6 +48,8 @@ DATA_DIRS = ("tests/fixtures/", REFERENCE_DIR)
 
 STATEMENT_EXTENSIONS = frozenset(
     {".pdf", ".csv", ".eml", ".dump", ".sql", ".qfx", ".ofx", ".jsonl", ".heic", ".jpg"}
+    # Beyond the spec's list on purpose: other image, spreadsheet and archive exports.
+    | {".jpeg", ".png", ".xlsx", ".xls", ".zip"}
 )
 DATA_EXTENSIONS = frozenset({".csv", ".tsv", ".json", ".txt", ".eml"})
 
@@ -48,12 +57,11 @@ FAKE_PREFIX = b"999"
 # A run of digits with no letter or digit on either side, so a run inside a hex hash
 # or an identifier does not match.
 DIGIT_RUN = re.compile(rb"(?<![A-Za-z0-9])[0-9]{8,}(?![A-Za-z0-9])")
-# Card-style groups (4-4-4-4, 4-6-5, 4-4-4-4-3) joined by one repeated separator.
-# Groups of 3 to 6 digits keep ISO dates (2026-01-31) and columns of 8-digit dates out.
-GROUPED = re.compile(
-    rb"(?<![A-Za-z0-9])[0-9]{3,6}(?P<sep>[ -])[0-9]{3,6}(?:(?P=sep)[0-9]{3,6})*"
-    rb"(?![A-Za-z0-9])"
-)
+# Card-style groups (4-4-4-4, 4-6-5, 4-4-4-4-3): bounded runs of 3 to 6 digits with
+# only spaces or hyphens between them. A group of any other length ends the chain,
+# which keeps ISO dates (2026-01-31) and columns of YYYYMMDD dates out.
+BOUNDED_RUN = re.compile(rb"(?<![A-Za-z0-9])[0-9]+(?![A-Za-z0-9])")
+GROUP_GAP = re.compile(rb"[ -]+")
 EPOCH_MS = re.compile(rb"1[0-9]{12}")
 
 RULE_STATEMENT = "statement-type file outside tests/fixtures/synthetic/"
@@ -61,6 +69,10 @@ RULE_UNLISTED = "fixture not listed in MANIFEST.toml"
 RULE_MANIFEST = "MANIFEST.toml does not parse"
 RULE_DIGITS = "run of 8 or more digits that is not 999-prefixed, a date or an epoch"
 RULE_CARD = "Luhn-valid card-shaped number"
+RULE_UNSCANNABLE = "data file holds NUL bytes and does not decode as UTF-16 or UTF-32"
+
+UTF32_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")
+UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
 
 @dataclass(frozen=True)
@@ -189,6 +201,41 @@ def card_shaped(digits: bytes) -> bool:
     return 13 <= len(digits) <= 19 and not is_epoch_ms(digits) and luhn_valid(digits)
 
 
+def group_chains(line: bytes) -> Iterator[list[bytes]]:
+    """Chains of adjacent 3-to-6 digit groups separated only by spaces or hyphens."""
+    chain: list[bytes] = []
+    last_end = -1
+    for m in BOUNDED_RUN.finditer(line):
+        group = m.group()
+        joined = bool(chain) and GROUP_GAP.fullmatch(line[last_end : m.start()])
+        if not joined:
+            if len(chain) > 1:
+                yield chain
+            chain = []
+        if 3 <= len(group) <= 6:
+            chain.append(group)
+            last_end = m.end()
+        else:
+            if len(chain) > 1:
+                yield chain
+            chain = []
+    if len(chain) > 1:
+        yield chain
+
+
+def grouped_card(chain: list[bytes]) -> bool:
+    """True when any window of two or more adjacent groups is a Luhn-valid 13-19."""
+    for start in range(len(chain)):
+        digits = chain[start]
+        for group in chain[start + 1 :]:
+            digits += group
+            if len(digits) > 19:
+                break
+            if len(digits) >= 13 and luhn_valid(digits):
+                return True
+    return False
+
+
 def scan_line(line: bytes) -> Iterator[str]:
     for m in DIGIT_RUN.finditer(line):
         run = m.group()
@@ -198,12 +245,56 @@ def scan_line(line: bytes) -> Iterator[str]:
             yield RULE_DIGITS
         if card_shaped(run):
             yield RULE_CARD
-    for m in GROUPED.finditer(line):
-        if card_shaped(re.sub(rb"[ -]", b"", m.group())):
-            yield RULE_CARD
+    if any(grouped_card(chain) for chain in group_chains(line)):
+        yield RULE_CARD
 
 
-def scan_content(path: str, content: bytes) -> list[Failure]:
+def utf16_interleave(content: bytes) -> str | None:
+    """The UTF-16 codec when every other byte of the sample is NUL, else None."""
+    sample = content[:4096]
+    half = len(sample) // 2
+    if half == 0:
+        return None
+    even_nuls = sample[0 : 2 * half : 2].count(0)
+    odd_nuls = sample[1 : 2 * half : 2].count(0)
+    if odd_nuls >= 0.4 * half and even_nuls <= 0.05 * half:
+        return "utf-16-le"
+    if even_nuls >= 0.4 * half and odd_nuls <= 0.05 * half:
+        return "utf-16-be"
+    return None
+
+
+def scannable_bytes(content: bytes) -> bytes | None:
+    """Content with ASCII digits adjacent, or None when it cannot be decoded.
+
+    UTF-8, Latin-1 and similar encodings already keep digits as ASCII bytes. Wide
+    encodings put NULs between them, so they are decoded first; any other content
+    with NUL bytes is refused rather than scanned blind.
+    """
+    codec: str | None = None
+    if content.startswith(UTF32_BOMS):
+        codec = "utf-32"
+    elif content.startswith(UTF16_BOMS):
+        codec = "utf-16"
+    elif b"\0" in content:
+        codec = utf16_interleave(content)
+        if codec is None:
+            return None
+    if codec is None:
+        return content
+    try:
+        text = content.decode(codec)
+    except UnicodeDecodeError:
+        return None
+    if "\0" in text:
+        return None
+    return text.encode("utf-8")
+
+
+def scan_content(path: str, raw: bytes) -> list[Failure]:
+    content = scannable_bytes(raw)
+    if content is None:
+        return [Failure(path, None, RULE_UNSCANNABLE)]
     failures: list[Failure] = []
     for number, line in enumerate(content.split(b"\n"), start=1):
         for rule in dict.fromkeys(scan_line(line)):

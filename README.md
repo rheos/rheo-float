@@ -1,11 +1,11 @@
-# rheo-wallet
+# rheo-float
 
-A local-first personal finance ledger. It reads your own bank, card and bill statements into one
+Float is a local-first personal finance ledger. It reads your own bank, card and bill statements into one
 Postgres database on your machine, shows what you spend and what you owe, sends due-date
 reminders, and watches crypto wallet holdings through CoinStats.
 
-Built as the `finance` module for [rheoStream](https://github.com/rheos/rheostream), runnable on
-its own first.
+Built as a module for [rheoStream](https://github.com/rheos/rheostream), beside Leads and Current, and runnable on its own
+first.
 
 ## Principles
 

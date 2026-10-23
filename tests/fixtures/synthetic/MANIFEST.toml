@@ -156,3 +156,17 @@ description = "Invoice received layout text (pdftotext -layout) shaped on the se
 path = "tests/fixtures/synthetic/patient_receipt.txt"
 synthetic = true
 description = "Patient receipt layout text shaped on the clinic receipt on file: two payments that sum to the total payments, then a treatment table read past; fake values and names."
+
+# Prompt 33: the fiat CSV exports. No real export is on file, so both are shaped on the
+# vendors' documented exports and carry the same transactions as the PDF fixtures of
+# the same vendor, for the overlap dedupe tests.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/paypal_activity.csv"
+synthetic = true
+description = "PayPal activity CSV shaped on the vendor's documented export: the April rows of paypal_activity.txt (the conversion pair, a bank deposit, a pre-authorized payment, a received payment with a fee), a March purchase before the statement, a Memo authorization and a balance per currency; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/wise_statement.csv"
+synthetic = true
+description = "Wise statement CSV shaped on the vendor's documented export, newest first: the transactions of wise_history.txt (a Stripe payout in, a USD to CAD conversion with its fee, two card purchases, two sent transfers with a fee, a zero card check) with a running balance per currency; fake values."

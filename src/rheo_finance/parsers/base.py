@@ -150,6 +150,21 @@ class AccountLookup:
         }
         return tuple(sorted(found, key=lambda account: account.slug))
 
+    def by_institution(
+        self, institution: str, start: dt.date, end: dt.date
+    ) -> tuple[RegisteredAccount, ...]:
+        """Every distinct registered account at ``institution`` (compared by
+        ``institution_key``) holding an identifier valid during the period, sorted by
+        slug. For an export that prints no account identifier at all: the parser takes
+        the one account it finds and rejects none or several."""
+        wanted = institution_key(institution)
+        found = {
+            each.account
+            for each in self._identifiers
+            if institution_key(each.institution) == wanted and each.covers(start, end)
+        }
+        return tuple(sorted(found, key=lambda account: account.slug))
+
 
 def _alphanumerics(identifier: str) -> str:
     return re.sub(r"[^0-9a-z]", "", identifier.casefold())

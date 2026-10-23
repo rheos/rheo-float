@@ -10,7 +10,8 @@ directory. Each stage takes its model from ``finance.model.<stage>_model``; unse
 the CLI's default applies.
 
 A failure says what failed and never quotes the process's output, which can echo
-the prompt.
+the prompt. The prompt is sent and the reply read as UTF-8 bytes whatever the
+locale; a reply that is not valid UTF-8 is discarded, never repaired.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from rheo_finance.settings import Settings
 
 EXECUTABLE: Final = "claude"
 DEFAULT_TIMEOUT_S: Final = 300.0
+ENCODING: Final = "utf-8"
 
 
 def model_setting(stage: Stage) -> str:
@@ -79,11 +81,12 @@ class ClaudeCLIClient(GuardedModelClient):
             raise ModelUnavailable("the claude CLI is not on PATH")
         with tempfile.TemporaryDirectory(prefix="finance-model-") as cwd:
             try:
+                # Bytes, not text mode: the locale's encoding never applies, and
+                # the guard has refused lone surrogates, so this encode holds.
                 proc = subprocess.run(
                     self.command(program, stage, system, json_schema),
-                    input=text,
+                    input=text.encode(ENCODING),
                     capture_output=True,
-                    text=True,
                     cwd=cwd,
                     timeout=self._timeout_s,
                     check=False,
@@ -97,8 +100,10 @@ class ClaudeCLIClient(GuardedModelClient):
         if proc.returncode != 0:
             raise ModelUnavailable(f"claude -p exited {proc.returncode}")
         try:
-            reply = json.loads(proc.stdout)
-        except json.JSONDecodeError:
+            # Strict: a byte that is not UTF-8 discards the reply. A replacement
+            # character could otherwise pass the schema as part of a string.
+            reply = json.loads(proc.stdout.decode(ENCODING))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             raise ModelReplyInvalid(stage) from None
         if not isinstance(reply, dict):
             raise ModelReplyInvalid(stage)

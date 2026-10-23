@@ -53,6 +53,7 @@ SHAPES: list[tuple[RefusalKind, str]] = [
     ("phone_shape", "call 555-0100 about the order"),
     ("long_token", "token Q9ZXW8VY7UT6SR5QP4ON3ML2KJ end"),
     ("binary", "merchant\x00sample"),
+    ("binary", f"merchant{chr(0xD800)}sample"),
     ("pdf", "%PDF-1.7 sample"),
     ("pdf", "JVBERi0xLjcK"),
     ("image", "\x89PNG\r\n"),

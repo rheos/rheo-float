@@ -30,14 +30,14 @@ seen = {{
     "argv": sys.argv[1:],
     "cwd": os.getcwd(),
     "entries": sorted(os.listdir(".")),
-    "stdin": sys.stdin.read(),
+    "stdin": sys.stdin.buffer.read().decode("utf-8"),
 }}
 with open(os.path.join(here, "record.jsonl"), "a", encoding="utf-8") as out:
     out.write(json.dumps(seen) + "\\n")
 with open(os.path.join(here, "behaviour.json"), encoding="utf-8") as behaviour:
     plan = json.load(behaviour)
 time.sleep(plan["sleep"])
-sys.stdout.write(plan["stdout"])
+sys.stdout.buffer.write(bytes.fromhex(plan["stdout_hex"]))
 sys.stderr.write(plan["stderr"])
 sys.exit(plan["exit"])
 """
@@ -58,17 +58,25 @@ class FakeClaude:
         self,
         structured: object = None,
         *,
-        stdout: str | None = None,
+        stdout: str | bytes | None = None,
         stderr: str = "",
         exit_code: int = 0,
         sleep: float = 0.0,
         is_error: bool = False,
     ) -> None:
+        """What the next run prints: ``stdout`` as given (bytes go out raw), else a
+        CLI JSON reply carrying ``structured``."""
         if stdout is None:
             stdout = json.dumps(
                 {"is_error": is_error, "structured_output": structured, "result": ""}
             )
-        plan = {"stdout": stdout, "stderr": stderr, "exit": exit_code, "sleep": sleep}
+        raw = stdout if isinstance(stdout, bytes) else stdout.encode("utf-8")
+        plan = {
+            "stdout_hex": raw.hex(),
+            "stderr": stderr,
+            "exit": exit_code,
+            "sleep": sleep,
+        }
         (self.bin_dir / "behaviour.json").write_text(json.dumps(plan), encoding="utf-8")
 
     def runs(self) -> list[dict[str, Any]]:

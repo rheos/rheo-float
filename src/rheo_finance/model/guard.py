@@ -92,10 +92,12 @@ class ProtectedTerms:
 
 TermsProvider = Callable[[], ProtectedTerms]
 
-# Raw signatures, looked for before normalization. The replacement character marks
-# bytes that were decoded as text but were not text.
+# Raw signatures, looked for before normalization. The replacement character and a
+# lone surrogate mark bytes that were decoded as text but were not text (a surrogate
+# also cannot be encoded as UTF-8 to be sent).
+_SURROGATES: Final = f"{chr(0xD800)}-{chr(0xDFFF)}"
 _BINARY: Final = re.compile(
-    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\N{REPLACEMENT CHARACTER}]"
+    rf"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\N{{REPLACEMENT CHARACTER}}{_SURROGATES}]"
 )
 _PDF: Final = re.compile(r"%PDF-|JVBERi0")
 _IMAGE: Final = re.compile(

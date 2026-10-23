@@ -171,6 +171,35 @@ def test_a_reply_without_structured_output_is_discarded(
         client().call("classify", SYSTEM, TEXT, Verdict)
 
 
+def test_a_reply_that_is_not_utf8_is_discarded_not_repaired(
+    fake_claude: FakeClaude,
+) -> None:
+    """A stray byte inside a string the schema would accept: decoding it with
+    replacement would pass ``label`` through with a replacement character."""
+    fake_claude.reply(
+        stdout=b'{"is_error": false, "result": "", "structured_output":'
+        b' {"label": "gro\xffceries", "confidence": 0.9}}'
+    )
+    with pytest.raises(ModelReplyInvalid) as caught:
+        client().call("classify", SYSTEM, TEXT, Verdict)
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    assert str(caught.value) == "the classify reply was invalid and was discarded"
+
+
+def test_a_prompt_and_reply_beyond_ascii_travel_as_utf8(
+    fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LC_ALL", "C")
+    monkeypatch.setenv("LANG", "C")
+    fake_claude.reply({"label": "épicerie", "confidence": 0.9})
+
+    out = client().call("classify", SYSTEM, "marché sample, -45.00 CAD", Verdict)
+
+    assert out.label == "épicerie"
+    (run,) = fake_claude.runs()
+    assert run["stdin"] == "marché sample, -45.00 CAD"
+
+
 def test_a_failed_run_is_unavailable_and_quotes_nothing(
     fake_claude: FakeClaude,
 ) -> None:

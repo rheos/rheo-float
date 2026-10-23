@@ -25,7 +25,10 @@ The fields:
 - ``reversal_hint``: ``out`` when the wording says the owner's own payment was
   cancelled (the reversal is a credit), ``in`` when a received payment was clawed back
   (the reversal is a debit). Stage 8 pairs by the line's sign, so the direction is the
-  wording's claim, never what pairing relies on.
+  wording's claim, never what pairing relies on. A wording that names no direction
+  ("reversed", "returned") has direction ``sign`` in the file: ``credit`` settles it as
+  a ``reversal`` row's does (a credit is ``out``, a debit ``in``), and with ``credit``
+  None it sets nothing.
 - ``conversion_hint``: the wording says one balance was converted into another
   currency on the same account.
 - ``etransfer_hint`` and ``etransfer_name_position``: the e-Transfer wording matched,
@@ -45,6 +48,7 @@ row sets nothing.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.resources
 import re
 from collections.abc import Sequence
@@ -129,7 +133,8 @@ class TransferPattern(_Scoped):
 
 
 class ReversalPattern(_Scoped):
-    direction: ReversalDirection
+    # ``sign``: the wording names no direction; the line's sign settles it.
+    direction: ReversalDirection | Literal["sign"]
 
 
 class ConversionPattern(_Scoped):
@@ -169,15 +174,21 @@ class PatternFile(BaseModel):
     etransfer: tuple[ETransferPattern, ...]
 
 
+def _patterns_bytes() -> bytes:
+    return importlib.resources.files(__package__).joinpath(PATTERNS_FILE).read_bytes()
+
+
 @functools.cache
 def pattern_file() -> PatternFile:
     """The repo's ``patterns.json``, read and validated once."""
-    text = (
-        importlib.resources.files(__package__)
-        .joinpath(PATTERNS_FILE)
-        .read_text(encoding="utf-8")
-    )
-    return PatternFile.model_validate_json(text)
+    return PatternFile.model_validate_json(_patterns_bytes().decode("utf-8"))
+
+
+@functools.cache
+def patterns_digest() -> str:
+    """sha256 of ``patterns.json``'s bytes. A hint-setting parser's output depends on
+    it, so ``derive.stage1.parse_inputs`` and the input fingerprint hash it."""
+    return hashlib.sha256(_patterns_bytes()).hexdigest()
 
 
 # --- matching ------------------------------------------------------------------------
@@ -228,9 +239,14 @@ def classify(
     fee = _applies(patterns.fee, text, account_kind, issuer)
     etransfer = _applies(patterns.etransfer, text, account_kind, issuer)
 
+    by_sign: ReversalDirection | None = (
+        None if credit is None else "out" if credit else "in"
+    )
     transfer_hint = transfer.kind if transfer else None
     counterpart = transfer.counterpart if transfer else None
-    reversal_hint: ReversalDirection | None = reversal.direction if reversal else None
+    reversal_hint: ReversalDirection | None = None
+    if reversal is not None:
+        reversal_hint = by_sign if reversal.direction == "sign" else reversal.direction
     conversion_hint = conversion is not None
     for row in hint_rows:
         if not _has(text, row.pattern):
@@ -241,8 +257,8 @@ def classify(
                 counterpart = row.counterpart_account
         elif row.direction == "conversion":
             conversion_hint = True
-        elif reversal_hint is None and credit is not None:
-            reversal_hint = "out" if credit else "in"
+        elif reversal_hint is None:
+            reversal_hint = by_sign
 
     return Hints(
         transfer_hint=transfer_hint,

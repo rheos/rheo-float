@@ -61,16 +61,30 @@ def test_outgoing_reversal_wording_is_out(raw: str) -> None:
     ("raw", "where"),
     [
         ("EMT Transfer - Credit Reversal", BANK),
-        ("Returned Item", BANK),
         ("Item Return", BANK),
         ("Recall of deposit", BANK),
         ("NSF Return", BANK),
-        ("E-Transfer Returned (Sample Payee)", VANCITY),
-        ("Deposit (sample payment reversed)", VANCITY),
     ],
 )
 def test_incoming_reversal_wording_is_in(raw: str, where: tuple[str, str]) -> None:
     assert hints(raw, *where).reversal_hint == "in"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "E-Transfer Returned (Sample Payee)",
+        "Returned Item",
+        "Deposit (sample payment reversed)",
+        "Sample payment Reversed",
+    ],
+)
+def test_reversal_wording_with_no_direction_takes_the_lines_sign(raw: str) -> None:
+    """'returned' and 'reversed' name no direction: a credit is the owner's own payment
+    coming back (out), a debit a received payment clawed back (in)."""
+    assert hints(raw, *VANCITY, credit=True).reversal_hint == "out"
+    assert hints(raw, *VANCITY, credit=False).reversal_hint == "in"
+    assert hints(raw, *VANCITY).reversal_hint is None
 
 
 def test_the_cancelled_rent_line_is_an_outgoing_reversal_with_no_name() -> None:
@@ -312,6 +326,17 @@ def test_a_row_matches_whole_tokens_only() -> None:
     rows = [row("sweep", "out")]
 
     assert hints("SAMPLE SWEEPSTAKES", *VANCITY, hint_rows=rows) == Hints()
+
+
+def test_a_word_character_right_before_a_wording_is_no_match() -> None:
+    """The leading boundary: a wording never matches from inside a word."""
+    rows = [row("sweep", "out")]
+
+    assert hints("AUTOSWEEP 9999", *VANCITY, hint_rows=rows) == Hints()
+    assert hints("SAMPLE SWEEP 9999", *VANCITY, hint_rows=rows).transfer_hint == (
+        "manual_out"
+    )
+    assert hints("PREPAYMENT RECEIVED", "credit_card", "mbna") == Hints()
 
 
 # --- the file itself

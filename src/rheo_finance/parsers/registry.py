@@ -114,7 +114,10 @@ class Parser:
 
     ``filing_date``, when set, reads from the same text the date a new file is filed
     under (``documents.filer``): a statement's period end or a bill's date. It needs no
-    account registry and raises ``NotRecognised`` where ``parse`` would."""
+    account registry and raises ``NotRecognised`` where ``parse`` would.
+
+    ``sets_hints`` says the parser sets its lines' hint columns from
+    ``reference.patterns.classify``, so its output depends on ``patterns.json`` too."""
 
     parser_id: str
     issuer: str
@@ -122,6 +125,7 @@ class Parser:
     version: str
     parse: Parse
     filing_date: Callable[[str], dt.date] | None = None
+    sets_hints: bool = False
 
 
 PARSERS: dict[str, Parser] = {}

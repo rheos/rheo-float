@@ -161,8 +161,10 @@ class AdvisoryLock:
         except OperationalError as exc:
             if getattr(exc.orig, "sqlstate", None) == "55P03":
                 raise BusyTestDatabase(
-                    f"another test session held {self._name} for {LOCK_WAIT}: it was"
-                    " built from another migration chain; let that suite finish first"
+                    f"another test session held {self._name} for {LOCK_WAIT}: either"
+                    " it was built from another migration chain, or it was rebuilding"
+                    " the database for this chain and took longer than the wait; let"
+                    " that suite finish first"
                 ) from None
             raise
 

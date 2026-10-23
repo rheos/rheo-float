@@ -6,6 +6,7 @@
     "as a whole-token run: a match never starts or ends inside a word. Every part of 'all' must",
     "match and no part of 'unless' may. 'issuers' and 'account_kinds', when present, limit an entry",
     "to lines of those issuer keys and account kinds. In each section the first matching entry wins.",
+    "A reversal entry with direction 'sign' names no direction: the line's sign settles it (a credit is 'out').",
     "A counterpart is an issuer key from the archive's issuer map (rheo_finance.documents.issuers)."
   ],
   "transfer": [
@@ -103,13 +104,13 @@
       "account_kinds": ["chequing", "savings"]
     },
     {
-      "direction": "in",
-      "note": "tuned on the real statements: the past tense is the printed form",
+      "direction": "sign",
+      "note": "tuned on the real statements ('e-transfer returned' among them); the wording prints no direction, the line's sign settles it",
       "all": ["returned"],
       "account_kinds": ["chequing", "savings"]
     },
     {
-      "direction": "in",
+      "direction": "sign",
       "note": "tuned on the real statements; the wording prints no direction, the line's sign settles it",
       "all": ["reversed"],
       "account_kinds": ["chequing", "savings"]

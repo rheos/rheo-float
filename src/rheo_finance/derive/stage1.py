@@ -9,8 +9,10 @@ A parse is kept rather than redone when none of those three moved. ``parse_input
 hashes the last two for one document: its issuer and format, the id and version of
 every parser registered for them, for a PDF the installed ``doc-extraction-api``
 (``docextract_adapter.docextract_version``: it extracts the text and holds the rules),
-and the account registry (``account`` joined to its identifiers, as the parsers see
-it). Each parse stores that hash on the document.
+when one of those parsers sets hints the issuer wording it reads
+(``reference.patterns.patterns_digest``), and the account registry (``account``
+joined to its identifiers, as the parsers see it). Each parse stores that hash on the
+document.
 Without ``reparse`` (``finance.ledger.derive``), a document is parsed again only when
 it was never parsed, its stored hash differs from the current one, its file is not at
 its path with its own sha256 (the file left the archive, was withheld or now holds
@@ -47,6 +49,7 @@ from rheo_finance.documents.registry import WITHHELD_PATH
 from rheo_finance.parsers import docextract_adapter
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import parse_document, parsers_for
+from rheo_finance.reference import patterns
 from rheo_finance.storage.schema import account, account_identifier, document
 
 # Outcomes that say where the file was, not what it holds: never kept.
@@ -83,12 +86,18 @@ def registry_digest(uow: UnitOfWork) -> str:
 PDF: Final = "pdf"
 
 
-def parse_inputs(issuer: str, fmt: str, registry: str, docextract: str) -> str:
+def parse_inputs(
+    issuer: str, fmt: str, registry: str, docextract: str, hint_patterns: str
+) -> str:
     """sha256 of what one document's parse depends on besides its bytes.
-    ``docextract`` is the installed ``doc-extraction-api``; only a PDF reads it."""
-    parsers = [[each.parser_id, each.version] for each in parsers_for(issuer, fmt)]
+    ``docextract`` is the installed ``doc-extraction-api``; only a PDF reads it.
+    ``hint_patterns`` is ``patterns.json``'s digest; only a document one of whose
+    parsers sets hints reads it."""
+    candidates = parsers_for(issuer, fmt)
+    parsers = [[each.parser_id, each.version] for each in candidates]
     extractor = docextract if fmt == PDF else None
-    body = json.dumps([issuer, fmt, parsers, registry, extractor])
+    hints = hint_patterns if any(each.sets_hints for each in candidates) else None
+    body = json.dumps([issuer, fmt, parsers, registry, extractor, hints])
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
@@ -114,6 +123,7 @@ def parse_all(
     then supersede repeated copies."""
     registry = registry_digest(uow)
     docextract = docextract_adapter.docextract_version()
+    hint_patterns = patterns.patterns_digest()
     uow.execute(
         update(document)
         .where(document.c.status == "superseded")
@@ -134,7 +144,9 @@ def parse_all(
         ).order_by(document.c.id)
     ).all()
     for row in rows:
-        inputs = parse_inputs(row.issuer, row.format, registry, docextract)
+        inputs = parse_inputs(
+            row.issuer, row.format, registry, docextract, hint_patterns
+        )
         if (
             not reparse
             and row.status != "filed"

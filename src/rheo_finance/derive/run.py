@@ -27,7 +27,8 @@ Order of work, set by what each step reads:
    no stale account key reaches the foreign-key check. Then repeated copies of one
    document are ``superseded`` (``precedence.supersede``).
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
-   source discrepancies (``stage3``, ``precedence``, ``overlap``).
+   source discrepancies (``stage3``, ``precedence``, ``overlap``), then the receipts
+   and invoices linked to the txns as evidence (``evidence``).
 5. Stage 5, recognition dates (``stage5``), then stage 6, the coverage matrix
    (``coverage``), which reads the periods, the lines and ``document_periods.csv``.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
@@ -70,6 +71,8 @@ from rheo_finance.storage.schema import (
 )
 
 OVERLAP_DAYS_KEY: Final = "finance.import.overlap_day_tolerance"
+RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
+INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
     coverage_table, txn_source, txn, source_discrepancy, document_line,
@@ -156,6 +159,8 @@ def run(
             manual.cash_lines,
             currencies,
             overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY),
+            receipt_days=ctx.settings.get_int(RECEIPT_DAYS_KEY),
+            invoice_days=ctx.settings.get_int(INVOICE_DAYS_KEY),
         )
 
         stage5.recognize(uow)

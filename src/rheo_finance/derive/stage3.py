@@ -17,8 +17,10 @@ a currency, from documents with status ``parsed``, decided by ``overlap.match_li
 over the documents in ``precedence`` order: a txn (with its basis and provisional
 flag), an additional source of a txn, or a ``source_discrepancy`` row. A transaction
 line missing one of the three is left out and counted (``Lines.incomplete_lines``).
-Other line kinds belong to stages and features that are not built yet (invoices,
-receipts, crypto lines, trading results, holdings, notices) and are left alone.
+Receipt and invoice lines are part two (``evidence``), matched against every txn part
+one wrote, the manual lines included. Other line kinds belong to stages and features
+that are not built yet (crypto lines, trading results, holdings, notices) and are left
+alone.
 
 **Manual lines.** The currency of a line must be one its account takes
 (``account.currencies``). A line in another currency is not loaded: it is reported as a
@@ -38,7 +40,7 @@ from typing import Any
 from sqlalchemy import Row, bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.derive import overlap
+from rheo_finance.derive import evidence, overlap
 from rheo_finance.derive.precedence import standings
 from rheo_finance.manual.cash_lines import TRANSACTIONS_FILE, CashLines
 from rheo_finance.manual.loader import RowError
@@ -74,14 +76,20 @@ class Lines:
     from_manual: int = 0
     # Manual lines left out because their currency is not one the account takes.
     manual_currency_refused: int = 0
-    # Transaction lines of parsed documents left out because they lack a posting date,
-    # an amount or a currency. A parser should never store one; if one does, it is
-    # counted here rather than lost without a trace.
+    # Transaction, receipt and invoice lines of parsed documents left out because they
+    # lack a posting date, an amount or a currency. A parser should never store one;
+    # if one does, it is counted here rather than lost without a trace.
     incomplete_lines: int = 0
+    # Receipt and invoice lines that are ``evidence`` sources (part two).
+    evidence_links: int = 0
+    # Unmatched receipts, each a txn on "Paid outside recorded accounts".
+    from_receipts: int = 0
+    # Invoices no payment line matched: no txn.
+    unmatched_invoices: int = 0
 
     @property
     def txns(self) -> int:
-        return self.from_documents + self.from_manual
+        return self.from_documents + self.from_manual + self.from_receipts
 
 
 class _Occurrences:
@@ -309,17 +317,25 @@ def build_lines(
     account_currencies: dict[str, set[str]],
     *,
     overlap_days: int,
+    receipt_days: int,
+    invoice_days: int,
 ) -> Lines:
-    """Write the txns, their sources and the source discrepancies.
-    ``account_currencies`` maps each loaded account's slug to the currencies it takes;
-    ``overlap_days`` is ``finance.import.overlap_day_tolerance``."""
+    """Write the txns, their sources and the source discrepancies, then link the
+    receipts and invoices (``evidence``). ``account_currencies`` maps each loaded
+    account's slug to the currencies it takes; ``overlap_days`` is
+    ``finance.import.overlap_day_tolerance``, ``receipt_days`` and ``invoice_days``
+    the receipt and invoice matching windows."""
     documents = _document_lines(uow, overlap_days)
     manual = _manual_lines(uow, cash, account_currencies)
+    linked = evidence.link(uow, receipt_days=receipt_days, invoice_days=invoice_days)
     return Lines(
         from_documents=documents.from_documents,
         additional_sources=documents.additional_sources,
         discrepancies=documents.discrepancies,
-        incomplete_lines=documents.incomplete_lines,
+        incomplete_lines=documents.incomplete_lines + linked.incomplete_lines,
         from_manual=manual.from_manual,
         manual_currency_refused=manual.manual_currency_refused,
+        evidence_links=linked.links,
+        from_receipts=linked.receipt_txns,
+        unmatched_invoices=linked.unmatched_invoices,
     )

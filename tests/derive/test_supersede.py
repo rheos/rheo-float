@@ -13,7 +13,13 @@ from sqlalchemy import func, select
 
 from rheo_finance.storage.schema import document, txn, txn_source
 
-from .support import FIXTURES, Ledger, card_fixture
+from .support import (
+    CARD_IDENTIFIER,
+    CARD_TRANSACTIONS,
+    FIXTURES,
+    Ledger,
+    card_fixture,
+)
 
 CSV_FIXTURE = (FIXTURES / "vancity_chequing_jump.csv").read_text(encoding="utf-8")
 STATEMENT = (FIXTURES / "vancity_statement_split.txt").read_text(encoding="utf-8")
@@ -115,3 +121,30 @@ def test_an_export_and_a_download_of_one_period_are_not_superseded(
     out = ledger.derive()
 
     assert out.documents == {"parsed": 2}
+
+
+def test_exports_of_one_period_with_different_lines_are_not_superseded(
+    ledger: Ledger, card_parsers: None
+) -> None:
+    # Two exports with the same first and last dates, so the same period and rank, that
+    # differ in between: neither is a copy of the other, and every line stays.
+    ledger.card()
+    shared = (
+        "2025-01-04 - -25.00 SAMPLE BOOKSHOP 99951",
+        "2025-01-20 - -60.00 SAMPLE FUEL 99952",
+    )
+    for name, middle in (("a", "2025-01-10 - -4.50 SAMPLE CAFE 99953"),
+                         ("b", "2025-01-12 - -8.00 SAMPLE KIOSK 99954")):  # fmt: skip
+        ledger.file(
+            f"synthetic-card/2025-01-20-{name}.csv",
+            "\n".join(
+                [CARD_TRANSACTIONS, f"ACCOUNT {CARD_IDENTIFIER}"]
+                + [f"LINE {line}" for line in (shared[0], middle, shared[1])]
+            )
+            + "\n",
+        )
+
+    out = ledger.derive()
+
+    assert out.documents == {"parsed": 2}
+    assert (out.lines.txns, out.lines.additional_sources) == (4, 2)

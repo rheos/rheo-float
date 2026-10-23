@@ -19,8 +19,10 @@ is carried over from an earlier derive; the derived tables are cleared and rebui
 Documents rank per account by control (a tied-out statement, then a running-balance export, then
 an unverified export), then format (statement PDF, transaction PDF, CSV, other), then the larger
 sha256 (`derive/precedence.py`). Two documents of equal rank for exactly the same periods on every
-account they cover are one document twice: the larger sha256 stays `parsed`, the other becomes
-`superseded` in stage 1.
+account they cover, with the same transaction lines, are one document twice: the larger sha256
+stays `parsed`, the other becomes `superseded` in stage 1. The lines are compared as well as the
+periods because two exports can state one period and differ inside it; superseding one of them
+would drop its lines without a trace, so such a pair is left to the matcher.
 
 Stage 3 (`derive/overlap.py`) then decides each line:
 

@@ -52,6 +52,28 @@ TEST_REMEDY = (
     " init`, or set FINANCE_TEST_OWNER_DSN and FINANCE_TEST_READER_DSN"
 )
 
+# The exit code of the tripwire ``claude`` every test finds first on PATH.
+CLAUDE_TRIPWIRE_EXIT = 97
+_CLAUDE_TRIPWIRE = (
+    "#!/bin/sh\n"
+    'echo "the real claude is blocked in the test suite" >&2\n'
+    f"exit {CLAUDE_TRIPWIRE_EXIT}\n"
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def claude_tripwire(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """No test can launch the owner's real ``claude``: a ``claude`` that fails loudly
+    is first on PATH for the whole session. A model test replaces PATH with its own
+    fake; anything else that looks ``claude`` up gets this one."""
+    directory = tmp_path_factory.mktemp("claude-tripwire")
+    script = directory / "claude"
+    script.write_text(_CLAUDE_TRIPWIRE, encoding="utf-8")
+    script.chmod(0o755)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PATH", f"{directory}{os.pathsep}{os.environ.get('PATH', '')}")
+        yield directory
+
 
 @dataclass(frozen=True)
 class DatabaseUnderTest:

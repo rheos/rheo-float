@@ -1,9 +1,11 @@
 """What the model tests share: a fake ``claude`` executable and synthetic manual files.
 
 The fake is a Python script named ``claude`` in a temporary directory, and ``PATH`` is
-set to that directory alone, so no test can reach a real ``claude``. Each run appends
-what it saw (its argv, working directory, the directory's entries and stdin) to a
-record file beside it, then prints the reply the test set and exits with its code.
+set to that directory alone, so no test can reach a real ``claude`` (and the suite's
+tripwire in ``tests/conftest.py`` shadows it everywhere else). Each run appends what
+it saw (its argv, working directory, the directory's entries, stdin and its
+environment) to a record file beside it, then prints the reply the test set and
+exits with its code.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ seen = {{
     "cwd": os.getcwd(),
     "entries": sorted(os.listdir(".")),
     "stdin": sys.stdin.buffer.read().decode("utf-8"),
+    "env": dict(os.environ),
 }}
 with open(os.path.join(here, "record.jsonl"), "a", encoding="utf-8") as out:
     out.write(json.dumps(seen) + "\\n")

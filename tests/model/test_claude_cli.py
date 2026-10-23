@@ -13,13 +13,15 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
+from conftest import CLAUDE_TRIPWIRE_EXIT
 from rheo_finance import composition, db
 from rheo_finance.contracts import Role
-from rheo_finance.manual.accounts import ACCOUNTS_FILE
+from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.model.claude_cli import DEFAULT_TIMEOUT_S, ClaudeCLIClient
 from rheo_finance.model.client import ModelReplyInvalid, ModelUnavailable
 from rheo_finance.model.guard import PromptGuard, PromptRefused
@@ -113,6 +115,54 @@ def test_it_runs_in_an_empty_temporary_directory_removed_afterwards(
     assert cwd.name.startswith("finance-model-")
     assert cwd.resolve() != tmp_path.resolve()
     assert not cwd.exists()
+
+
+DROPPED_ENV = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL", "OPENAI_API_KEY", "SAMPLE_VENDOR_API_KEY", "OPENAI_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY", "FINANCE_OWNER_DSN", "FINANCE_READER_DSN",
+    "FINANCE_DATA_DIR", "DATABASE_DSN", "GITHUB_TOKEN", "PGPASSWORD",
+    "SAMPLE_CLIENT_SECRET", "GOOGLE_APPLICATION_CREDENTIALS", "anthropic_api_key",
+)  # fmt: skip
+KEPT_ENV = {
+    "HOME": "/sample/home",
+    "USER": "sample-user",
+    "LANG": "en_CA.UTF-8",
+    "LC_ALL": "en_CA.UTF-8",
+    "CLAUDE_CODE_OAUTH_TOKEN": "sample-subscription-login",
+}
+
+
+def test_the_process_gets_no_key_base_url_provider_switch_or_ledger_credential(
+    fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exported key would bill a paid API and a base URL would send the prompt
+    elsewhere: neither reaches ``claude``, while what it needs to find the owner's
+    login does."""
+    for name in DROPPED_ENV:
+        monkeypatch.setenv(name, "sample-value")
+    for name, value in KEPT_ENV.items():
+        monkeypatch.setenv(name, value)
+
+    client().call("classify", SYSTEM, TEXT, Verdict)
+
+    (run,) = fake_claude.runs()
+    env = run["env"]
+    assert [name for name in DROPPED_ENV if name in env] == []
+    assert {name: env.get(name) for name in KEPT_ENV} == KEPT_ENV
+    assert env["PATH"] == str(fake_claude.bin_dir)
+
+
+def test_outside_the_fake_the_suite_finds_only_the_tripwire(
+    claude_tripwire: Path,
+) -> None:
+    """Without the fake, ``claude`` on PATH is the suite's tripwire, which fails."""
+    found = shutil.which("claude")
+    assert found is not None and Path(found).parent == claude_tripwire
+    with pytest.raises(ModelUnavailable) as caught:
+        client().call("classify", SYSTEM, TEXT, Verdict)
+    assert str(caught.value) == f"claude -p exited {CLAUDE_TRIPWIRE_EXIT}"
 
 
 def test_each_stage_takes_its_own_model_setting(fake_claude: FakeClaude) -> None:
@@ -254,6 +304,7 @@ def test_the_production_context_guards_with_the_manual_accounts_owner(
         "sample-chequing,Sample chequing,Sample Credit Union,chequing,CAD,monthly,"
         "Testa Ownerly,,,documents,,,,,",
     )
+    write_manual(data, IDENTIFIERS_FILE)
     monkeypatch.setenv("FINANCE_DATA_DIR", str(data))
     ctx = composition.build_context(Role.OWNER)
     assert ctx.model_client is not None

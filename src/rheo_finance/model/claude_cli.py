@@ -6,8 +6,10 @@ no MCP servers, no settings files, no saved session, JSON output held to the sch
 ``ClaudeCLIExtractor`` itself is not reused, because its prompt and schema are fixed
 to one bill. The prompt goes on stdin, and the process runs in an empty temporary
 directory, removed afterwards, so nothing on disk is in reach of its working
-directory. Each stage takes its model from ``finance.model.<stage>_model``; unset,
-the CLI's default applies.
+directory. Its environment drops every provider key, token, base-URL override,
+provider switch and ledger credential (``model_environment``), so the call runs on
+the owner's subscription login and nowhere else. Each stage takes its model from
+``finance.model.<stage>_model``; unset, the CLI's default applies.
 
 A failure says what failed and never quotes the process's output, which can echo
 the prompt. The prompt is sent and the reply read as UTF-8 bytes whatever the
@@ -17,9 +19,11 @@ locale; a reply that is not valid UTF-8 is discarded, never repaired.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from typing import Final
 
 from rheo_finance.model.client import (
@@ -36,9 +40,32 @@ EXECUTABLE: Final = "claude"
 DEFAULT_TIMEOUT_S: Final = 300.0
 ENCODING: Final = "utf-8"
 
+# The process gets the caller's environment minus every name holding one of these
+# (compared upper-case): a provider key or token would bill a paid API instead of
+# the subscription, a base-URL or provider switch would send the prompt elsewhere,
+# and the ledger's own DSNs, data directory and credentials are none of its business.
+DROPPED_NAME_PARTS: Final = (
+    "ANTHROPIC", "API_KEY", "BASE_URL", "CLAUDE_CODE_USE_", "AWS_", "FINANCE_",
+    "DSN", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL",
+)  # fmt: skip
+# The one credential kept: the subscription's own login token, when the owner has
+# set one up for headless use.
+KEPT_NAMES: Final = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
+
 
 def model_setting(stage: Stage) -> str:
     return f"finance.model.{stage}_model"
+
+
+def model_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """``environ`` without the names ``DROPPED_NAME_PARTS`` covers. HOME, PATH, USER
+    and the locale stay, so ``claude`` finds the owner's login."""
+    return {
+        name: value
+        for name, value in environ.items()
+        if name in KEPT_NAMES
+        or not any(part in name.upper() for part in DROPPED_NAME_PARTS)
+    }
 
 
 class ClaudeCLIClient(GuardedModelClient):
@@ -88,6 +115,7 @@ class ClaudeCLIClient(GuardedModelClient):
                     input=text.encode(ENCODING),
                     capture_output=True,
                     cwd=cwd,
+                    env=model_environment(os.environ),
                     timeout=self._timeout_s,
                     check=False,
                 )

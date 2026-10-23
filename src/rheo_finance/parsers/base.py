@@ -85,7 +85,8 @@ class RegisteredAccount:
 
 @dataclass(frozen=True)
 class RegisteredIdentifier:
-    """One ``account_identifier`` row with its account and institution."""
+    """One ``account_identifier`` row with its account, institution and (for
+    ``AccountLookup.by_institution``) the account's kind."""
 
     account: RegisteredAccount
     institution: str
@@ -93,6 +94,7 @@ class RegisteredIdentifier:
     kind: str
     valid_from: dt.date | None = None
     valid_to: dt.date | None = None
+    account_kind: str | None = None
 
     def covers(self, start: dt.date, end: dt.date) -> bool:
         """Whether the identifier was valid at some point of ``start`` to ``end``."""
@@ -151,17 +153,29 @@ class AccountLookup:
         return tuple(sorted(found, key=lambda account: account.slug))
 
     def by_institution(
-        self, institution: str, start: dt.date, end: dt.date
+        self, institution: str, account_kind: str, start: dt.date, end: dt.date
     ) -> tuple[RegisteredAccount, ...]:
-        """Every distinct registered account at ``institution`` (compared by
-        ``institution_key``) holding an identifier valid during the period, sorted by
-        slug. For an export that prints no account identifier at all: the parser takes
-        the one account it finds and rejects none or several."""
+        """Every distinct registered account of ``account_kind`` at ``institution``
+        (compared by ``institution_key``) holding a ``number`` identifier valid during
+        the period, sorted by slug: the accounts the vendor's statement parser could
+        match by its printed number. An account of another kind at the same
+        institution (a crypto wallet), or one whose number was replaced before the
+        period, is no candidate.
+
+        For an export that prints no account identifier at all: the parser takes the
+        one account it finds and rejects none or several. Residual risk: an export of
+        a second account at the vendor that is not registered lands on the registered
+        one. Inside a tied-out statement window of that account its lines match no
+        statement line and show as discrepancies; outside every window they load as
+        the registered account's lines and nothing flags them."""
         wanted = institution_key(institution)
         found = {
             each.account
             for each in self._identifiers
-            if institution_key(each.institution) == wanted and each.covers(start, end)
+            if each.kind == "number"
+            and each.account_kind == account_kind
+            and institution_key(each.institution) == wanted
+            and each.covers(start, end)
         }
         return tuple(sorted(found, key=lambda account: account.slug))
 

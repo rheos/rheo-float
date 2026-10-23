@@ -7,10 +7,11 @@ against the balance each row prints.
   another width, or a CSV the reader cannot read is ``NotRecognised``.
 - ``Movement`` is one row as the lines it gives (a principal line and, when the row
   states a fee, a fee line) with the balance the row ends on, fee included.
-- ``running_balance_result`` puts each currency's movements oldest first, gives every
-  line the balance after it, and splits the lines into verified segments and gaps
-  (``base.balance_runs``). Each currency is one ``statement_period`` from its first
-  line's date to its last's, tied out when its lines form one segment with no gap. The
+- ``running_balance_result`` puts each currency's movements oldest first, stores the
+  printed balance on each row's last line, and splits the rows into verified segments
+  and gaps (``base.balance_runs``, one entry per row). Each currency is one
+  ``statement_period`` from its first line's date to its last's, tied out when its
+  rows form one segment with no gap, so a currency of one row never ties out. The
   file's own date range proves nothing: an export can be a filtered selection.
 """
 
@@ -95,13 +96,17 @@ def span(movements: Sequence[Movement]) -> tuple[dt.date, dt.date]:
 
 
 def one_account(
-    accounts: AccountLookup, institution: str, movements: Sequence[Movement]
+    accounts: AccountLookup,
+    institution: str,
+    account_kind: str,
+    movements: Sequence[Movement],
 ) -> RegisteredAccount:
-    """The one account registered at ``institution`` over the file's dates, for an
-    export that prints no account identifier; ``unknown_account`` or
-    ``ambiguous_account`` otherwise."""
+    """The one ``account_kind`` account with a ``number`` identifier registered at
+    ``institution`` over the file's dates (``AccountLookup.by_institution``, which
+    names the residual risk), for an export that prints no account identifier;
+    ``unknown_account`` or ``ambiguous_account`` otherwise."""
     period = span(movements)
-    found = accounts.by_institution(institution, *period)
+    found = accounts.by_institution(institution, account_kind, *period)
     if not found:
         raise Rejected("unknown_account", period)
     if len(found) > 1:
@@ -115,18 +120,22 @@ Triple = tuple[dt.date, Decimal, Decimal]
 def _balanced(
     registered: RegisteredAccount, movements: Sequence[Movement]
 ) -> tuple[list[ParsedLine], list[Triple]]:
-    """The lines with the balance after each, and their (date, amount, balance)."""
+    """The lines, the row's last one carrying the balance the row prints, and one
+    (date, the row's change of balance, balance) per row.
+
+    Only the printed balance is stored: a balance worked out for a row's first line
+    would make the row's own lines continue each other by construction, so a lone
+    row with a fee would read as a verified segment. Coverage replays the stored
+    lines the same way (a line without a balance adds its amount to the next line
+    that has one)."""
     lines: list[ParsedLine] = []
     triples: list[Triple] = []
     for movement in movements:
         own = movement.lines(registered)
-        balance = movement.balance - sum(
-            (line.amount or Decimal(0) for line in own), Decimal(0)
-        )
-        for line in own:
-            balance += line.amount or Decimal(0)
-            lines.append(dataclasses.replace(line, running_balance=balance))
-            triples.append((movement.day, line.amount or Decimal(0), balance))
+        change = sum((line.amount or Decimal(0) for line in own), Decimal(0))
+        lines += own[:-1]
+        lines.append(dataclasses.replace(own[-1], running_balance=movement.balance))
+        triples.append((movement.day, change, movement.balance))
     return lines, triples
 
 

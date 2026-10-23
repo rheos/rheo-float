@@ -19,7 +19,8 @@ from rheo_finance.manual.stage2 import load_accounts
 @dataclass(frozen=True)
 class ManualAccount:
     """One ``accounts.csv`` row and its ``account_identifiers.csv`` rows, all of
-    ``identifier_kind``. The label is the slug in title case unless given."""
+    ``identifier_kind`` and valid from ``valid_from`` to ``valid_to`` (ISO dates,
+    empty for open). The label is the slug in title case unless given."""
 
     slug: str
     institution: str
@@ -28,6 +29,8 @@ class ManualAccount:
     identifier_kind: str = "number"
     currencies: str = "CAD"
     label: str | None = None
+    valid_from: str = ""
+    valid_to: str = ""
 
 
 def register_accounts(uow: UnitOfWork, data: Path, *accounts: ManualAccount) -> None:
@@ -46,7 +49,8 @@ def register_accounts(uow: UnitOfWork, data: Path, *accounts: ManualAccount) -> 
         )  # fmt: skip
         rows.append(",".join(cells[column] for column in columns))
         identifiers += [
-            f"{each.slug},{identifier},{each.identifier_kind},,"
+            f"{each.slug},{identifier},{each.identifier_kind},"
+            f"{each.valid_from},{each.valid_to}"
             for identifier in each.identifiers
         ]
     (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")

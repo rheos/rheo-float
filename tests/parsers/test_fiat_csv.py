@@ -167,9 +167,10 @@ def test_paypal_csv_lines_match_the_statement_shape(setup: Setup) -> None:
         (D(2026, 4, 4), Decimal("-33.50"), "USD", None,
          "PreApproved Payment Bill User Payment Sample Streaming Co",
          Decimal("0.00"), NO_HINT),
-        # A fee is its own line, gross first, as the statement gives them.
+        # A fee is its own line, gross first, as the statement gives them; only the
+        # row's last line carries the balance the row prints.
         (D(2026, 4, 20), Decimal("20.00"), "USD", None,
-         "Mass Pay Payment Sample Client Inc.", Decimal("20.00"), NO_HINT),
+         "Mass Pay Payment Sample Client Inc.", None, NO_HINT),
         (D(2026, 4, 20), Decimal("-0.80"), "USD", "fee",
          "Mass Pay Payment Sample Client Inc. (fee)", Decimal("19.20"), NO_HINT),
     ]  # fmt: skip
@@ -191,6 +192,20 @@ def test_a_paypal_balance_that_does_not_continue_is_a_gap(setup: Setup) -> None:
     assert (parsed.status, parsed.lines, parsed.gaps) == ("parsed", 7, 1)
     cad = setup.periods(doc)[0]
     assert (cad.control_kind, cad.tied_out) == ("running_balance", False)
+
+
+def test_a_currency_of_one_row_with_a_fee_does_not_tie_out(setup: Setup) -> None:
+    """A row's own lines never verify each other: one row is no segment."""
+    setup.register(PAYPAL)
+    header, *rows = fixture("paypal_activity.csv").splitlines()
+    (fee_row,) = [row for row in rows if '"-0.80"' in row]
+    doc = setup.file(PAYPAL_CSV, f"{header}\n{fee_row}\n")
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=2)
+    (usd,) = setup.periods(doc)
+    assert (usd.currency, usd.control_kind, usd.tied_out) == (
+        "USD", "running_balance", False,
+    )  # fmt: skip
 
 
 def test_a_paypal_csv_with_another_header_is_unparsed(setup: Setup) -> None:
@@ -222,6 +237,39 @@ def test_the_paypal_csv_takes_the_one_paypal_account(setup: Setup) -> None:
     second = dataclasses.replace(PAYPAL, slug="paypal-two", identifiers=("OTHER555X1",))
     setup.register(PAYPAL, second)
     assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+
+
+def test_only_a_numbered_account_of_the_vendor_kind_is_a_candidate(
+    setup: Setup,
+) -> None:
+    """Another kind of account at the vendor, or one known by a card alone, does not
+    make the file ambiguous."""
+    crypto = ManualAccount("pp-crypto", "PayPal", "crypto_wallet", ("PPC555X3",))
+    card_only = ManualAccount(
+        "pp-card", "PayPal", "payment_processor", ("9999 99** **** 5552",),
+        "masked_card",
+    )  # fmt: skip
+    setup.register(PAYPAL, crypto, card_only)
+    doc = setup.file(PAYPAL_CSV, fixture("paypal_activity.csv"))
+
+    assert setup.parse(doc).status == "parsed"
+    assert {each.account_id for each in setup.periods(doc)} == {account_id("paypal")}
+
+
+def test_an_account_whose_number_ended_before_the_file_is_no_candidate(
+    setup: Setup,
+) -> None:
+    replaced = ManualAccount(
+        "pp-old", "PayPal", "payment_processor", ("OLDPP555X4",),
+        currencies="CAD;USD", valid_to="2026-01-31",
+    )  # fmt: skip
+    setup.register(replaced)
+    doc = setup.file(PAYPAL_CSV, fixture("paypal_activity.csv"))
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+
+    setup.register(replaced, PAYPAL)
+    assert setup.parse(doc).status == "parsed"
+    assert {each.account_id for each in setup.periods(doc)} == {account_id("paypal")}
 
 
 def test_paypal_csv_emails_and_ids_are_stored_nowhere(setup: Setup) -> None:
@@ -267,20 +315,20 @@ def test_wise_csv_lines_match_the_history_shape(setup: Setup) -> None:
          line.running_balance, hints(line))
         for line in lines
     ]  # fmt: skip
+    # Only a row's last line carries the balance the row prints.
     assert got == [
-        (D(2026, 2, 8), Decimal("-3.00"), "CAD", None, Decimal("497.00"), NO_HINT),
+        (D(2026, 2, 8), Decimal("-3.00"), "CAD", None, None, NO_HINT),
         (D(2026, 2, 8), Decimal("-5.00"), "CAD", "fee", Decimal("492.00"), NO_HINT),
-        (D(2026, 2, 10), Decimal("-98.80"), "CAD", None, Decimal("393.20"), NO_HINT),
+        (D(2026, 2, 10), Decimal("-98.80"), "CAD", None, None, NO_HINT),
         (D(2026, 2, 10), Decimal("-1.20"), "CAD", "fee", Decimal("392.00"), NO_HINT),
-        (D(2026, 2, 12), Decimal("-16.50"), "CAD", None, Decimal("375.50"), NO_HINT),
+        (D(2026, 2, 12), Decimal("-16.50"), "CAD", None, None, NO_HINT),
         (D(2026, 2, 12), Decimal("-0.30"), "CAD", "conversion_fee",
          Decimal("375.20"), NO_HINT),
         (D(2026, 2, 15), Decimal("-45.10"), "CAD", None, Decimal("330.10"), NO_HINT),
         # The conversion's in-leg; its out-leg carries the only fee line.
         (D(2026, 2, 20), Decimal("135.20"), "CAD", None, Decimal("465.30"),
          CONVERSION),
-        (D(2026, 2, 20), Decimal("-100.00"), "USD", None, Decimal("100.00"),
-         CONVERSION),
+        (D(2026, 2, 20), Decimal("-100.00"), "USD", None, None, CONVERSION),
         (D(2026, 2, 20), Decimal("-0.80"), "USD", "conversion_fee",
          Decimal("99.20"), NO_HINT),
         (D(2026, 2, 27), Decimal("250.00"), "USD", None, Decimal("349.20"),
@@ -314,6 +362,16 @@ def test_a_wise_balance_that_does_not_continue_is_a_gap(setup: Setup) -> None:
 
     assert (parsed.status, parsed.lines, parsed.gaps) == ("parsed", 11, 1)
     assert [each.tied_out for each in setup.periods(doc)] == [False, True]
+
+
+def test_a_negative_wise_fee_is_unparsed(setup: Setup) -> None:
+    setup.register(WISE)
+    text = fixture("wise_statement.csv")
+    printed = '"1.20",""'
+    assert text.count(printed) == 1
+    doc = setup.file(WISE_CSV, text.replace(printed, '"-1.20",""'))
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
 
 
 def test_wise_csv_ids_card_digits_and_names_are_stored_nowhere(setup: Setup) -> None:

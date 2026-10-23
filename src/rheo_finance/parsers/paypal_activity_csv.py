@@ -28,9 +28,10 @@ phone numbers, item and invoice fields are stored nowhere. Hints come from
 the fee lines: "General Currency Conversion" carries ``conversion_hint``, "Bank Deposit
 to PP Account" its ``paypal_preauthorized`` transfer hint.
 
-The export prints no account identifier, so the account is the one registered at
-``INSTITUTION`` over the file's dates (``AccountLookup.by_institution``): none is
-``unknown_account``, several are ``ambiguous_account``.
+The export prints no account identifier, so the account is the one
+``payment_processor`` account with a ``number`` identifier registered at
+``INSTITUTION`` over the file's dates (``AccountLookup.by_institution``, which names
+the residual risk): none is ``unknown_account``, several are ``ambiguous_account``.
 """
 
 from __future__ import annotations
@@ -136,7 +137,7 @@ def _movements(text: str) -> list[balance_csv.Movement]:
 
 def parse(text: str, accounts: AccountLookup) -> ParseResult:
     movements = _movements(text)
-    registered = balance_csv.one_account(accounts, INSTITUTION, movements)
+    registered = balance_csv.one_account(accounts, INSTITUTION, ACCOUNT_KIND, movements)
     return balance_csv.running_balance_result(registered, movements, WHAT)
 
 

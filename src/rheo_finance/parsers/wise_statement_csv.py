@@ -37,9 +37,11 @@ counterparty. The ``TransferWise ID`` and the payment reference, payee account
 number, card digits, card holder, attachment and note columns are stored nowhere (the
 description is kept as the export prints it).
 
-The export prints no account identifier, so the account is the one registered at
-``INSTITUTION`` over the file's dates (``AccountLookup.by_institution``): none is
-``unknown_account``, several are ``ambiguous_account``.
+The export prints no account identifier, so the account is the one ``wallet`` account
+with a ``number`` identifier registered at ``INSTITUTION`` over the file's dates
+(``AccountLookup.by_institution``, which names the residual risk): none is
+``unknown_account``, several are ``ambiguous_account``. A negative ``Total fees`` is
+not this layout.
 """
 
 from __future__ import annotations
@@ -161,7 +163,7 @@ def _movements(text: str) -> list[balance_csv.Movement]:
 
 def parse(text: str, accounts: AccountLookup) -> ParseResult:
     movements = _movements(text)
-    registered = balance_csv.one_account(accounts, INSTITUTION, movements)
+    registered = balance_csv.one_account(accounts, INSTITUTION, ACCOUNT_KIND, movements)
     return balance_csv.running_balance_result(registered, movements, WHAT)
 
 

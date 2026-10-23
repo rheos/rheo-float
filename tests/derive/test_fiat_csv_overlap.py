@@ -17,7 +17,14 @@ from collections import Counter
 from sqlalchemy import Table, func, select
 
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.storage.schema import document, document_line, txn, txn_source
+from rheo_finance.manual.stage2 import account_id
+from rheo_finance.storage.schema import (
+    coverage,
+    document,
+    document_line,
+    txn,
+    txn_source,
+)
 
 from .support import FIXTURES, D, Ledger
 
@@ -120,6 +127,44 @@ def test_a_second_copy_of_a_csv_adds_nothing(ledger: Ledger) -> None:
         before
     )
     assert out.documents == Counter({"parsed": 1})
+
+
+def test_a_resaved_copy_with_other_line_endings_adds_nothing(ledger: Ledger) -> None:
+    """Different bytes, the same rows: the copy is superseded and adds no txn and no
+    source."""
+    register(ledger, "wise", "Wise", "wallet", "P99900001")
+    text = fixture("wise_statement.csv")
+    ledger.file(WISE_CSV, text)
+    ledger.derive()
+    before = (count(ledger, txn), count(ledger, txn_source))
+
+    crlf = text.replace("\n", "\r\n")
+    assert crlf != text
+    ledger.file("wise/statement-2026-02-28-resaved.csv", crlf)
+    out = ledger.derive()
+
+    assert before == (11, 11)
+    assert (count(ledger, txn), count(ledger, txn_source)) == before
+    assert out.documents == Counter({"parsed": 1, "superseded": 1})
+
+
+def test_coverage_replays_a_row_with_a_fee_as_one_step(ledger: Ledger) -> None:
+    """Only a row's last line stores a balance; coverage adds the row's other lines
+    to it, so the fee rows continue the run and no month reads as a break."""
+    register(ledger, "wise", "Wise", "wallet", "P99900001")
+    ledger.file(WISE_CSV, fixture("wise_statement.csv"))
+
+    ledger.derive()
+
+    months = dict(
+        ledger.conn.execute(
+            select(coverage.c.month, coverage.c.reason_code).where(
+                coverage.c.account_id == account_id("wise")
+            )
+        ).all()
+    )
+    assert D(2026, 2, 1) in months
+    assert "running_balance_break" not in months.values()
 
 
 def test_an_overlapping_second_export_shares_its_lines(ledger: Ledger) -> None:

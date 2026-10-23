@@ -194,6 +194,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
             account_identifier.c.kind,
             account_identifier.c.valid_from,
             account_identifier.c.valid_to,
+            account.c.kind.label("account_kind"),
         )
         .join(account, account.c.id == account_identifier.c.account_id)
         .where(account_identifier.c.kind != "internal")
@@ -206,6 +207,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
             kind=row.kind,
             valid_from=row.valid_from,
             valid_to=row.valid_to,
+            account_kind=row.account_kind,
         )
         for row in rows
     )

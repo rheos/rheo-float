@@ -35,6 +35,7 @@ from rheo_finance.cli.main import main
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import FinanceContext, FinancePaths
 from rheo_finance.contracts import Role
+from rheo_finance.documents.registry import DocumentRefused
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.headers import MANUAL_FILES
 from rheo_finance.render import STATUS_MAX
@@ -236,23 +237,50 @@ def test_import_files_downloads_registers_the_archive_and_derives(
     assert fixture.import_err == ""
     lines = fixture.import_out.splitlines()
     # Two archive files and the one copy filed from Downloads.
-    assert lines[0] == (
-        f"finance import: 3 new documents registered, 1 filed from Downloads, {STAMP}"
-    )
-    assert lines[1].startswith("derive: 3 parsed now, 0 kept; ")
-    assert lines[2] == "documents: 1 needs manual entry, 1 parsed, 1 unparsed"
-    assert lines[3].startswith("account-months: ")
-    assert lines[4] == ""
-    assert (
+    assert lines[:5] == [
+        f"finance import: 3 new documents registered, 1 filed from Downloads, {STAMP}",
+        "",
         "Downloads: 1 filed, 0 already known, 0 refused by the path check, 0 not dated,"
-        " 0 unreadable; 1 monitor files left to the monitors (1 waiting)."
-    ) in lines
+        " 0 unreadable; 1 monitor files left to the monitors (1 waiting).",
+        "Archive: 3 registered, 0 known, 0 moved, 0 duplicate copies, 0 paths withheld,"
+        " 0 files skipped.",
+        "",
+    ]
+    # Then the derive's own report.
+    assert lines[5].startswith("derive: 3 parsed now, 0 kept; ")
+    assert lines[6] == "documents: 1 needs manual entry, 1 parsed, 1 unparsed"
+    assert lines[7].startswith("account-months: ")
+    assert lines[8] == ""
     # The filer names the copy from the export's last date, never its own name.
     assert sorted(p.name for p in (fixture.archive / "vancity").iterdir()) == [
         "2026-02-16.csv", "notes.csv", "photo.jpg",
     ]  # fmt: skip
     assert (fixture.downloads / "bank-download.csv").exists()
     _clean(fixture.import_out)
+
+
+def test_a_failing_derive_still_leaves_the_filing_counts(
+    run: Callable[..., Ran], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(*_args: object) -> object:
+        raise DocumentRefused("a test refusal")
+
+    spec = operations.SPECS["finance.ledger.derive"]
+    monkeypatch.setitem(
+        operations.SPECS,
+        "finance.ledger.derive",
+        spec.model_copy(update={"handler": refused}),
+    )
+
+    ran = run("import")
+
+    assert ran.code == 1
+    assert ran.out.splitlines()[0] == (
+        f"finance import: 0 new documents registered, 0 filed from Downloads, {STAMP}"
+    )
+    assert "Archive: 0 registered, 3 known," in ran.out
+    assert "derive:" not in ran.out
+    assert ran.err == "finance import: refused. a test refusal\n"
 
 
 def test_a_second_import_registers_nothing_new(run: Callable[..., Ran]) -> None:

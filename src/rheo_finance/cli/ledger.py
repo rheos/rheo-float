@@ -127,6 +127,8 @@ def _derived_detail(out: DeriveOut) -> list[str]:
 
 
 def _cmd_import(_args: argparse.Namespace) -> int:
+    """Two reports: what was filed, printed before the derive runs (so a derive that
+    fails still leaves the filing counts on stdout), then what the derive did."""
     from rheo_finance.derive.ops import DeriveOut
     from rheo_finance.documents.registry import FileOut
 
@@ -134,15 +136,8 @@ def _cmd_import(_args: argparse.Namespace) -> int:
     ctx = _context()
     filed = _dispatch(label, "finance.document.file", ctx)
     assert isinstance(filed, FileOut)
-    derived = _dispatch(label, "finance.ledger.derive", ctx)
-    assert isinstance(derived, DeriveOut)
     stamp = as_of(ctx.clock, ctx.settings.timezone)
     downloads = filed.downloads
-    headline = [
-        f"{label}: {_plural(filed.registered, 'new document', 'new documents')}"
-        f" registered, {downloads.filed} filed from Downloads, {stamp}",
-        *_derived_lines(derived),
-    ]
     if downloads.scanned:
         intake = (
             f"Downloads: {downloads.filed} filed, {downloads.known} already known,"
@@ -154,14 +149,24 @@ def _cmd_import(_args: argparse.Namespace) -> int:
     else:
         intake = "Downloads: not scanned, the directory does not exist."
     skipped = sum(each.count for each in filed.skipped)
-    detail = [
-        intake,
-        f"Archive: {filed.registered} registered, {filed.known} known,"
-        f" {filed.moved} moved, {filed.duplicates} duplicate copies,"
-        f" {filed.withheld} paths withheld, {skipped} files skipped.",
-        *_derived_detail(derived),
-    ]
-    emit(Report(headline, detail))
+    emit(
+        Report(
+            [
+                f"{label}: {_plural(filed.registered, 'new document', 'new documents')}"
+                f" registered, {downloads.filed} filed from Downloads, {stamp}"
+            ],
+            [
+                intake,
+                f"Archive: {filed.registered} registered, {filed.known} known,"
+                f" {filed.moved} moved, {filed.duplicates} duplicate copies,"
+                f" {filed.withheld} paths withheld, {skipped} files skipped.",
+            ],
+        )
+    )
+    derived = _dispatch(label, "finance.ledger.derive", ctx)
+    assert isinstance(derived, DeriveOut)
+    emit("")
+    emit(Report(_derived_lines(derived), _derived_detail(derived)))
     return 0
 
 

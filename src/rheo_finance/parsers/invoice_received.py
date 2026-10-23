@@ -17,11 +17,16 @@ file prints it:
 What it gives: one ``invoice`` line and no ``statement_period``, control ``none``. The
 line has no account (an invoice is evidence of a payment, matched to a payment line
 in stage 3, never a txn by itself), ``posting_date`` the issue date, ``amount`` the
-amount due signed as the owner's outflow (negative), ``currency`` CAD (the series
+invoice total signed as the owner's outflow (negative), ``currency`` CAD (the series
 prints dollars and no other currency), ``description_raw`` ``Invoice <number>`` and
 ``counterparty`` (restricted) the payee normalized as descriptions are
 (``text.normalize_description``). Nothing else from the invoice is stored: not the
 item descriptions, the owner's block or the due date.
+
+The amount is the total, not the amount still due, so a payment of the whole invoice
+matches it in stage 3 even once the invoice prints itself paid in full (amount due
+zero). What is still due on a part-paid invoice is an open-item question for the
+stages that track open items, not this line's amount.
 
 The identity: the items sum to the subtotal, the subtotal is the total (the layout
 prints no tax line; a line it does not know between them makes the invoice
@@ -152,7 +157,7 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
         "invoice",
         account=None,
         posting_date=issued,
-        amount=-summary["Amount due"],
+        amount=-summary["Total"],
         currency=CURRENCY,
         description_raw=f"Invoice {number}",
         counterparty=normalize_description(payee),
@@ -170,7 +175,8 @@ PARSER: Final = register_parser(
         parser_id="invoices_received.invoice",
         issuer=ISSUER,
         format="pdf",
-        version="1",
+        # 2: the line's amount is the invoice total, no longer the amount due.
+        version="2",
         parse=parse,
         filing_date=filing_date,
     )

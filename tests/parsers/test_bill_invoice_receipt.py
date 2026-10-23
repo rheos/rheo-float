@@ -225,16 +225,38 @@ def test_an_invoice_gives_one_account_less_invoice_line(
     assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=1)
     row = setup.document(doc)
     assert (row.parser_id, row.parser_version, row.kind) == (
-        "invoices_received.invoice", "1", "invoice",
+        "invoices_received.invoice", "2", "invoice",
     )  # fmt: skip
     (line,) = setup.lines(doc)
     assert (line.line_kind, line.account_id, line.posting_date) == (
         "invoice", None, D(2025, 12, 1),
     )  # fmt: skip
-    assert (line.amount, line.currency) == (Decimal("-650.00"), "CAD")
+    # The fixture is part-paid (100.00 of 750.00): the line is the total all the same.
+    assert (line.amount, line.currency) == (Decimal("-750.00"), "CAD")
     assert (line.description_raw, line.counterparty) == (
         "Invoice SP0042", "sample contractor",
     )  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("paid", "due"),
+    [("750.00", "0.00"), ("100.00", "650.00"), ("0.00", "750.00")],
+    ids=["paid_in_full", "part_paid", "unpaid"],
+)
+def test_an_invoice_line_is_its_total_whatever_is_still_due(
+    setup: Setup, paid: str, due: str
+) -> None:
+    """The line's amount is the invoice total, so a payment of the whole invoice can
+    match it even once the invoice prints itself paid in full; what is still due is
+    not the line's amount."""
+    text = changed(INVOICE_TEXT, "Paid   $100.00", f"Paid   ${paid}")
+    assert text.count("Amount due   $650.00") == 1
+    text = text.replace("Amount due   $650.00", f"Amount due   ${due}")
+    doc = setup.file("invoices-received/sample-vendor/2025-12-01.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=1)
+    (line,) = setup.lines(doc)
+    assert (line.amount, line.currency) == (Decimal("-750.00"), "CAD")
 
 
 @pytest.mark.parametrize(

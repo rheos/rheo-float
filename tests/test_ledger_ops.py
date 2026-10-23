@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import socket
 from collections.abc import Iterator
 from pathlib import Path
@@ -256,6 +257,45 @@ def test_an_account_that_leaves_the_registry_reparses_its_documents(
     assert out.kept == 0
     # Every card document now names an unregistered account.
     assert statuses(out)["rejected"] == 9
+    derived = digest(ledger)
+    rebuild(ledger)
+    assert digest(ledger) == derived
+
+
+def test_a_kept_document_that_a_new_copy_supersedes_reads_as_freshly_parsed(
+    ledger: Ledger,
+) -> None:
+    # The first copy's lines become txns, so stage 3 writes their keys. A second
+    # copy with a larger sha256 then supersedes it while its parse is kept: its lines
+    # must carry no key, as a fresh parse would leave them.
+    ledger.accounts(("chequing", "Vancity", "chequing", CSV_IDENTIFIER))
+    ledger.file("vancity/export.csv", CSV_FIXTURE)
+    derive(ledger)
+    first = hashlib.sha256(CSV_FIXTURE.encode("utf-8")).hexdigest()
+    copy = next(
+        text
+        for n in range(1, 64)
+        if hashlib.sha256((text := CSV_FIXTURE + "\n" * n).encode("utf-8")).hexdigest()
+        > first
+    )
+    ledger.file("vancity/export-copy.csv", copy)
+
+    out = derive(ledger)
+
+    assert (out.parsed_now, out.kept) == (1, 1)
+    assert statuses(out) == {"parsed": 1, "superseded": 1}
+    derived = digest(ledger)
+    rebuild(ledger)
+    assert digest(ledger) == derived
+
+    # The copy leaves: the kept first copy is no longer superseded, and its lines are
+    # txns again.
+    (ledger.archive / "vancity/export-copy.csv").unlink()
+    out = derive(ledger)
+
+    assert out.kept == 1
+    assert statuses(out) == {"parsed": 1, "unparsed": 1}
+    assert out.txns == 6
     derived = digest(ledger)
     rebuild(ledger)
     assert digest(ledger) == derived

@@ -14,9 +14,11 @@ involved:
   Vancity parser matches an account on its last four only (Key decision 1), and the
   Vancity adapter matches with these same two functions. A masked or last-four-only
   identifier on either side is what a last-four match could confuse, so that pair is
-  refused. Two distinct full numbers are told apart by a parser that matches the whole
-  number (a credit union prints one per section, and two sections may end alike); a
-  last-four match that finds both is ``ambiguous_account``, never a pick;
+  refused, and with it every row of every account ending in those four digits there
+  (refusing only the pair could leave one account to take the others' statements).
+  Two distinct full numbers are told apart by a parser that matches the whole number
+  (a credit union prints one per section, and two sections may end alike); a last-four
+  match that finds both is ``ambiguous_account``, never a pick. ADR-0011;
 - a slug or label that the adopted-path check (``path_check.PathCheck``) refuses: a
   run of 8 or more digits that is not a date, or a registered identifier. The report
   views show both, so neither may carry one;
@@ -174,30 +176,41 @@ def last_four(identifier: str) -> str | None:
     return "".join(match.groups()) if match else None
 
 
-# Mask characters: an asterisk, a bullet, a run of two or more X, or an X beside a
-# digit (``9999 99X 9991``).
-_MASK = re.compile(r"[*\u2022]|[Xx]{2,}|(?<=\d)[Xx]|[Xx](?=\d)")
+def identifier_key(identifier: str) -> str:
+    """``identifier`` as two identifiers are compared for being the same number:
+    casefolded, every character but ASCII letters and digits dropped. The loader's
+    last-four rule and ``parsers.base.AccountLookup.by_identifier`` both use it, so
+    they never disagree on whether two rows hold one number."""
+    return re.sub(r"[^0-9a-z]", "", identifier.casefold())
 
 
-def _masked(identifier: str) -> bool:
-    """Whether ``identifier`` shows a mask: a mask character, or X as its only letter
+# A full number's shape: runs of ASCII letters and digits joined by one space, hyphen
+# or slash. Any other character (an asterisk, a bullet or another mask glyph, a hash,
+# a dot, an underscore, a non-ASCII character) or a run of separators is not one.
+_FULL_SHAPE = re.compile(r"[A-Za-z0-9]+(?:[ /-][A-Za-z0-9]+)*")
+# X used as a mask: a run of two or more, or an X beside a digit (``9999 99X 9991``).
+_X_MASK = re.compile(r"[Xx]{2,}|(?<=\d)[Xx]|[Xx](?=\d)")
+
+
+def _x_masked(identifier: str) -> bool:
+    """Whether ``identifier`` uses X as a mask: ``_X_MASK``, or X as its only letter
     (``9999 X 9991``)."""
-    if _MASK.search(identifier):
+    if _X_MASK.search(identifier):
         return True
     return {char.casefold() for char in identifier if char.isalpha()} == {"x"}
 
 
 def full_number(kind: str, identifier: str) -> str | None:
-    """The letters and digits of ``identifier`` (casefolded) when it is a full number:
-    kind ``number``, more than four digits and no mask (``_masked``). None for a
-    ``masked_card``, a masked number or a number of four digits or fewer, which only a
-    last-four match can use. An account ID whose letters include an X beside a digit,
-    or a run of X, reads as masked: the rule then refuses more, never less."""
-    if kind != "number" or _masked(identifier):
+    """``identifier_key(identifier)`` when it is a full number: kind ``number``, the
+    ``_FULL_SHAPE``, more than four digits and no X mask. None for a ``masked_card``,
+    a masked number, a number of four digits or fewer, or any other shape, which only a
+    last-four match can tell apart. An account ID whose letters include an X beside a
+    digit, or a run of X, reads as masked: the rule then refuses more, never less."""
+    if kind != "number" or not _FULL_SHAPE.fullmatch(identifier):
         return None
-    if sum(char.isdigit() for char in identifier) <= 4:
+    if _x_masked(identifier) or sum(char.isdigit() for char in identifier) <= 4:
         return None
-    return "".join(char for char in identifier if char.isalnum()).casefold()
+    return identifier_key(identifier)
 
 
 def _confusable(a: AccountIdentifierRow, b: AccountIdentifierRow) -> bool:
@@ -276,13 +289,15 @@ def build_registry(
             continue
         by_four[(institution_key(account.institution), four)].append((line, ident))
     for group in by_four.values():
-        clashing = {
-            line
-            for line, ident in group
-            for other_line, other in group
-            if other.account != ident.account and _confusable(ident, other)
-        }
-        for line in sorted(clashing):
+        # One confusable pair refuses the whole group, every account's rows in it, so
+        # no account is left to take a last four meant for another.
+        if not any(
+            other.account != ident.account and _confusable(ident, other)
+            for _, ident in group
+            for _, other in group
+        ):
+            continue
+        for line, _ in group:
             reject(
                 IDENTIFIERS_FILE,
                 line,

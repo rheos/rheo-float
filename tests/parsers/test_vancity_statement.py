@@ -237,6 +237,49 @@ def test_an_unregistered_account_rejects_the_statement(setup: Setup) -> None:
     ]
 
 
+def vancity(slug: str, *numbers: str) -> ManualAccount:
+    return ManualAccount(slug, "vancity", "chequing", numbers, label=slug.title())
+
+
+def test_a_section_two_accounts_hold_is_ambiguous_before_a_later_unknown_one(
+    setup: Setup,
+) -> None:
+    """Two distinct full numbers ending in the patronage section's last four both
+    load; that section names two accounts. It comes before the unregistered shares
+    section, and the first failing section decides the reason."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        *(
+            vancity(slug, ACCOUNTS[slug][1])
+            for slug in ("patronage", "chequing", "savings")
+        ),
+        vancity("other", "999000100011"),
+    )
+    doc = setup.file("2026-01-11.pdf", STATEMENT_2026.read_text(encoding="utf-8"))
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(document_line, doc) == 0
+    assert [each["reason"] for each in setup.rejected_events(doc)] == [
+        "ambiguous_account"
+    ]
+
+
+def test_two_sections_on_one_account_are_ambiguous(setup: Setup) -> None:
+    """One account holding the numbers of two sections would take both: ambiguous."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        vancity("patronage", ACCOUNTS["patronage"][1]),
+        vancity("chequing", ACCOUNTS["chequing"][1], ACCOUNTS["savings"][1]),
+        vancity("shares", ACCOUNTS["shares"][1]),
+    )
+    doc = setup.file("2026-01-11.pdf", STATEMENT_2026.read_text(encoding="utf-8"))
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(statement_period, doc) == 0
+
+
 def test_registering_the_account_and_reparsing_loads_it_and_drops_the_event(
     setup: Setup,
 ) -> None:

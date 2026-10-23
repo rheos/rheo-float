@@ -173,6 +173,40 @@ def test_a_bill_for_an_unregistered_account_is_rejected(setup: Setup) -> None:
     assert setup.rejected_reasons(doc) == ["unknown_account"]
 
 
+def test_a_bill_whose_last_four_two_accounts_hold_is_ambiguous(setup: Setup) -> None:
+    register_accounts(
+        setup.uow,
+        setup.data,
+        ManualAccount("mobile", "virgin plus", "bill_vendor", (NUMBER,)),
+        ManualAccount("home", "virgin plus", "bill_vendor", ("999100123",)),
+    )
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(statement_period, doc) == 0
+    assert setup.rejected_reasons(doc) == ["ambiguous_account"]
+
+
+def test_a_mixed_group_never_puts_the_bill_on_the_account_left_standing(
+    setup: Setup,
+) -> None:
+    """The bill is the home account's. A masked row of the mobile account beside two
+    full numbers ending alike refuses all three, so the bill is unknown, never loaded
+    onto the mobile account that refusing only the masked pair would keep."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        ManualAccount(
+            "mobile", "virgin plus", "bill_vendor", ("999100123", "XXXXX0123")
+        ),
+        ManualAccount("home", "virgin plus", "bill_vendor", (NUMBER, "999000456")),
+    )
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+    assert setup.count(statement_period, doc) == 0
+
+
 def test_text_that_is_not_a_bill_is_unparsed(setup: Setup) -> None:
     setup.register()
     doc = setup.file("A PAGE OF TEXT THAT IS NOT A BILL\n" * 9)

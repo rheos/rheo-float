@@ -23,6 +23,7 @@ from sqlalchemy import Connection, func, select, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import WITHHELD_PATH, document_id, file_archive
 from rheo_finance.events import record_event
+from rheo_finance.manual.accounts import full_number
 from rheo_finance.parsers import registry
 from rheo_finance.parsers.base import (
     AccountLookup,
@@ -32,6 +33,7 @@ from rheo_finance.parsers.base import (
     ParsedPeriod,
     ParseResult,
     RegisteredAccount,
+    RegisteredIdentifier,
 )
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import (
@@ -312,3 +314,30 @@ def test_an_event_needs_its_registered_model(owner_conn: Connection) -> None:
 
 class _Other(BaseModel):
     pass
+
+
+@pytest.mark.parametrize(
+    ("registered", "printed"),
+    [
+        ("SAMPLE99901A9ID", "sample-99901-a9id"),
+        ("999 000 123", "999000123"),
+        ("999/000/123", "999-000-123"),
+        ("999000123", "999000124"),
+        ("SAMPLE99901A9ID", "SAMPLE99901A9IE"),
+    ],
+)
+def test_the_loader_and_the_lookup_agree_on_one_number(
+    registered: str, printed: str
+) -> None:
+    """The loader's "same full number" and ``by_identifier``'s whole-number match
+    use one normalizer: a number the loader calls the same is the one the lookup
+    finds."""
+    holder = RegisteredAccount(uuid.uuid4(), "holder")
+    lookup = AccountLookup(
+        [RegisteredIdentifier(holder, "Sample Bank", registered, "number")]
+    )
+    day = dt.date(2026, 1, 1)
+    same = full_number("number", registered) == full_number("number", printed)
+    assert full_number("number", registered) is not None
+
+    assert (lookup.by_identifier("sample bank", printed, day, day) == (holder,)) is same

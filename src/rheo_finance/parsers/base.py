@@ -21,7 +21,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final, Literal
 
-from rheo_finance.manual.accounts import LAST_FOUR_KINDS, institution_key, last_four
+from rheo_finance.manual.accounts import (
+    LAST_FOUR_KINDS,
+    identifier_key,
+    institution_key,
+    last_four,
+)
 
 ControlKind = Literal["summary", "running_balance", "bill_identity", "none"]
 LineKind = Literal[
@@ -142,7 +147,7 @@ class AccountLookup:
         ignored, so an account ID that mixes letters and digits matches in full; an
         identifier with no digit matches nothing."""
         wanted = institution_key(institution)
-        key = _alphanumerics(identifier)
+        key = identifier_key(identifier)
         if not re.search(r"\d", key):
             return ()
         found = {
@@ -150,7 +155,7 @@ class AccountLookup:
             for each in self._identifiers
             if each.kind == "number"
             and institution_key(each.institution) == wanted
-            and _alphanumerics(each.identifier) == key
+            and identifier_key(each.identifier) == key
             and each.covers(start, end)
         }
         return tuple(sorted(found, key=lambda account: account.slug))
@@ -181,10 +186,6 @@ class AccountLookup:
             and each.covers(start, end)
         }
         return tuple(sorted(found, key=lambda account: account.slug))
-
-
-def _alphanumerics(identifier: str) -> str:
-    return re.sub(r"[^0-9a-z]", "", identifier.casefold())
 
 
 @dataclass(frozen=True)

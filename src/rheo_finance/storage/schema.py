@@ -207,11 +207,12 @@ account = Table(
     Column("missing_before", Date),
     Column("missing_reason", Text),
 )
+# ``owner`` is the account holder's name: restricted (FR-46), like every name.
 _tiers(
     account,
     {
         "id": P, "slug": P, "label": P, "institution": P, "kind": P,
-        "currencies": P, "cadence": P, "owner": P, "opened_on": P, "closed_on": P,
+        "currencies": P, "cadence": P, "owner": R, "opened_on": P, "closed_on": P,
         "first_known_on": P, "sourced_by": P, "placeholder": P,
         "missing_before": P, "missing_reason": P,
     },

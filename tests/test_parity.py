@@ -27,7 +27,7 @@ from sqlalchemy import Connection
 from sqlalchemy.engine import URL
 
 from derive.support import FIXTURES, Ledger, MakeContext
-from rheo_finance import catalogue, composition, operations
+from rheo_finance import catalogue, composition, operations, parity
 from rheo_finance.contracts import Role
 from rheo_finance.derive.ops import StatementListOut
 from rheo_finance.operations import dispatch
@@ -40,6 +40,7 @@ from rheo_finance.parity import (
     Result,
     Totals,
     compare,
+    ledger_statements,
     read_vancity,
     read_virgin,
     report,
@@ -208,7 +209,8 @@ def test_equal_totals_pass(
     assert (code, err) == (0, "")
     assert out.splitlines() == [
         "parity: 2 statements, 2 pass, 0 fail",
-        "ledger stricter: 0, ledger laxer: 0, ledger only: 0",
+        "of the fails, ledger stricter by one cent: 0, ledger laxer than validate: 0;"
+        " ledger only: 0",
         "",
         f"{STATEMENT_END} vancity: pass, totals equal",
         "2026-02-02 virgin: pass, totals equal",
@@ -298,7 +300,8 @@ def test_a_statement_the_ledger_lacks_fails_and_one_it_alone_holds_is_named(
     assert code == 1
     assert out.splitlines()[:2] == [
         "parity: 3 statements, 1 pass, 1 fail",
-        "ledger stricter: 0, ledger laxer: 0, ledger only: 1",
+        "of the fails, ledger stricter by one cent: 0, ledger laxer than validate: 0;"
+        " ledger only: 1",
     ]
     assert out.splitlines()[3:] == [
         f"{STATEMENT_END} vancity: ledger only, not in the existing parser's output",
@@ -366,9 +369,10 @@ def kinds(results: list[Result]) -> list[Kind]:
     return [each.kind for each in results]
 
 
-def test_a_bill_within_the_one_cent_tolerance_the_ledger_rejects_is_its_own_kind() -> (
+def test_a_bill_within_the_one_cent_tolerance_the_ledger_rejects_fails_by_name() -> (
     None
 ):
+    # Conductor decision: AC-7 is binary, so the named kind still fails.
     month = D(2026, 3, 1)
     ref = reference_row(month, "one_cent", ((C("10.00"),),))
 
@@ -379,25 +383,36 @@ def test_a_bill_within_the_one_cent_tolerance_the_ledger_rejects_is_its_own_kind
         [ledger_row(month, (), accepted=False, reason="unknown_account")], [ref]
     )
 
-    assert kinds(stricter) == [Kind.STRICTER_ONE_CENT]
-    assert not Kind.STRICTER_ONE_CENT.failed
+    assert kinds(stricter) == [Kind.FAIL_STRICTER_ONE_CENT]
+    assert Kind.FAIL_STRICTER_ONE_CENT.failed
     assert kinds(other) == [Kind.FAIL_LEDGER_REJECTS]
-    text = report(stricter).text()
-    assert "ledger stricter: 1" in text
-    assert AMOUNT.search(text) is None
+    lines = report(stricter).text().splitlines()
+    assert lines[:2] == [
+        "parity: 1 statements, 0 pass, 1 fail",
+        "of the fails, ledger stricter by one cent: 1, ledger laxer than validate: 0;"
+        " ledger only: 0",
+    ]
+    assert AMOUNT.search("\n".join(lines)) is None
 
 
-def test_a_bill_validate_flags_and_the_ledger_accepts_is_its_own_kind() -> None:
+def test_a_bill_validate_flags_and_the_ledger_accepts_fails_and_compares_totals() -> (
+    None
+):
     month = D(2026, 3, 1)
     ref = reference_row(month, "validate_flag", ((C("10.00"),),))
 
     assert kinds(compare([ledger_row(month, ((C("10.00"),),))], [ref])) == [
-        Kind.LAXER_VALIDATE_FLAG
+        Kind.FAIL_LAXER_VALIDATE_FLAG
+    ]
+    assert kinds(compare([ledger_row(month, ((C("10.01"),),))], [ref])) == [
+        Kind.FAIL_TOTALS
     ]
     assert kinds(compare([ledger_row(month, (), accepted=False)], [ref])) == [
         Kind.PASS_BOTH_REJECT
     ]
-    assert not Kind.LAXER_VALIDATE_FLAG.failed
+    assert kinds(compare([], [ref])) == [Kind.PASS_BOTH_REJECT]
+    assert Kind.FAIL_LAXER_VALIDATE_FLAG.failed
+    assert not Kind.LEDGER_ONLY.failed
 
 
 def test_two_documents_for_one_statement_fail() -> None:
@@ -494,3 +509,206 @@ def test_read_vancity_rounds_float_noise_to_the_cent(tmp_path: Path) -> None:
 
     assert ref.totals == ((C("150.00"), C("0.10"), C("0.30"), C("12.45")),)
     assert kinds(compare([ledger], [ref])) == [Kind.PASS_EQUAL]
+
+
+# --- an all-zero Vancity section: left out on both sides ----------------------------
+
+MONEY_ROW = f"2025-12-11,{STATEMENT_END},Acct,Acct,150.00,10.00,0.00,140.00"
+ZERO_ROW = f"2025-12-11,{STATEMENT_END},Acct,Acct,0.0,0.0,0.0,0.0"
+ROW_TAIL = ",,0,0,0,0,0,0,0,,,"
+
+
+def periods_out(*periods: tuple[str, str, str, str]) -> StatementListOut:
+    """One parsed Vancity statement document with these (opening, debits, credits,
+    closing) periods."""
+    return StatementListOut.model_validate(
+        {
+            "documents": [
+                {
+                    "parser_id": "vancity.statement",
+                    "status": "parsed",
+                    "reject_reason": None,
+                    "period_start": D(2025, 12, 11),
+                    "period_end": D(2026, 1, 10),
+                    "periods": [
+                        {
+                            "opening": C(o),
+                            "total_debits": C(d),
+                            "total_credits": C(c),
+                            "closing": C(z),
+                            "balance_due": None,
+                            "due_date": None,
+                        }  # fmt: skip
+                        for o, d, c, z in periods
+                    ],
+                }
+            ]
+        }
+    )
+
+
+def vancity_csv(tmp_path: Path, *rows: tuple[str, bool]) -> list[ReferenceStatement]:
+    path = tmp_path / VANCITY_FILE
+    body = "".join(f"{row}{ROW_TAIL}{ok}\n" for row, ok in rows)
+    path.write_text(VANCITY_HEADER + "\n" + body, encoding="utf-8")
+    return read_vancity(path)
+
+
+MONEY_PERIOD = ("150.00", "10.00", "0.00", "140.00")
+ZERO_PERIOD = ("0.00", "0.00", "0.00", "0.00")
+
+
+def test_a_zero_section_on_the_reference_side_only_passes(tmp_path: Path) -> None:
+    reference = vancity_csv(tmp_path, (MONEY_ROW, True), (ZERO_ROW, True))
+    assert kinds(compare(ledger_statements(periods_out(MONEY_PERIOD)), reference)) == [
+        Kind.PASS_EQUAL
+    ]
+
+
+def test_a_zero_section_on_both_sides_passes(tmp_path: Path) -> None:
+    reference = vancity_csv(tmp_path, (MONEY_ROW, True), (ZERO_ROW, True))
+    ledger = ledger_statements(periods_out(MONEY_PERIOD, ZERO_PERIOD))
+    assert kinds(compare(ledger, reference)) == [Kind.PASS_EQUAL]
+    # On the ledger side only, too.
+    alone = vancity_csv(tmp_path, (MONEY_ROW, True))
+    assert kinds(compare(ledger, alone)) == [Kind.PASS_EQUAL]
+
+
+def test_a_money_section_beside_a_zero_one_is_still_compared(tmp_path: Path) -> None:
+    reference = vancity_csv(tmp_path, (MONEY_ROW, True), (ZERO_ROW, True))
+    off = ("150.00", "10.00", "0.00", "140.01")
+    assert kinds(
+        compare(ledger_statements(periods_out(off, ZERO_PERIOD)), reference)
+    ) == [Kind.FAIL_TOTALS]
+
+
+def test_a_zero_section_s_checks_ok_still_decides_the_verdict(tmp_path: Path) -> None:
+    (statement,) = vancity_csv(tmp_path, (MONEY_ROW, True), (ZERO_ROW, False))
+    assert statement.verdict == "rejected"
+
+
+def test_a_zero_reference_row_beside_the_real_ledger_passes(
+    built: StatementListOut,
+    run_script: Callable[[Path], tuple[int, str, str]],
+    tmp_path: Path,
+) -> None:
+    zero = ZERO_ROW + ROW_TAIL + "True"
+    directory = write(tmp_path / "ref", [*vancity_rows(built), zero], [virgin_row()])
+
+    code, out, _ = run_script(directory)
+
+    assert code == 0
+    assert f"{STATEMENT_END} vancity: pass, totals equal" in out.splitlines()
+
+
+# --- finance.statement.list ----------------------------------------------------------
+
+
+def test_statement_list_leaves_out_superseded_and_unparsed_documents(
+    ledger: Ledger, rolled_back_context: MakeContext
+) -> None:
+    catalogue.load_all()
+    ledger.accounts(*ACCOUNTS)
+    ledger.file(f"vancity/{STATEMENT_END}.pdf", STATEMENT)
+    ledger.file(f"vancity/{STATEMENT_END}-2.pdf", STATEMENT + "\n\n")  # a twin
+    ledger.file("vancity/notes.csv", "NOT AN EXPORT\n")  # unparsed
+    summary = "642.00          12.45"
+    ledger.file(
+        "vancity/2026-01-11.pdf", STATEMENT.replace(summary, "642.00          12.46")
+    )  # rejected
+    ledger.derive()
+
+    out = dispatch(
+        "finance.statement.list",
+        {"parsers": ["vancity.statement"]},
+        Role.OWNER,
+        ctx=rolled_back_context(Role.OWNER),
+    )
+
+    assert isinstance(out, StatementListOut)
+    got = sorted((d.status, d.reject_reason, len(d.periods)) for d in out.documents)
+    assert got[0][:2] == ("parsed", None) and got[0][2] > 0
+    assert got[1] == ("rejected", "checks_failed", 0)
+    assert len(got) == 2
+
+
+@pytest.mark.parametrize("role", [Role.MEMBER, Role.SERVICE])
+def test_statement_list_is_the_owner_s_alone(
+    role: Role, rolled_back_context: MakeContext
+) -> None:
+    spec = operations.SPECS["finance.statement.list"]
+    assert (spec.connection, spec.roles, spec.tool_name) == (
+        "owner", frozenset({Role.OWNER}), None,
+    )  # fmt: skip
+    with pytest.raises(operations.RoleRefused):
+        dispatch(
+            "finance.statement.list",
+            {"parsers": ["vancity.statement"]},
+            role,
+            ctx=rolled_back_context(role),
+        )
+
+
+def test_statement_list_needs_a_parser(rolled_back_context: MakeContext) -> None:
+    with pytest.raises(operations.InputInvalid):
+        dispatch(
+            "finance.statement.list",
+            {"parsers": []},
+            Role.OWNER,
+            ctx=rolled_back_context(Role.OWNER),
+        )
+
+
+# --- the script folds unreadable input and comparison failures into one line ------
+
+
+def test_a_reference_that_is_not_utf8_is_one_line(
+    run_script: Callable[[Path], tuple[int, str, str]], tmp_path: Path
+) -> None:
+    directory = write(tmp_path / "ref", [], [])
+    (directory / VANCITY_FILE).write_bytes(VANCITY_HEADER.encode() + b"\n\xff\xfe\n")
+
+    code, out, err = run_script(directory)
+
+    assert (code, out) == (1, "")
+    assert err == "parity: cannot read the reference. vancity.csv: not UTF-8 text\n"
+
+
+def test_a_reference_that_is_not_valid_csv_names_the_row_only(
+    run_script: Callable[[Path], tuple[int, str, str]], tmp_path: Path
+) -> None:
+    directory = write(tmp_path / "ref", [], [])
+    secret = "999123.45"
+    (directory / VANCITY_FILE).write_text(
+        VANCITY_HEADER + "\n" + f'x,"{secret}\n', encoding="utf-8"
+    )
+    # A field over the reader's size limit: csv.Error, whose text quotes nothing
+    # here, but the line must name the row only whatever csv says.
+    limit = csv.field_size_limit(4)
+    try:
+        code, out, err = run_script(directory)
+    finally:
+        csv.field_size_limit(limit)
+
+    assert (code, out) == (1, "")
+    assert err.startswith("parity: cannot read the reference. vancity.csv: row ")
+    assert err.endswith(": not valid CSV\n")
+    assert secret not in err
+
+
+def test_a_failure_inside_the_comparison_is_one_line(
+    built: StatementListOut,
+    run_script: Callable[[Path], tuple[int, str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_args: object) -> list[Result]:
+        raise ValueError("a value 999123.45 that must not print")
+
+    monkeypatch.setattr(parity, "compare", boom)
+    directory = write(tmp_path / "ref", vancity_rows(built), [virgin_row()])
+
+    code, out, err = run_script(directory)
+
+    assert (code, out) == (1, "")
+    assert err == "parity: cannot compare. ValueError\n"

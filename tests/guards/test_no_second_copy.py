@@ -7,9 +7,10 @@ Three checks over ``src/rheo_finance``:
 - the parsers registered for the Vancity statement and the Virgin bill take their
   reading from the adapter's ``vancity_statement`` and ``reference_bill``;
 - no module defines a docextract parsing name (a function, class or module-level
-  pattern of ``docextract.vancity``, ``reference``, ``pdftext`` or ``schema``), and no
-  string in code carries a distinctive fragment of docextract's regular expressions.
-  Docstrings are not code and are skipped. Each name and fragment is checked against
+  pattern of ``docextract.vancity``, ``reference``, ``pdftext``, ``schema`` or
+  ``validate``), and no string in code carries a distinctive fragment of docextract's
+  regular expressions or of ``validate``'s flag text. Docstrings are not code and are
+  skipped. Each name and fragment is checked against
   docextract's own source, so the lists cannot go stale unnoticed.
 """
 
@@ -33,6 +34,7 @@ NAMES: dict[str, tuple[str, ...]] = {
     "docextract.reference": ("usage_lines",),
     "docextract.pdftext": ("pdf_to_text", "NotTextPDF"),
     "docextract.schema": ("to_money",),
+    "docextract.validate": ("flag",),
 }  # fmt: skip
 # Fragments of docextract's regular expressions (and one layout anchor), as they
 # appear in its source.
@@ -53,6 +55,7 @@ TOKENS: dict[str, tuple[str, ...]] = {
         r"Monthly Device Payment\(s\)",
         r"Mobile adjustments \(see following pages\)",
     ),
+    "docextract.validate": ("days after the bill date",),
 }
 
 

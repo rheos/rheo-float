@@ -2,7 +2,8 @@
 
 Only ``rheo_finance.parsers.docextract_adapter`` imports ``docextract`` (an import, a
 ``from`` import, or a literal ``importlib.import_module`` / ``__import__`` name, at any
-depth), and it imports only the names Key decision 1 lists: nothing from ``monitor``,
+depth), and it imports only the names Key decision 1 lists, plus
+``validate.validate`` for the local parity check: nothing from ``monitor``,
 ``docextract.extractor`` (the model step) or ``docextract.api``. ``scripts/`` is
 scanned too.
 """
@@ -33,6 +34,7 @@ ALLOWED = frozenset(
         "docextract.pdftext", "docextract.pdftext.pdf_to_text",
         "docextract.pdftext.NotTextPDF",
         "docextract.schema", "docextract.schema.to_money",
+        "docextract.validate", "docextract.validate.validate",
     }
 )  # fmt: skip
 FORBIDDEN = ("monitor", "docextract")

@@ -16,9 +16,13 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rheo_finance import db, parity
 from rheo_finance.render import Report, emit, emit_error, failure_line
+
+if TYPE_CHECKING:
+    from rheo_finance.derive.ops import StatementListOut
 
 LABEL = "parity"
 USAGE = "usage: parity_check.py <directory holding vancity.csv and virgin-plus.csv>"
@@ -37,7 +41,6 @@ def main(argv: list[str] | None = None) -> int:
 
     from rheo_finance import catalogue, composition, operations
     from rheo_finance.contracts import Role
-    from rheo_finance.derive.ops import StatementListOut
 
     catalogue.load_all()
     payload = {"parsers": [parity.VANCITY_PARSER, parity.VIRGIN_PARSER]}
@@ -55,11 +58,29 @@ def main(argv: list[str] | None = None) -> int:
         line = f"{LABEL}: {db.UNREACHABLE}" if db.unreachable(exc) else None
         emit_error(Report([line or failure_line(LABEL, exc)]))
         return 1
-    assert isinstance(out, StatementListOut)
+    from rheo_finance.derive.ops import StatementListOut
 
-    results = parity.compare(parity.ledger_statements(out), reference)
-    emit(parity.report(results))
+    assert isinstance(out, StatementListOut)
+    try:
+        results, shown = compared(out, reference)
+    except parity.ParityInputError as exc:
+        emit_error(Report([f"{LABEL}: cannot compare. {exc}"]))
+        return 1
+    emit(shown)
     return 1 if any(each.kind.failed for each in results) else 0
+
+
+def compared(
+    out: StatementListOut, reference: list[parity.ReferenceStatement]
+) -> tuple[list[parity.Result], Report]:
+    """``parity.compare`` over the ledger's statements, and its report. Any failure
+    inside becomes a ``ParityInputError`` naming the exception type only: its message
+    could hold a value."""
+    try:
+        results = parity.compare(parity.ledger_statements(out), reference)
+        return results, parity.report(results)
+    except Exception as exc:
+        raise parity.ParityInputError(type(exc).__name__) from None
 
 
 if __name__ == "__main__":

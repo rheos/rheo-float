@@ -12,7 +12,10 @@ The parity rule, as ``compare`` applies it:
 - **A file the existing parser rejects** must be rejected by the ledger too: the ledger
   holds no parsed document for that statement (a rejected one, or none it could date).
 - **Where the ledger is stricter or laxer than ``docextract.validate`` for a defined
-  reason**, the result is its own kind, neither pass nor fail (below).
+  reason** (below), the result names that reason and still FAILS: AC-7 is binary, so
+  a bill the existing parser accepts and the ledger rejects, or one it rejects and the
+  ledger accepts, is a parity failure whatever the cause (a Conductor decision of the
+  build run, 2026-10-23). The named kinds only say why.
 
 What "accepts" means, per source:
 
@@ -21,37 +24,41 @@ What "accepts" means, per source:
   ``docextract.vancity`` checks and rejects the whole document (``checks_failed``) when
   any fails. A statement is keyed by its ``period_end``. Its totals are the multiset of
   (opening, withdrawals, deposits, closing) over its rows; the ledger's are (opening,
-  total debits, total credits, closing) over its statement periods, leaving out a
-  period whose four values are all zero, as the monitor leaves out a section with no
-  opening, no closing and no transactions. (A section holding only notices moves no
-  money and would count on the monitor's side alone; none is known.)
+  total debits, total credits, closing) over its statement periods. On BOTH sides a
+  section whose four values are all zero is left out (one predicate, ``_holds_money``):
+  the monitor skips a section with no opening, no closing and no transactions, but
+  writes one whose transactions are notices only (zeros all through), and the ledger
+  keeps a period for every section, so an all-zero section says nothing either way.
 - **Virgin** (``virgin-plus.csv``, one row per bill): the existing parser is
   ``docextract.reference`` plus what ``docextract.validate`` flags on its fields. The
-  monitor runs ``validate`` on the model's reading only; this check applies the same
-  flags to the reference fields as the CSV holds them, so a disagreement with the
-  ledger has a named cause:
+  monitor runs ``validate`` on the model's reading only; this check runs the real
+  ``validate`` (through ``parsers.docextract_adapter.virgin_flags``, no copy of its
+  rules here) on the reference fields as the CSV holds them, with ``usage_charges``
+  empty (the CSV holds only their sum), so a disagreement with the ledger has a named
+  cause:
 
   * ``source`` other than ``reference``: the reference parser could not read the bill,
     so the existing parser rejects it;
   * the identity: ``validate`` flags unpaid balance plus current charges against the
-    total due only when they differ by more than one cent (it compares money rounded
-    from the extractors' floats). The ledger's ``bill_identity`` check
-    (``parsers.virgin_bill``) is exact. A difference over a cent: both reject. A
-    difference of exactly one cent: ``validate`` accepts and the ledger rejects with
-    ``identity_mismatch``, the kind ``STRICTER_ONE_CENT``;
-  * the validate-only flags, which the ledger does not check: a field the CSV holds
-    left empty (``usage_charges`` is not in the CSV and is not checked), a negative
-    total due, current charges, late payment charge, device payment or data used, a
-    positive adjustment, and a due date outside 7 to 31 days after the bill date.
-    ``validate`` rejects such a bill; when the ledger accepts it, the kind is
-    ``LAXER_VALIDATE_FLAG``; when the ledger rejects it too, both reject.
+    total due (its ``total_due`` ``mismatch`` flag) only when they differ by more than
+    one cent. The ledger's ``bill_identity`` check (``parsers.virgin_bill``) is exact.
+    A difference over a cent: both reject. A difference of exactly one cent:
+    ``validate`` accepts and the ledger rejects with ``identity_mismatch``, the failing
+    kind ``FAIL_STRICTER_ONE_CENT``;
+  * any other ``validate`` flag (a missing field, a negative amount, a positive
+    adjustment, a due date outside its window: whatever the pinned docextract
+    flags), none of which the ledger checks. ``validate`` rejects such a bill; when the
+    ledger rejects it too, both reject; when the ledger accepts it, the totals are
+    still compared, and the kind is ``FAIL_TOTALS`` when they differ, else the failing
+    kind ``FAIL_LAXER_VALIDATE_FLAG``.
 
   A bill is keyed by its bill month (the ledger's period is the bill-date month and
   stores no bill date), its total is the total due against the ledger's balance due.
 
-A statement only the ledger holds is ``LEDGER_ONLY`` (the monitors never saw it), and
-two documents on either side for one statement are ``FAIL_DUPLICATE``. Totals are
-compared exactly, to the cent: one cent apart is a failure.
+A statement only the ledger holds is ``LEDGER_ONLY``, the one kind that is neither pass
+nor fail (the monitors never saw it, so AC-7 says nothing of it). Two documents on
+either side for one statement are ``FAIL_DUPLICATE``. Totals are compared exactly, to
+the cent: one cent apart is a failure.
 """
 
 from __future__ import annotations
@@ -66,6 +73,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
+from rheo_finance.parsers.docextract_adapter import virgin_flags
 from rheo_finance.render import Report
 
 if TYPE_CHECKING:
@@ -82,8 +90,14 @@ VANCITY_PARSER: Final = "vancity.statement"
 VIRGIN_PARSER: Final = "virgin_plus.bill"
 SOURCES: Final[dict[str, Source]] = {VANCITY_PARSER: "vancity", VIRGIN_PARSER: "virgin"}
 CENT: Final = Decimal("0.01")
-DUE_GAP: Final = (dt.timedelta(days=7), dt.timedelta(days=31))
 IDENTITY_MISMATCH: Final = "identity_mismatch"
+# validate's flag for the identity off by more than a cent.
+VALIDATE_IDENTITY: Final = ("total_due", "mismatch")
+# The fields validate reads, as the CSV holds them (usage_charges goes in empty).
+VALIDATE_FIELDS: Final = (
+    "bill_date", "due_date", "total_due", "unpaid_balance", "current_charges",
+    "late_payment_charge", "device_payment", "adjustments", "data_used_mb",
+)  # fmt: skip
 
 VANCITY_COLUMNS: Final = ("period_end", "opening", "withdrawals", "deposits", "closing",
                           "checks_ok")  # fmt: skip
@@ -94,20 +108,20 @@ VIRGIN_COLUMNS: Final = (
 
 
 class ParityInputError(Exception):
-    """A reference file cannot be read. Messages name the file, row and column only,
-    never a cell's value."""
+    """A reference file cannot be read, or the comparison cannot run. Messages name
+    the file, row and column, or an exception type, never a cell's value."""
 
 
 class Kind(Enum):
     PASS_EQUAL = ("pass", "totals equal")
     PASS_BOTH_REJECT = ("pass", "both reject it")
-    STRICTER_ONE_CENT = (
-        "ledger stricter",
+    FAIL_STRICTER_ONE_CENT = (
+        "fail",
         "the ledger rejects a bill docextract.validate passes within one cent",
     )
-    LAXER_VALIDATE_FLAG = (
-        "ledger laxer",
-        "the ledger accepts a bill docextract.validate flags",
+    FAIL_LAXER_VALIDATE_FLAG = (
+        "fail",
+        "the ledger accepts a bill docextract.validate flags, totals equal",
     )
     LEDGER_ONLY = ("ledger only", "not in the existing parser's output")
     FAIL_TOTALS = ("fail", "totals differ")
@@ -175,7 +189,11 @@ def _one(reference: ReferenceStatement, ledger: LedgerStatement | None) -> Kind:
     if reference.verdict == "rejected":
         return Kind.FAIL_LEDGER_ACCEPTS if accepts else Kind.PASS_BOTH_REJECT
     if reference.verdict == "validate_flag":
-        return Kind.LAXER_VALIDATE_FLAG if accepts else Kind.PASS_BOTH_REJECT
+        if ledger is None or not ledger.accepted:
+            return Kind.PASS_BOTH_REJECT
+        if _same(reference.totals, ledger.totals):
+            return Kind.FAIL_LAXER_VALIDATE_FLAG
+        return Kind.FAIL_TOTALS
     if ledger is None:
         return Kind.FAIL_NOT_IN_LEDGER
     if not ledger.accepted:
@@ -183,7 +201,7 @@ def _one(reference: ReferenceStatement, ledger: LedgerStatement | None) -> Kind:
             reference.verdict == "one_cent"
             and ledger.reject_reason == IDENTITY_MISMATCH
         ):
-            return Kind.STRICTER_ONE_CENT
+            return Kind.FAIL_STRICTER_ONE_CENT
         return Kind.FAIL_LEDGER_REJECTS
     if _same(reference.totals, ledger.totals):
         return Kind.PASS_EQUAL
@@ -228,12 +246,14 @@ def compare(
 # --- the ledger side ------------------------------------------------------------------
 
 
+def _holds_money(totals: Totals) -> bool:
+    """Whether a Vancity section's (opening, withdrawals, deposits, closing) holds
+    any non-zero value. Both sides leave out the sections that do not."""
+    return any(value is not None and value != 0 for value in totals)
+
+
 def _vancity_totals(out_periods: Iterable[Totals]) -> tuple[Totals, ...]:
-    return tuple(
-        each
-        for each in out_periods
-        if any(value is not None and value != 0 for value in each)
-    )
+    return tuple(each for each in out_periods if _holds_money(each))
 
 
 def ledger_statements(out: StatementListOut) -> list[LedgerStatement]:
@@ -270,6 +290,7 @@ def ledger_statements(out: StatementListOut) -> list[LedgerStatement]:
 
 
 def _rows(path: Path, columns: Sequence[str]) -> list[dict[str, str]]:
+    reader: csv.DictReader[str] | None = None
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
@@ -277,6 +298,12 @@ def _rows(path: Path, columns: Sequence[str]) -> list[dict[str, str]]:
             if missing:
                 raise ParityInputError(f"{path.name}: no column {', '.join(missing)}")
             return [dict(row) for row in reader]
+    except csv.Error:
+        # csv's own messages can quote the line; name the row only.
+        line = reader.line_num if reader is not None else 0
+        raise ParityInputError(f"{path.name}: row {line}: not valid CSV") from None
+    except UnicodeDecodeError:
+        raise ParityInputError(f"{path.name}: not UTF-8 text") from None
     except OSError as exc:
         raise ParityInputError(
             f"{path.name}: cannot be read ({exc.strerror})"
@@ -334,14 +361,16 @@ def read_vancity(path: Path) -> list[ReferenceStatement]:
             _money(path, line, column, row)
             for column in ("opening", "withdrawals", "deposits", "closing")
         )
-        statements[end].append((totals, _flag(path, line, "checks_ok", row)))
+        ok = _flag(path, line, "checks_ok", row)
+        # An all-zero row adds no totals but its checks_ok still counts.
+        statements[end].append((totals, ok))
     return [
         ReferenceStatement(
             source="vancity",
             key=end,
             label=end.isoformat(),
             verdict="accepted" if all(ok for _, ok in rows) else "rejected",
-            totals=tuple(totals for totals, _ in rows),
+            totals=tuple(totals for totals, _ in rows if _holds_money(totals)),
         )
         for end, rows in statements.items()
     ]
@@ -351,35 +380,27 @@ def virgin_verdict(fields: Mapping[str, object]) -> Verdict:
     """The existing parser's verdict on one Virgin bill (see the module docstring).
 
     ``fields`` holds the CSV's columns: dates as ``date``, amounts as ``Decimal``,
-    ``source`` as text, an empty cell as None.
+    ``source`` as text, an empty cell as None. The flags are ``docextract.validate``'s
+    own; only the exact identity gap, the ledger's rule, is computed here.
     """
     if fields.get("source") != "reference":
         return "rejected"
+    flags = virgin_flags(
+        {name: fields.get(name) for name in VALIDATE_FIELDS} | {"usage_charges": []}
+    )
+    if VALIDATE_IDENTITY in flags:
+        return "rejected"
+    if flags:
+        return "validate_flag"
     unpaid, current, total = (
         fields.get(name) for name in ("unpaid_balance", "current_charges", "total_due")
     )
-    gap: Decimal | None = None
     if (
         isinstance(unpaid, Decimal)
         and isinstance(current, Decimal)
         and isinstance(total, Decimal)
+        and unpaid + current != total
     ):
-        gap = abs(unpaid + current - total)
-        if gap > CENT:
-            return "rejected"
-    flagged = any(fields.get(name) is None for name in VIRGIN_COLUMNS)
-    for name in ("total_due", "current_charges", "late_payment_charge",
-                 "device_payment", "data_used_mb"):  # fmt: skip
-        value = fields.get(name)
-        flagged |= isinstance(value, Decimal) and value < 0
-    adjustments = fields.get("adjustments")
-    flagged |= isinstance(adjustments, Decimal) and adjustments > 0
-    bill_date, due_date = fields.get("bill_date"), fields.get("due_date")
-    if isinstance(bill_date, dt.date) and isinstance(due_date, dt.date):
-        flagged |= not DUE_GAP[0] <= due_date - bill_date <= DUE_GAP[1]
-    if flagged:
-        return "validate_flag"
-    if gap is not None and gap > 0:
         return "one_cent"
     return "accepted"
 
@@ -425,11 +446,14 @@ def read_reference(directory: Path) -> list[ReferenceStatement]:
 def report(results: Sequence[Result]) -> Report:
     """Counts, then one line per statement: its date, source and result words."""
     counts = Counter(each.kind.group for each in results)
+    kinds = Counter(each.kind for each in results)
     headline = [
         f"parity: {len(results)} statements, {counts['pass']} pass,"
         f" {counts['fail']} fail",
-        f"ledger stricter: {counts['ledger stricter']}, ledger laxer:"
-        f" {counts['ledger laxer']}, ledger only: {counts['ledger only']}",
+        "of the fails, ledger stricter by one cent:"
+        f" {kinds[Kind.FAIL_STRICTER_ONE_CENT]},"
+        f" ledger laxer than validate: {kinds[Kind.FAIL_LAXER_VALIDATE_FLAG]};"
+        f" ledger only: {counts['ledger only']}",
     ]
     detail = [
         f"{each.label} {each.source}: {each.kind.group}, {each.kind.words}"

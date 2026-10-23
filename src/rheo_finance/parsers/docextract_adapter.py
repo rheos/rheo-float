@@ -3,9 +3,9 @@
 The Vancity and Virgin parsing rules live in ``docextract``; this repo imports them and
 keeps no copy. This is the only module that imports ``docextract``, and it imports only
 ``vancity.parse``, ``VancityParseError``, ``reference.parse``, ``pdftext.pdf_to_text``,
-``NotTextPDF`` and ``schema.to_money``: nothing from ``monitor/`` or
-``docextract.extractor``, because sending a bill that has a working parser to a model
-is what FR-47 forbids.
+``NotTextPDF``, ``schema.to_money`` and ``validate.validate``: nothing from
+``monitor/`` or ``docextract.extractor``, because sending a bill that has a working
+parser to a model is what FR-47 forbids.
 
 - ``pdf_text(path)`` is the PDF text every fixed-rule parser reads (pdftotext
   ``-layout`` through docextract, so it is in the outbound allowlist), so a parser
@@ -17,6 +17,9 @@ is what FR-47 forbids.
 - ``reference_bill(text)`` and ``money(value)`` pass ``docextract.reference.parse`` and
   ``to_money`` through for the Virgin bill parser; text docextract cannot read as a
   bill raises ``NotRecognised``.
+- ``virgin_flags(fields)`` is ``docextract.validate.validate`` over a Virgin bill's
+  fields, as ``(field, code)`` pairs: its messages repeat amounts and go no further.
+  Only the local parity check (``rheo_finance.parity``) calls it; no parser does.
 - ``docextract_version()`` names the installed ``doc-extraction-api``: its version and,
   for a git install, the commit. A PDF's parse depends on it (the text extraction and
   the rules), so ``derive.stage1.parse_inputs`` and the input fingerprint hash it.
@@ -36,6 +39,7 @@ from typing import Any
 from docextract.pdftext import NotTextPDF, pdf_to_text
 from docextract.reference import parse as _reference_parse
 from docextract.schema import to_money
+from docextract.validate import validate as _validate
 from docextract.vancity import VancityParseError
 from docextract.vancity import parse as _vancity_parse
 
@@ -85,6 +89,14 @@ def reference_bill(text: str) -> Mapping[str, Any]:
     # (a word in the month position that is not a month).
     except (AttributeError, ValueError):
         raise NotRecognised("not a Virgin Plus bill layout") from None
+
+
+def virgin_flags(fields: Mapping[str, object]) -> frozenset[tuple[str, str]]:
+    """``docextract.validate.validate`` over a Virgin bill's fields (the keys of its
+    ``VirginBill`` schema), as ``(field, code)`` pairs; the flag messages, which
+    repeat amounts, are dropped."""
+    _bill, flags = _validate(dict(fields))
+    return frozenset((str(flag["field"]), str(flag["code"])) for flag in flags)
 
 
 @dataclass(frozen=True)

@@ -54,7 +54,7 @@ TEST_REMEDY = (
 
 # The exit code of the tripwire ``claude`` every test finds first on PATH.
 CLAUDE_TRIPWIRE_EXIT = 97
-_CLAUDE_TRIPWIRE = (
+CLAUDE_TRIPWIRE_SCRIPT = (
     "#!/bin/sh\n"
     'echo "the real claude is blocked in the test suite" >&2\n'
     f"exit {CLAUDE_TRIPWIRE_EXIT}\n"
@@ -68,7 +68,7 @@ def claude_tripwire(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     fake; anything else that looks ``claude`` up gets this one."""
     directory = tmp_path_factory.mktemp("claude-tripwire")
     script = directory / "claude"
-    script.write_text(_CLAUDE_TRIPWIRE, encoding="utf-8")
+    script.write_text(CLAUDE_TRIPWIRE_SCRIPT, encoding="utf-8")
     script.chmod(0o755)
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("PATH", f"{directory}{os.pathsep}{os.environ.get('PATH', '')}")

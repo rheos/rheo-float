@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import CLAUDE_TRIPWIRE_EXIT
+from conftest import CLAUDE_TRIPWIRE_EXIT, CLAUDE_TRIPWIRE_SCRIPT
 from rheo_finance import composition, db
 from rheo_finance.contracts import Role
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
@@ -117,41 +117,66 @@ def test_it_runs_in_an_empty_temporary_directory_removed_afterwards(
     assert not cwd.exists()
 
 
+# What ``claude`` may receive, written out here so the test pins the allowlist.
+ALLOWED_ENV = frozenset(
+    {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TERM", "LANG",
+     "CLAUDE_CODE_OAUTH_TOKEN"}
+)  # fmt: skip
 DROPPED_ENV = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_MODEL", "OPENAI_API_KEY", "SAMPLE_VENDOR_API_KEY", "OPENAI_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "AWS_ACCESS_KEY_ID",
+    "ANTHROPIC_MODEL", "OPENAI_API_KEY", "SAMPLE_VENDOR_KEY", "OPENAI_BASE_URL",
+    "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "https_proxy",
+    "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY", "FINANCE_OWNER_DSN", "FINANCE_READER_DSN",
-    "FINANCE_DATA_DIR", "DATABASE_DSN", "GITHUB_TOKEN", "PGPASSWORD",
-    "SAMPLE_CLIENT_SECRET", "GOOGLE_APPLICATION_CREDENTIALS", "anthropic_api_key",
+    "FINANCE_DATA_DIR", "GITHUB_TOKEN", "PGPASSWORD", "SAMPLE_UNRELATED",
 )  # fmt: skip
-KEPT_ENV = {
-    "HOME": "/sample/home",
-    "USER": "sample-user",
-    "LANG": "en_CA.UTF-8",
-    "LC_ALL": "en_CA.UTF-8",
-    "CLAUDE_CODE_OAUTH_TOKEN": "sample-subscription-login",
-}
 
 
-def test_the_process_gets_no_key_base_url_provider_switch_or_ledger_credential(
-    fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+# macOS sets this one in every new process itself; the test proves the caller's
+# value is not what arrives.
+OS_SET_ENV = "__CF_USER_TEXT_ENCODING"
+
+
+def allowed(name: str) -> bool:
+    return name in ALLOWED_ENV or name.startswith("LC_") or name == OS_SET_ENV
+
+
+def test_the_process_gets_only_the_allowlisted_environment(
+    fake_claude: FakeClaude, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """An exported key would bill a paid API and a base URL would send the prompt
-    elsewhere: neither reaches ``claude``, while what it needs to find the owner's
-    login does."""
-    for name in DROPPED_ENV:
+    """An exported key would bill a paid API, a base URL or proxy would send the
+    prompt elsewhere, and a config directory could pick another login: only what
+    ``claude`` needs to find the owner's subscription login reaches it."""
+    kept = {
+        "HOME": "/sample/home", "USER": "sample-user", "LOGNAME": "sample-user",
+        "SHELL": "/bin/zsh", "TMPDIR": str(tmp_path), "TERM": "xterm-256color",
+        "LANG": "en_CA.UTF-8", "LC_ALL": "en_CA.UTF-8",
+        "CLAUDE_CODE_OAUTH_TOKEN": "sample-subscription-login",
+    }  # fmt: skip
+    for name in (*DROPPED_ENV, OS_SET_ENV):
         monkeypatch.setenv(name, "sample-value")
-    for name, value in KEPT_ENV.items():
+    for name, value in kept.items():
         monkeypatch.setenv(name, value)
 
     client().call("classify", SYSTEM, TEXT, Verdict)
 
     (run,) = fake_claude.runs()
     env = run["env"]
+    assert sorted(name for name in env if not allowed(name)) == []
     assert [name for name in DROPPED_ENV if name in env] == []
-    assert {name: env.get(name) for name in KEPT_ENV} == KEPT_ENV
+    assert env.get(OS_SET_ENV) != "sample-value"
+    assert {name: env.get(name) for name in kept} == kept
     assert env["PATH"] == str(fake_claude.bin_dir)
+
+
+def test_the_tripwire_is_on_path_without_being_asked_for() -> None:
+    """The suite's tripwire is autouse: this test does not request it, and the only
+    ``claude`` it can find is the tripwire."""
+    found = shutil.which("claude")
+    assert found is not None
+    assert Path(found).parent.name.startswith("claude-tripwire")
+    assert Path(found).read_text(encoding="utf-8") == CLAUDE_TRIPWIRE_SCRIPT
 
 
 def test_outside_the_fake_the_suite_finds_only_the_tripwire(

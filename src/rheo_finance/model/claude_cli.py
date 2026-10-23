@@ -6,9 +6,10 @@ no MCP servers, no settings files, no saved session, JSON output held to the sch
 ``ClaudeCLIExtractor`` itself is not reused, because its prompt and schema are fixed
 to one bill. The prompt goes on stdin, and the process runs in an empty temporary
 directory, removed afterwards, so nothing on disk is in reach of its working
-directory. Its environment drops every provider key, token, base-URL override,
-provider switch and ledger credential (``model_environment``), so the call runs on
-the owner's subscription login and nowhere else. Each stage takes its model from
+directory. Its environment is an allowlist (``model_environment``): home, path,
+user, shell, temporary directory, terminal, locale and the subscription's login
+token, nothing else, so the call runs on the owner's subscription login and
+nowhere else. Each stage takes its model from
 ``finance.model.<stage>_model``; unset, the CLI's default applies.
 
 A failure says what failed and never quotes the process's output, which can echo
@@ -40,17 +41,17 @@ EXECUTABLE: Final = "claude"
 DEFAULT_TIMEOUT_S: Final = 300.0
 ENCODING: Final = "utf-8"
 
-# The process gets the caller's environment minus every name holding one of these
-# (compared upper-case): a provider key or token would bill a paid API instead of
-# the subscription, a base-URL or provider switch would send the prompt elsewhere,
-# and the ledger's own DSNs, data directory and credentials are none of its business.
-DROPPED_NAME_PARTS: Final = (
-    "ANTHROPIC", "API_KEY", "BASE_URL", "CLAUDE_CODE_USE_", "AWS_", "FINANCE_",
-    "DSN", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL",
+# The only variables the process gets: what ``claude`` needs to find the owner's
+# subscription login, and the subscription's own headless login token. Everything
+# else is dropped: a provider key or token would bill a paid API, a base URL, proxy
+# or provider switch would send the prompt elsewhere, a config directory could
+# select another login, Node options could load code, and the ledger's DSNs and
+# credentials are none of its business.
+KEPT_NAMES: Final = frozenset(
+    {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TERM", "LANG",
+     "CLAUDE_CODE_OAUTH_TOKEN"}
 )  # fmt: skip
-# The one credential kept: the subscription's own login token, when the owner has
-# set one up for headless use.
-KEPT_NAMES: Final = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
+KEPT_PREFIX: Final = "LC_"
 
 
 def model_setting(stage: Stage) -> str:
@@ -58,13 +59,12 @@ def model_setting(stage: Stage) -> str:
 
 
 def model_environment(environ: Mapping[str, str]) -> dict[str, str]:
-    """``environ`` without the names ``DROPPED_NAME_PARTS`` covers. HOME, PATH, USER
-    and the locale stay, so ``claude`` finds the owner's login."""
+    """The variables of ``environ`` that ``KEPT_NAMES`` names or that start with
+    ``LC_`` (the locale); nothing else."""
     return {
         name: value
         for name, value in environ.items()
-        if name in KEPT_NAMES
-        or not any(part in name.upper() for part in DROPPED_NAME_PARTS)
+        if name in KEPT_NAMES or name.startswith(KEPT_PREFIX)
     }
 
 

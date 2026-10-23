@@ -167,6 +167,38 @@ def test_coverage_replays_a_row_with_a_fee_as_one_step(ledger: Ledger) -> None:
     assert "running_balance_break" not in months.values()
 
 
+def test_coverage_breaks_where_a_fee_row_is_missing_and_only_there(
+    ledger: Ledger,
+) -> None:
+    """The break side of the replay. The oldest fee row moves to January and a later
+    fee row is removed, so the run continues across the month boundary (a row's
+    principal carried onto its fee line) and breaks inside February only. Dropping the
+    carried amount, or never resetting it, would break January too."""
+    register(ledger, "wise", "Wise", "wallet", "P99900001")
+    text = fixture("wise_statement.csv")
+    oldest = '"TRANSFER-999000007","08-02-2026"'
+    assert text.count(oldest) == 1
+    rows = text.replace(oldest, '"TRANSFER-999000007","08-01-2026"').splitlines()
+    removed = [row for row in rows if row.startswith('"CARD-999000004"')]
+    assert len(removed) == 1 and '"0.30"' in removed[0]
+    ledger.file(WISE_CSV, "\n".join(r for r in rows if r not in removed) + "\n")
+
+    ledger.derive()
+
+    months = {
+        row.month: (row.state, row.reason_code)
+        for row in ledger.conn.execute(
+            select(coverage.c.month, coverage.c.state, coverage.c.reason_code).where(
+                coverage.c.account_id == account_id("wise")
+            )
+        )
+    }
+    assert months == {
+        D(2026, 1, 1): ("partial", None),
+        D(2026, 2, 1): ("partial", "running_balance_break"),
+    }
+
+
 def test_an_overlapping_second_export_shares_its_lines(ledger: Ledger) -> None:
     """A later Wise export that drops the oldest rows and adds a new one: the shared
     rows are one txn with two sources, and only the new row is a txn of its own."""

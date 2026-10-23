@@ -7,7 +7,8 @@ revision is applied anywhere (a review fix on an unmerged phase branch, say) re-
 its hash in the same change; a new revision adds its pin.
 
 A revision that creates or recreates a view holds its body in a module-level ``VIEWS``
-dict. For every view a code module compiles (``sinks.views.VIEW_SELECTS``), the newest
+dict. For every view a code module compiles (``sinks.views.VIEW_SELECTS`` and
+``reports.views.VIEW_SELECTS``), the newest
 revision's body must equal what the code compiles to now, whitespace aside. So a rule
 changed in code, ``reversed_clause`` included, fails here until a new revision
 recreates the view with the new body.
@@ -21,7 +22,11 @@ from pathlib import Path
 from types import ModuleType
 
 from rheo_finance import migrations
-from rheo_finance.sinks.views import VIEW_SELECTS, view_sql
+from rheo_finance.reports.views import VIEW_SELECTS as REPORT_VIEW_SELECTS
+from rheo_finance.sinks.views import VIEW_SELECTS as SINK_VIEW_SELECTS
+from rheo_finance.sinks.views import view_sql
+
+VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
 
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
 
@@ -62,6 +67,9 @@ PINNED = {
     ),
     "0013_parse_inputs.py": (
         "a7813de94129e4ced2c9b1b50bc6ffb048cf0b904f563a44b398f946a60cbb90"
+    ),
+    "0014_report_views.py": (
+        "edc083c85e2fd329baa3b7daa2ec45495052bd0fa2330e86129baa2656992995"
     ),
 }
 

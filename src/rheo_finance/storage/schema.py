@@ -9,6 +9,7 @@ next to it.
 from __future__ import annotations
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     Computed,
@@ -558,3 +559,50 @@ coverage = Table(
     Column("reason_code", Text),
 )
 _tiers(coverage, {"account_id": P, "month": P, "state": P, "reason_code": P})
+
+# --- the status, coverage and document report views (migration 0014) -----------------
+# ``reports.views`` defines their bodies; codes, counts, dates, labels and registered
+# paths only.
+
+report_status = Table(
+    "report_status",
+    metadata,
+    Column("fact", Text),
+    Column("subject", Text),
+    Column("count", BigInteger),
+    Column("at", DateTime(timezone=True)),
+)
+_tiers(report_status, {"fact": P, "subject": P, "count": P, "at": P})
+
+report_coverage = Table(
+    "report_coverage",
+    metadata,
+    Column("account", Text),
+    Column("account_label", Text),
+    Column("month", Date),
+    Column("state", Text),
+    Column("reason", Text),
+)
+_tiers(
+    report_coverage,
+    {"account": P, "account_label": P, "month": P, "state": P, "reason": P},
+)
+
+report_document = Table(
+    "report_document",
+    metadata,
+    Column("path", Text),
+    Column("kind", Text),
+    Column("status", Text),
+    Column("period_start", Date),
+    Column("period_end", Date),
+    Column("official", Boolean),
+    Column("extraction", Text),
+)
+_tiers(
+    report_document,
+    {
+        "path": P, "kind": P, "status": P, "period_start": P, "period_end": P,
+        "official": P, "extraction": P,
+    },
+)  # fmt: skip

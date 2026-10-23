@@ -427,11 +427,13 @@ def test_stripe_csv_gives_gross_fee_and_payout_per_payout(setup: Setup) -> None:
     )  # fmt: skip
     # Each payout, oldest first, on its created date: the gross of the rows it pays
     # out (a refund nets against the charges), one fee line, then the payout debit
-    # carrying the Wise hint. The charge with no payout gives no line.
+    # carrying the Wise hint. The charge with no payout gives no line. The first
+    # payout's own row carries a fee too: it joins the fee line, so the payout is the
+    # gross less every fee (40.00 less 1.75 and 0.50).
     assert stripe_lines(setup, doc) == [
         (D(2026, 2, 11), Decimal("40.00"), "USD", None, "Gross charges", NO_HINT),
-        (D(2026, 2, 11), Decimal("-1.75"), "USD", "fee", "Stripe fees", NO_HINT),
-        (D(2026, 2, 11), Decimal("-38.25"), "USD", None, "Payout to bank",
+        (D(2026, 2, 11), Decimal("-2.25"), "USD", "fee", "Stripe fees", NO_HINT),
+        (D(2026, 2, 11), Decimal("-37.75"), "USD", None, "Payout to bank",
          PAYOUT_HINT),
         (D(2026, 2, 25), Decimal("258.40"), "USD", None, "Gross charges", NO_HINT),
         (D(2026, 2, 25), Decimal("-8.40"), "USD", "fee", "Stripe fees", NO_HINT),
@@ -471,6 +473,29 @@ def test_a_payout_partly_in_the_file_gives_its_payout_line_alone(
     ]  # fmt: skip
 
 
+def test_a_payout_with_no_fee_gives_no_fee_line(setup: Setup) -> None:
+    """A payout whose rows and own row carry no fee gives its gross and the payout
+    debit, and no zero fee line."""
+    setup.register(STRIPE)
+    header = fixture("stripe_balance.csv").splitlines()[0]
+    rows = [
+        '"txn_999SAMPLE12","payout","po_999SAMPLEC","-40.00","0.00","-40.00","usd",'
+        '"2026-02-11 09:00","2026-02-13 00:00","STRIPE PAYOUT","","","po_999SAMPLEC",'
+        '"2026-02-13 00:00",""',
+        '"txn_999SAMPLE11","charge","ch_999SAMPLE11","40.00","0.00","40.00","usd",'
+        '"2026-02-05 10:10","2026-02-07 00:00","Payment from Sample Customer One",'
+        '"40.00","usd","po_999SAMPLEC","2026-02-13 00:00",""',
+    ]
+    doc = setup.file(STRIPE_CSV, "\n".join([header, *rows]) + "\n")
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=2)
+    assert stripe_lines(setup, doc) == [
+        (D(2026, 2, 11), Decimal("40.00"), "USD", None, "Gross charges", NO_HINT),
+        (D(2026, 2, 11), Decimal("-40.00"), "USD", None, "Payout to bank",
+         PAYOUT_HINT),
+    ]  # fmt: skip
+
+
 def test_a_stripe_csv_with_another_header_is_unparsed(setup: Setup) -> None:
     setup.register(STRIPE)
     text = fixture("stripe_balance.csv").replace('"Transfer"', '"Payout"', 1)
@@ -489,12 +514,18 @@ def test_a_stripe_csv_with_another_header_is_unparsed(setup: Setup) -> None:
         ('"-250.00","0.00","-250.00"', '"250.00","0.00","250.00"'),
         # A type the parser does not read joins no gross: the file is unparsed.
         ('"txn_999SAMPLE05","charge"', '"txn_999SAMPLE05","adjustment"'),
+        # A row in another currency than the payout that pays it out.
+        ('"36.98","usd"', '"36.98","cad"'),
+        # Two payouts with one id.
+        ('"payout","po_999SAMPLEA"', '"payout","po_999SAMPLEB"'),
     ],
     ids=[
         "net_not_amount_less_fee",
         "negative_fee",
         "payout_not_a_debit",
         "unknown_row_type",
+        "row_currency_not_the_payouts",
+        "duplicate_payout_id",
     ],  # fmt: skip
 )
 def test_a_stripe_row_outside_the_layout_is_unparsed(

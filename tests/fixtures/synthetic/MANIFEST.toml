@@ -177,4 +177,4 @@ description = "Wise statement CSV shaped on the vendor's documented export, newe
 [[fixture]]
 path = "tests/fixtures/synthetic/stripe_balance.csv"
 synthetic = true
-description = "Stripe balance history CSV shaped on the vendor's documented export, newest first, no balance column: two payouts with the charges (and one refund) they pay out, a fee per charge, and a charge not yet paid out; invented ids and customers, fake values."
+description = "Stripe balance history CSV shaped on the vendor's documented export, newest first, no balance column: two payouts with the charges (and one refund) they pay out, a fee per charge, a fee on the first payout itself, and a charge not yet paid out; invented ids and customers, fake values."

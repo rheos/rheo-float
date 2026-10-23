@@ -11,9 +11,12 @@ into one txn with two sources. Every value is synthetic.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections import Counter
 from collections.abc import Callable
+from decimal import Decimal
+from typing import cast
 
 import pytest
 from sqlalchemy import Table, func, select
@@ -179,6 +182,67 @@ def test_a_second_stripe_copy_adds_nothing(
     assert before == (6, 6)
     assert (count(ledger, txn), count(ledger, txn_source)) == before
     assert out.documents == outcomes
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _ranked(partial: str, fuller: str, partial_first: bool) -> tuple[str, str]:
+    """The two exports, saved with line endings that put the partial one first in
+    precedence (the larger sha256 ranks first among equal CSVs) or the fuller one."""
+    for a in (partial, partial.replace("\n", "\r\n")):
+        for b in (fuller, fuller.replace("\n", "\r\n")):
+            if (_sha(a) > _sha(b)) == partial_first:
+                return a, b
+    raise AssertionError("no line endings give that precedence")
+
+
+@pytest.mark.parametrize("partial_ranks_first", [True, False])
+@pytest.mark.parametrize("partial_filed_first", [True, False])
+def test_a_partial_stripe_export_and_a_fuller_one_count_each_payout_once(
+    ledger: Ledger, partial_filed_first: bool, partial_ranks_first: bool
+) -> None:
+    """An export cut inside a payout gives that payout's line alone; a fuller export
+    filed before or after it gives the payout with its gross and fee. Whichever
+    ranks first and whichever is filed first, the lone payout line pairs one to one
+    with the fuller export's payout line, the shared payout's three lines are one txn
+    each with two sources, and nothing is counted twice."""
+    register(ledger, "stripe", "Stripe", "payment_processor", "SAMPLE999STRIPE")
+    full = fixture("stripe_balance.csv")
+    (cut,) = [row for row in full.splitlines() if "ch_999SAMPLE04" in row]
+    partial_text, full_text = _ranked(
+        full.replace(cut + "\n", ""), full, partial_ranks_first
+    )
+    partial_path, full_path = "stripe/partial.csv", "stripe/balance-2026-02-26.csv"
+    filings = [(partial_path, partial_text), (full_path, full_text)]
+    if not partial_filed_first:
+        filings.reverse()
+    docs: dict[str, uuid.UUID] = {}
+    for relative, text in filings:
+        docs[relative] = ledger.file(relative, text)
+        out = ledger.derive()
+    partial, fuller = docs[partial_path], docs[full_path]
+
+    assert out.documents == Counter({"parsed": 2})
+    # The fuller export's 6 lines are the txns; the partial one's 4 (the first
+    # payout's three and the second payout's line alone) are their second sources.
+    assert (out.lines.from_documents, out.lines.additional_sources) == (6, 4)
+    assert out.lines.discrepancies == 0
+    assert count(ledger, txn) == 6
+    per_txn = sources_by_txn(ledger)
+    assert sorted(per_txn.values()) == [1, 1, 2, 2, 2, 2]
+    by_amount = {
+        cast(Decimal, row["amount"]): cast(uuid.UUID, row["id"])
+        for row in ledger.txns()
+    }
+    assert len(by_amount) == 6
+    assert documents_of(ledger, by_amount[Decimal("-250.00")]) == {partial, fuller}
+    # The second payout's gross and fee come from the fuller export alone.
+    for amount in (Decimal("258.40"), Decimal("-8.40")):
+        assert documents_of(ledger, by_amount[amount]) == {fuller}
+    # Each payout's gross less its fees is its payout: the account nets to zero.
+    assert sum(by_amount, Decimal(0)) == 0
 
 
 def test_coverage_replays_a_row_with_a_fee_as_one_step(ledger: Ledger) -> None:

@@ -385,6 +385,28 @@ def test_an_invoice_attaches_to_a_cash_receipt_paid_outside(ledger: Ledger) -> N
     assert spending(ledger) == Decimal("-245.00")
 
 
+def test_a_payment_lines_counterparty_never_names_the_payee(ledger: Ledger) -> None:
+    """The interim payee rule reads a statement or export line's description only:
+    a payment of the invoice total whose description does not name the contractor
+    is not the invoice's payment, even when its counterparty does."""
+    unnamed = "E-TRANSFER SENT   99909"
+    payments(ledger, ("31-Dec-2025", unnamed, "750.00"))
+    ledger.file(INVOICE, invoice())
+    assert counts(ledger.derive()) == (2, 0, 0, 1)
+    ledger.conn.execute(
+        document_line.update()
+        .where(document_line.c.description_raw == unnamed)
+        .values(counterparty="Sample Contractor")
+    )
+
+    lines = rerun_stage3(ledger)
+
+    (payment,) = [r for r in ledger.txns() if r["amount"] == Decimal("-750.00")]
+    assert payment["counterparty"] == "Sample Contractor"
+    assert (lines.evidence_links, lines.unmatched_invoices) == (0, 1)
+    assert sources(ledger, "evidence") == []
+
+
 def test_a_payment_line_that_arrives_later_takes_the_receipt(ledger: Ledger) -> None:
     """Before the chequing export is filed the receipt is paid outside; once it is,
     the receipt is evidence of the card line and the internal txn is gone."""

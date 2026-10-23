@@ -11,8 +11,11 @@ against payment lines:
   the line's date (``finance.receipts.match_days`` for a receipt,
   ``finance.invoices.match_days`` for an invoice, either side of it), and the payee:
   the line's ``counterparty``, normalized as descriptions are, appears as whole words
-  in the txn's normalized description or its counterparty. Prompt 48 replaces the
-  payee rule with the account ``payee_patterns`` and ``payees.csv`` patterns.
+  in the txn's normalized description. Only the txn of an unmatched receipt is also
+  searched by its counterparty (the receipt's payee), so an invoice can attach to a
+  receipt paid in cash; a statement or export line's counterparty is never read.
+  Prompt 48 replaces the payee rule with the account ``payee_patterns`` and
+  ``payees.csv`` patterns.
 - **Which pairs.** Within each kind the matching is maximal: as many lines as can be
   matched one to one are, so a greedy choice never strands a receipt that had a
   payment of its own (that would count it twice). Among the maximal matchings the one
@@ -114,7 +117,8 @@ class Payment:
     posting_date: dt.date
     amount: Decimal
     currency: str
-    # The normalized texts the payee is looked for in: description, counterparty.
+    # The normalized texts the payee is looked for in: the description, and for an
+    # unmatched receipt's txn its payee too.
     texts: tuple[str, ...]
 
 
@@ -293,7 +297,6 @@ def _payments(uow: UnitOfWork) -> list[Payment]:
             txn.c.amount,
             txn.c.currency,
             txn.c.description_norm,
-            txn.c.counterparty,
         )
     )
     return [
@@ -305,7 +308,7 @@ def _payments(uow: UnitOfWork) -> list[Payment]:
             posting_date=row.posting_date,
             amount=row.amount,
             currency=row.currency,
-            texts=(row.description_norm or "", row.counterparty or ""),
+            texts=(row.description_norm or "",),
         )
         for row in rows
     ]

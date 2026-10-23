@@ -211,7 +211,7 @@ def test_stated_totals_must_match_the_lines_too() -> None:
 
 
 def test_a_document_with_no_parser_for_its_issuer_is_unparsed(archive: Archive) -> None:
-    doc = archive.file("wise/2026-01.pdf", b"anything at all\n")
+    doc = archive.file("cra/2026-01.pdf", b"anything at all\n")
     assert archive.parse(doc) == Parsed("unparsed", "no_parser")
     assert archive.lines(doc) == 0
 

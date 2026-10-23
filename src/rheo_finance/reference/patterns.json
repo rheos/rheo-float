@@ -74,6 +74,12 @@
       "counterpart": "paypal"
     },
     {
+      "kind": "paypal_preauthorized",
+      "note": "PayPal side, tuned on the real activity statements: the bank funding a payment; the wording names no bank",
+      "all": ["bank deposit to pp account"],
+      "issuers": ["paypal"]
+    },
+    {
       "kind": "stripe_payout",
       "note": "Wise side: the payout deposit from Stripe",
       "all": ["stripe"],
@@ -178,6 +184,11 @@
     {"fee_type": "atm_fee", "all": ["atm", "fee"]},
     {"fee_type": "service_charge", "all": ["service charge"]},
     {"fee_type": "service_charge", "all": ["charges applied to account"]},
+    {
+      "fee_type": "service_charge",
+      "note": "tuned on the real Nelson & District Credit Union statements: 'Service Charges'",
+      "all": ["service charges"]
+    },
     {
       "fee_type": "interest",
       "note": "on a card, interest is a charge; on a bank account it may be interest earned",

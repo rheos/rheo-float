@@ -133,25 +133,26 @@ class AccountLookup:
     ) -> tuple[RegisteredAccount, ...]:
         """Every distinct registered account holding ``identifier`` in full as a
         ``number`` identifier at ``institution``, valid during the period, sorted by
-        slug. Digits are compared and separators ignored; an identifier with no digit
-        matches nothing."""
+        slug. Digits and letters are compared (letters without case) and separators
+        ignored, so an account ID that mixes letters and digits matches in full; an
+        identifier with no digit matches nothing."""
         wanted = institution_key(institution)
-        digits = _digits(identifier)
-        if not digits:
+        key = _alphanumerics(identifier)
+        if not re.search(r"\d", key):
             return ()
         found = {
             each.account
             for each in self._identifiers
             if each.kind == "number"
             and institution_key(each.institution) == wanted
-            and _digits(each.identifier) == digits
+            and _alphanumerics(each.identifier) == key
             and each.covers(start, end)
         }
         return tuple(sorted(found, key=lambda account: account.slug))
 
 
-def _digits(identifier: str) -> str:
-    return re.sub(r"\D", "", identifier)
+def _alphanumerics(identifier: str) -> str:
+    return re.sub(r"[^0-9a-z]", "", identifier.casefold())
 
 
 @dataclass(frozen=True)

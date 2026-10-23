@@ -1,0 +1,68 @@
+Wise Payments Canada Inc.
+
+100 Sample Street, Anytown 0000
+
+   T
+Anytown
+V0A 0A0
+   h i
+   is
+Canada
+
+   n ot
+Transaction history   a n   o
+   ffi c
+   ia  l
+February 1, 2026 [MST]
+   st a
+   - February 28, 2026 [MST]
+
+   t
+Generated on: March 5, 2026 [MST]
+
+Account Holder   Membership
+
+Sample Holder   P99900001
+SH
+
+   e m
+   ent.
+Sample Street 1
+V0A 0A0
+   T h i   s
+Canada
+
+Hidden transactions: Excluded
+Date range: February 1, 2026 - February 28, 2026
+
+February 2026   Fee   Amount
+
+| STRIPE PAYMENTS CANADA   0 USD   250.00 USD
+February 27, 2026 | Transaction: TRANSFER-999000001 | Reference: 999000000000001 |   250.00 USD
+Category: Money added
+
+Moved | To CAD   135.20 CAD
+February 20, 2026 | Transaction: BALANCE_TRANSACTION-999000002 | Category: General   0.80 USD   100.80 USD
+   is
+   n ot
+
+| Sample Grocer   T h   0 CAD   45.10 CAD
+February 15, 2026 | Transaction: CARD_TRANSACTION-999000003 | Category: Groceries   45.10 CAD
+
+| Sample Web Shop   0.30 CAD
+   ffi cia12.00 USD
+February 12, 2026 | Transaction: CARD_TRANSACTION-999000004 | Category: Shopping   16.80 CAD
+
+Sent | Sample Payee   1.20 CAD   98.80 CAD
+February 10, 2026 | Transaction: TRANSFER-999000005 | Category: General   100.00 CAD
+
+Sent | Sample Payee Two   5.00 CAD   3.00 CAD
+February 8, 2026 | Transaction: TRANSFER-999000007 | Category: General   8.00 CAD
+
+Card checked | Sample Service   0 USD
+   st at
+February 5, 2026 | Transaction: CARD_TRANSACTION-999000006 | Category: Shopping   0 USD
+
+   1/1
+
+Wise Payments Canada Inc., operating as Wise, is a sample money services business for this synthetic layout.

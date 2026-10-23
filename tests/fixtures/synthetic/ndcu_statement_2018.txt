@@ -1,0 +1,56 @@
+   Statement Of Accounts
+   100 Sample St., PO Box 100, Anytown, BC V0A 0A0
+
+   Date   August 31, 2018
+
+   Member No.   99900001
+
+   Page   1 of 1
+
+   SAMPLE A MEMBER
+   PO BOX 1
+   ANYTOWN BC V0A 0A0
+
+   Member Account Summary
+
+   CAD Deposits   Balances   USD Deposits   Balances   Loans   Balances
+   Chequing   $395.01   Chequing   $0.00   Mortgage   $0.00
+   Savings   $0.00   Loans   $0.00
+   Shares   $25.00
+
+   Member Message
+Sample member message text for the synthetic layout.
+
+CHEQUING
+
+Chequing   Owner(s)
+Account # 999000000101   SAMPLE A MEMBER
+Date   Description   Withdrawals   Deposits   Balance
+01 Aug 18   Opening Balance   500.00
+02 Aug 18   ATM Deposit SAMPLE BRANCH   200.00   700.00
+   ANYTOWN
+10 Aug 18   Night Deposit Fee   1.00   699.00
+15 Aug 18   EMT Transfer - Debit Payee: Sample Payee   300.00   399.00
+31 Aug 18   Service Charges   4.00   395.00
+31 Aug 18   Credit Interest   0.01   395.01
+
+Total Withdrawals and Deposits   $305.00   $200.01
+   -
+
+SHARES
+Membership Share (Shares - Membership Equity)   Owner(s)
+Account # 999000000102   SAMPLE A MEMBER
+Date   Description   Withdrawals   Deposits   Balance
+01 Aug 18   Opening Balance   25.00
+_
+
+Total Withdrawals and Deposits   $0.00   $0.00
+
+   Member Contact Information
+   Sample Branch
+   100 Sample St.
+   Anytown, BC
+
+   IMPORTANT:
+   Sample closing notice text for the synthetic layout.
+   -   End of Statement   -

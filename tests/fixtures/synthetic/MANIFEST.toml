@@ -114,3 +114,26 @@ description = "Vancity Visa transaction download layout text (signed amounts, de
 path = "tests/fixtures/synthetic/mbna_statement.txt"
 synthetic = true
 description = "MBNA statement layout text: summary, payment information, payments, purchases with a refund netted into new purchases, interest; fake values."
+
+# Phase 3a bank sources, shaped on the real layouts (counts only were read from the
+# real files); every name, number and amount is invented.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/ndcu_statement_current.txt"
+synthetic = true
+description = "Nelson & District Credit Union statement, the current layout (letter-spaced labels): a chequing section across two pages with an e-Transfer debit, its reversal by customer cancel with no payee printed, the same debit again, a wrapped payer name, fees and interest, and a share section with no lines; invented dates and amounts."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/ndcu_statement_2018.txt"
+synthetic = true
+description = "Nelson & District Credit Union statement, the 2018 layout (labels printed whole): a chequing section with a wrapped ATM deposit, a fee, an e-Transfer to a payee, service charges and interest, and a share section; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/wise_history.txt"
+synthetic = true
+description = "Wise transaction history layout text, watermark letters between the cells: a Stripe payout in, a USD to CAD conversion with its fee, a CAD card purchase, a USD card purchase from the CAD balance, two sent transfers with a fee (one whose fee exceeds what arrived) and a zero card check; no balance printed; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/paypal_activity.txt"
+synthetic = true
+description = "PayPal activity statement layout text: a CAD and USD balance summary, a bank deposit funding a pre-authorized payment, a General Currency Conversion pair across the two currency sections, a pre-authorized payment and a received payment with a fee; fake values."

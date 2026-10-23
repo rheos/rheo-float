@@ -361,3 +361,57 @@ def test_no_reason_repeats_an_identifier(
     reasons = [reason for _, _, reason in errors(owner_conn)]
     assert len(reasons) == 5
     assert not any("999" in reason or "678" in reason for reason in reasons)
+
+
+# --- slugs and labels carry no identifier (the report views show both) ---------------
+
+
+@pytest.mark.parametrize(
+    ("row", "field"),
+    [
+        # A slug that is a digit run.
+        ("99912345678,Test digits,Example Bank,savings,CAD,monthly,,,,,,,,,", "slug"),
+        # A label carrying the registered identifier with separators.
+        (
+            "test-savings,Savings 9990 0001 234,Example Bank,savings,CAD,monthly"
+            + ",,,,,,,,,",
+            "label",
+        ),
+        # A label carrying a long digit run that is not a date.
+        (
+            "test-savings,Savings 99900012345,Example Bank,savings,CAD,monthly"
+            + ",,,,,,,,,",
+            "label",
+        ),
+    ],
+)
+def test_a_slug_or_label_carrying_an_identifier_is_a_manual_entry_error(
+    owner_conn: Connection, tmp_path: Path, row: str, field: str
+) -> None:
+    slug = row.split(",", 1)[0]
+    write(
+        tmp_path,
+        [CHEQUING, row],
+        ["test-chequing,99900001234,number,,", f"{slug},9995678,number,,"],
+    )
+    load_accounts(UnitOfWork(owner_conn), tmp_path)
+
+    found = [entry for entry in errors(owner_conn) if entry[:2] == (ACCOUNTS_FILE, 3)]
+    assert [reason.split(":")[0] for _, _, reason in found] == [field]
+    assert not any("999" in reason for _, _, reason in errors(owner_conn))
+    assert slugs(owner_conn) == ["paid-outside", "test-chequing"]
+
+
+def test_a_label_with_a_date_or_a_short_number_still_loads(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    label = "test-savings,Savings 2024 20240131 no 12,Example Bank,savings,CAD,monthly,"
+    write(
+        tmp_path,
+        [CHEQUING, label + ",,,,,,,,"],
+        ["test-chequing,99900001234,number,,", "test-savings,9995678,number,,"],
+    )
+    load_accounts(UnitOfWork(owner_conn), tmp_path)
+
+    assert errors(owner_conn) == []
+    assert slugs(owner_conn) == ["paid-outside", "test-chequing", "test-savings"]

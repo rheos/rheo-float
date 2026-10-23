@@ -24,11 +24,12 @@ from sqlalchemy import Connection, func, select
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role
 from rheo_finance.documents import filer
-from rheo_finance.documents.registry import FileOut, PathCheck
+from rheo_finance.documents.registry import FileOut
 from rheo_finance.manual.accounts import IDENTIFIERS_FILE
 from rheo_finance.manual.headers import MANUAL_FILES
 from rheo_finance.operations import dispatch
 from rheo_finance.parsers.base import NoTextLayer
+from rheo_finance.path_check import PathCheck
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage.schema import document
 

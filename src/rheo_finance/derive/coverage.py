@@ -27,6 +27,10 @@ Each month takes the first state that holds:
    when the month starts before its ``missing_before``, else none. So
    ``missing_before`` only names the reason for a month nothing else covers.
 
+The built-in "Paid outside recorded accounts" (``INTERNAL_ACCOUNT``) gets no months:
+it has no source by design, so every month without a cash line would read ``missing``.
+Its first known date is still written.
+
 Only ``parsed`` documents count, so a ``superseded`` copy covers nothing of its own: the
 copy it repeats is the parsed one and covers the period. File names never count (only
 parsed periods, stored lines and entered periods do), and neither do ``trading_export``
@@ -51,6 +55,7 @@ from typing import Final, Literal
 from sqlalchemy import insert, select, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
 from rheo_finance.manual.document_periods import DocumentPeriodRow
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import RegisteredAccount, balance_runs
@@ -371,6 +376,7 @@ def build_coverage(
     _unparsed(uow, facts, known_periods)
     _lines(uow, facts)
 
+    internal = account_id(INTERNAL_ACCOUNT.slug)
     rows: list[dict[str, object]] = []
     counts: Counter[State] = Counter()
     for account_ref in sorted(facts):
@@ -380,6 +386,8 @@ def build_coverage(
             .where(account.c.id == account_ref)
             .values(first_known_on=first_known(each))
         )
+        if account_ref == internal:
+            continue
         for month in matrix(each, today):
             counts[month.state] += 1
             rows.append(

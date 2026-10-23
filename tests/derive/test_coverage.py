@@ -706,3 +706,19 @@ def test_the_months_run_to_the_local_month_not_the_utc_one(ledger: Ledger) -> No
     assert list(matrix(ledger, "opened-only")) == [
         D(2025, 12, 1), LAST_MONTH, D(2026, 2, 1),
     ]  # fmt: skip
+
+
+def test_a_cash_line_on_the_built_in_account_gives_it_no_months(
+    ledger: Ledger,
+) -> None:
+    # The built-in "Paid outside recorded accounts" has no source by design: a month
+    # without a cash line is not missing anything.
+    ledger.cash("paid-outside,2025-10-05,-12.00,CAD,petty cash,")
+    ledger.derive()
+
+    internal = account_id("paid-outside")
+    assert ledger.conn.scalar(select(func.count()).select_from(coverage)) == 0
+    first = ledger.conn.scalar(
+        select(account.c.first_known_on).where(account.c.id == internal)
+    )
+    assert first == D(2025, 10, 5)

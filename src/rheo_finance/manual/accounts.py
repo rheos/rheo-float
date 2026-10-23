@@ -12,6 +12,9 @@ involved:
   institution compared by ``institution_key`` (casefolded, whitespace collapsed,
   otherwise exact): the reused Vancity parser matches an account on its last four only
   (Key decision 1), and the Vancity adapter matches with these same two functions;
+- a slug or label that the adopted-path check (``path_check.PathCheck``) refuses: a
+  run of 8 or more digits that is not a date, or a registered identifier. The report
+  views show both, so neither may carry one;
 - an account left with no identifier row (AC-1), checked after the rules above.
 
 The built-in account "Paid outside recorded accounts" (kind ``wallet``, identifier
@@ -45,8 +48,13 @@ from rheo_finance.manual.loader import (
     duplicate_lines,
     split_list,
 )
+from rheo_finance.path_check import PathCheck
 
 ACCOUNTS_FILE: Final = "accounts.csv"
+CARRIES_IDENTIFIER: Final = (
+    "carries an account identifier or a run of 8 or more digits; the report views"
+    " show it, so change it"
+)
 IDENTIFIERS_FILE: Final = "account_identifiers.csv"
 
 AccountKind = Literal[
@@ -188,6 +196,17 @@ def build_registry(
         if row.slug == INTERNAL_ACCOUNT.slug:
             reject(ACCOUNTS_FILE, line, "slug: reserved for the built-in account")
             bad_accounts.add(line)
+    # Slugs and labels show in the report views: none may carry an identifier.
+    check = PathCheck(
+        ident.identifier
+        for _, ident in identifiers.numbered()
+        if ident.kind != "internal"
+    )
+    for line, row in account_rows:
+        for field_name, value in (("slug", row.slug), ("label", row.label)):
+            if not check.allows(value):
+                reject(ACCOUNTS_FILE, line, f"{field_name}: {CARRIES_IDENTIFIER}")
+                bad_accounts.add(line)
     by_slug = {row.slug: row for line, row in account_rows if line not in bad_accounts}
 
     # Identifiers: a loaded account, a kind that is not reserved, unique text.

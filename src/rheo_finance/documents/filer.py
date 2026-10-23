@@ -19,7 +19,7 @@ moves or renames one. Each file it looks at ends one of these ways:
 - **Known.** Bytes already registered in ``document``, already at the name the date
   gives, or met earlier in the same scan are not copied again, so filing the same
   bytes twice adds nothing.
-- **Refused.** The adopted-path check (``registry.PathCheck``) runs on the
+- **Refused.** The adopted-path check (``path_check.PathCheck``) runs on the
   archive-relative name before the copy. A name it refuses (the date's digits make a
   registered identifier) is not written, and the file stays where it is.
 - **Unrecognised.** A file of a format some filing rule reads (pdf, csv) that no rule
@@ -50,10 +50,10 @@ from sqlalchemy import select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.issuers import file_format
-from rheo_finance.documents.registry import PathCheck
 from rheo_finance.parsers.base import NoTextLayer, NotRecognised
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import Parser, load_parsers
+from rheo_finance.path_check import PathCheck
 from rheo_finance.storage.schema import document
 
 DOWNLOADS_KEY: Final = "finance.paths.downloads"

@@ -10,3 +10,74 @@
 path = "tests/fixtures/synthetic/statement_layout.txt"
 synthetic = true
 description = "Tiny bank statement layout with fake values, so the check has a fixture to pass."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_statement_2020.txt"
+synthetic = true
+description = "Vancity statement layout text (pdftotext -layout), older chequing name, a nicknamed (SIDE FUND) account closed in the period, a two-page account; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_statement_2026.txt"
+synthetic = true
+description = "Vancity statement layout text, the same chequing number under its later name, an overdrawn spell and three fee types; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_statement_split.txt"
+synthetic = true
+description = "Vancity statement layout text, one chequing account with a printed line holding a withdrawal, a deposit and the balance; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_chequing_jump.csv"
+synthetic = true
+description = "Headerless Vancity chequing CSV export, newest first, one fake account identifier, with a deliberate running-balance jump (rows missing between two dates); fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/virgin_bill.txt"
+synthetic = true
+description = "Virgin Plus bill layout text (pdftotext -layout) whose unpaid balance plus current charges equals the total due; fake values."
+
+# The card overlap set, shaped on the card archive's overlap pattern (SPEC "Observed data
+# reality"): a 2024 export and a transaction download that overlap with no statement, and
+# a download that overlaps two statements and runs past the last, which a third statement
+# then covers. A small synthetic layout read by a test-only parser
+# (tests/derive/support.py), not any issuer's real layout.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2024_export.csv"
+synthetic = true
+description = "Synthetic card export (control none) for early 2024, with two identical same-day lines; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2024_download.txt"
+synthetic = true
+description = "Synthetic card transaction download (filed as a PDF) overlapping the 2024 export, worded and dated differently on some lines; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_statement_2025_10.txt"
+synthetic = true
+description = "Synthetic card statement (summary control) for a September to October 2025 period; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_statement_2025_11.txt"
+synthetic = true
+description = "Synthetic card statement (summary control) for the next period; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_statement_2025_12.txt"
+synthetic = true
+description = "Synthetic card statement (summary control) for the period after the download ends; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2025_download.txt"
+synthetic = true
+description = "Synthetic card transaction download (filed as a PDF) overlapping two statements, with one line no statement has, and running past the last statement; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2023_export_a.csv"
+synthetic = true
+description = "Synthetic card export (control none) for May 2023 that overlaps card_2023_export_b.csv, an equal-rank pair; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2023_export_b.csv"
+synthetic = true
+description = "Synthetic card export (control none) for May 2023 that words one purchase of card_2023_export_a.csv differently; fake values."

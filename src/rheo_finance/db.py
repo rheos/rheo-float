@@ -455,6 +455,47 @@ def init(databases: Sequence[str] | None = None) -> list[str]:
     return changes
 
 
+# --- an unreachable server -----------------------------------------------------------
+
+UNREACHABLE = "database unreachable"
+# SQLSTATEs that mean the server dropped or refused the session: class 08 (connection
+# exception), and 57P01 to 57P03 (admin or crash shutdown, cannot connect now).
+_UNREACHABLE_STATES = frozenset({"57P01", "57P02", "57P03"})
+# What libpq relays from a server that answers but takes no connection yet.
+_NOT_ACCEPTING = (
+    "the database system is starting up",
+    "the database system is shutting down",
+    "the database system is in recovery mode",
+    "the database system is not yet accepting connections",
+    "the database system is not accepting connections",
+)
+
+
+def unreachable(exc: BaseException) -> bool:
+    """Whether ``exc`` means Postgres cannot be reached: no server answered (refused,
+    timed out, no such host, connection lost) or the one that answered takes no
+    connection now.
+
+    A failed connect reaches psycopg with no SQLSTATE, so libpq's text decides it: a
+    server's ``FATAL`` reply (a wrong password, a missing database or role) means the
+    server is up and the problem is elsewhere, so it is not "unreachable" and keeps its
+    own failure line; any other connect failure is.
+    """
+    import psycopg
+    from sqlalchemy.exc import DBAPIError
+
+    orig = exc.orig if isinstance(exc, DBAPIError) else exc
+    if not isinstance(orig, psycopg.OperationalError):
+        return False
+    state = orig.sqlstate
+    if state is not None:
+        return state.startswith("08") or state in _UNREACHABLE_STATES
+    message = str(orig)
+    if "FATAL:" not in message:
+        return True
+    return any(phrase in message for phrase in _NOT_ACCEPTING)
+
+
 # --- finance db migrate ------------------------------------------------------------
 
 
@@ -473,6 +514,14 @@ def head_revision() -> str:
     if head is None:
         raise DbError("the migration chain has no head")
     return head
+
+
+def code_revisions() -> frozenset[str]:
+    """Every revision id in the code's migration chain."""
+    from alembic.script import ScriptDirectory
+
+    chain = ScriptDirectory.from_config(alembic_config()).walk_revisions()
+    return frozenset(each.revision for each in chain)
 
 
 def migrate(url: URL | None = None) -> str:

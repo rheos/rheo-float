@@ -15,6 +15,7 @@ run. It never skips: a skipped database test passes vacuously.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import secrets
 import threading
@@ -42,7 +43,7 @@ from rheo_finance.context import (
     UnitOfWork,
 )
 from rheo_finance.contracts import Role
-from rheo_finance.settings import default_settings
+from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
 
@@ -76,11 +77,78 @@ def _test_urls() -> tuple[URL, URL]:
     return urls
 
 
+CHAIN_STAMP = "migration chain sha256 "
+
+
+def migration_chain_digest() -> str:
+    """The sha256 over every revision file's name and bytes, in name order."""
+    digest = hashlib.sha256()
+    for path in sorted((db.MIGRATIONS_DIR / "versions").glob("*.py")):
+        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def _container_owned(owner: URL, reader: URL) -> bool:
+    """True when the test URLs are the ``db.env`` ones for their database: the local
+    container, whose superuser may drop and recreate it."""
+    name = owner.database or ""
+    try:
+        expected = (db.owner_url(name), db.reader_url(name))
+    except db.DbError:
+        return False
+    return tuple(
+        url.render_as_string(hide_password=False) for url in expected
+    ) == tuple(url.render_as_string(hide_password=False) for url in (owner, reader))
+
+
+def _chain_stamp(name: str) -> str:
+    return db.psql(
+        "SELECT coalesce(shobj_description(oid, 'pg_database'), '')"
+        f" FROM pg_database WHERE datname = '{name}';"
+    ).strip()
+
+
+class UnsafeTestDatabase(Exception):
+    """A database the test fixtures must never drop or recreate."""
+
+
+def _fresh_test_database(owner: URL, reader: URL) -> None:
+    """Recreate the test database when it was migrated from other revision text.
+
+    Alembic records only the revision id, so a revision whose text changed before any
+    live database ran it (a re-pin on an unmerged branch) leaves ``finance_test`` with
+    the old schema under the new id. The database's comment holds the digest of the
+    chain that built it; when it differs, the database is dropped, set up as ``db
+    init`` does and migrated again. Only a ``*_test`` database in the local container
+    is ever dropped, never the live one. The drop uses FORCE, so a suite running at the
+    same moment from a checkout with another chain loses its connections. Test URLs
+    that name another server are migrated as they stand.
+    """
+    name = owner.database or ""
+    # Explicit raises, not asserts: ``python -O`` strips asserts, and these guard a
+    # DROP DATABASE.
+    if not name.endswith("_test") or name == db.LIVE_DATABASE:
+        raise UnsafeTestDatabase("only a database whose name ends in _test is dropped")
+    if not db.DATABASE_NAME.fullmatch(name):
+        raise UnsafeTestDatabase("the test database name is not a plain name")
+    if not _container_owned(owner, reader):
+        return
+    expected = CHAIN_STAMP + migration_chain_digest()
+    if _chain_stamp(name) == expected:
+        return
+    db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')
+    db.init(databases=(name,))
+    db.migrate(owner)
+    db.psql(f"COMMENT ON DATABASE \"{name}\" IS '{expected}';")
+
+
 @pytest.fixture(scope="session")
 def test_database() -> DatabaseUnderTest:
-    """Migrate ``finance_test`` to head once for the whole session."""
+    """Migrate ``finance_test`` to head once for the whole session, recreating it
+    first when it was built from other revision text."""
     owner, reader = _test_urls()
     try:
+        _fresh_test_database(owner, reader)
         head = db.migrate(owner)
     except db.DbError as exc:
         pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)
@@ -99,7 +167,8 @@ def scratch_database(test_database: DatabaseUnderTest) -> Iterator[DatabaseUnder
     (``db init`` reads ``db.env`` from there).
     """
     name = f"finance_scratch_{secrets.token_hex(4)}_test"
-    assert name != db.LIVE_DATABASE and name != db.TEST_DATABASE
+    if name in (db.LIVE_DATABASE, db.TEST_DATABASE):
+        raise UnsafeTestDatabase("a scratch database never takes a standing name")
 
     def drop() -> None:
         db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')
@@ -177,9 +246,16 @@ def make_context(
 ) -> Callable[[Role], FinanceContext]:
     """A ``FinanceContext`` for a role over ``finance_test``, with a fake clock."""
 
+    # The archive and Downloads point at paths that do not exist, so an operation
+    # dispatched with these settings never reads or writes the real directories.
+    unset = parse_settings(
+        f'[finance.paths]\narchive = "{tmp_path / "archive-unset"}"\n'
+        f'downloads = "{tmp_path / "downloads-unset"}"\n'
+    )
+
     def build(role: Role) -> FinanceContext:
         ctx = FinanceContext(
-            settings=default_settings(),
+            settings=unset,
             clock=FakeClock(dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)),
             paths=FinancePaths(data=tmp_path),
             role=role,

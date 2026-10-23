@@ -209,7 +209,7 @@ SPECS: Final[tuple[KeySpec, ...]] = (
     ),
     # ledger
     _spec("finance.import.overlap_day_tolerance", INT, 3,
-          "Days two statement periods may overlap before it is a discrepancy."),
+          "Days apart two documents may date one purchase and still match."),
     _spec("finance.transfers.window_days", INT, 7,
           "Days between the two legs of a transfer."),
     _spec("finance.transfers.fee_tolerance_abs", DEC, Decimal("5.00"),

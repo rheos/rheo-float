@@ -1,0 +1,110 @@
+# ADR-0010: The ledger is a function of the document set
+Status: accepted
+Date: 2026-10-22
+
+## Context
+
+One purchase often reaches the archive several times: a statement PDF, a CSV export of the same
+cycle, a transaction download that overlaps two statements and runs past the last one. The copies
+word and date the purchase differently. If each import added its lines on top of what the ledger
+already held, the result would depend on which file came first, a re-import could double a line,
+and a statement arriving after an export could not take over the export's lines. Decisions point at
+lines (ADR-0004), so whatever replaces a line has to keep the old reference resolvable.
+
+## Decision
+
+Every derive recomputes all lines from stored parse output (Key decision 4). Nothing about a line
+is carried over from an earlier derive; the derived tables are cleared and rebuilt (ADR-0003).
+
+Documents rank per account by control (a tied-out statement, then a running-balance export, then
+an unverified export), then format (statement PDF, transaction PDF, CSV, other), then the larger
+sha256 (`derive/precedence.py`). Two documents of equal rank for exactly the same periods on every
+account they cover, with the same parse output (every line of every kind and every period's
+figures), are one document twice: the larger sha256 stays `parsed`, the other becomes
+`superseded` in stage 1. Content is compared as well as periods because two exports can state one
+period and differ inside it, and two bills of one month can differ in the amount due; superseding
+one would drop what it says without a trace, so such a pair is left to the matcher.
+
+Stage 3 (`derive/overlap.py`) then decides each line:
+
+- A tied-out statement owns its period, per currency. Its lines dated inside its period in their
+  currency, and outside the periods of statements ranked before it, become txns first. Two
+  statements never match each other's lines across a period boundary.
+- Every other line matches one to one against txns other documents committed on the account:
+  same currency and amount, a posting or transaction date within
+  `finance.import.overlap_day_tolerance` of one of the txn's. It prefers the txn its own key
+  already names, then an exact date with the same normalized description, then an exact date,
+  then the tolerance with the same description, then the tolerance; among equals, the earliest.
+  A document's lines take their turn in posting date order, not file order, so an export
+  printed newest first cannot hand an older purchase's txn to a newer line. A match is an
+  additional `txn_source` and adds no txn.
+- An unmatched line becomes a txn outside every tied-out statement period, and a
+  `source_discrepancy` (`unmatched_in_statement_window`) inside one.
+
+A line's natural key counts occurrences within its own document, so a document's keys depend on
+no other document. An additional source keeps its own line's key: when a covering statement
+arrives, a reference taken on a provisional export line resolves through that key to the
+statement-backed txn. A line key names one txn; several sources of one txn may share it (a CSV and
+a PDF that print a purchase alike). A line whose key names a txn another line of its document
+already took is a `source_discrepancy` (`line_key_taken`) rather than a second txn under a key
+that is not its own.
+
+A txn's basis is its first document's standing. A txn from an export is provisional when the
+account has a tied-out statement in the txn's currency and the txn is dated after the last one
+ends.
+
+Derive is single-writer: two derives at once would insert the same derived txn ids, so the
+second fails on the txn primary key before the deferred line-key trigger could be outrun.
+
+## Consequences
+
+Import order cannot change the ledger, and a repeat import adds nothing. A wrong match drops a
+real line, and two unverified exports outside any statement period can still double a line whose
+dates differ by more than the tolerance (Technical Risk 1); discrepancies are counted for
+`status`, and the tolerance is tuned on the real card overlap before older years are trusted. An
+account with no tied-out statement has no provisional lines, since there is no last statement to
+be after.
+
+`finance.ledger.derive` keeps a document's stored parse output when a parse would reproduce it:
+the file is still at its path with the document's sha256, and the hash stored with the parse
+(`document.parse_inputs`: issuer, format, the id and version of every parser registered for them,
+and the whole account registry) is unchanged. A new document, a moved parser version, any registry
+change (an account leaving or joining included), or a file that left, was withheld or came back,
+is parsed again. Everything after stage 1 is recomputed every run either way.
+`finance.ledger.rebuild` registers the archive again and parses every document; it is how a parser
+fix that keeps its version, or a new docextract pin, reaches all history. A test holds
+derive-after-derive, rebuild-after-derive and derive-after-rebuild to one digest.
+
+`finance.ledger.digest` covers every table a derive clears or rewrites, plus `document` and
+`archive_skip`, which the rebuild's archive walk and the parse write. It leaves out the state
+tables (`decision`, `decision_item`, `decision_target`), which are inputs, and the columns that
+record when a row was written (`document.imported_at`, `sink_spec.computed_at`) or how a parse was
+reached (`document.parse_inputs`). A line's or txn's `occurred_at` is data and stays in.
+
+Recorded here because the repo is public and the spec's wording does not fit it, or the build
+filled a gap:
+
+- The basis class the spec names after the person is stored as `owner`.
+- `txn.cad_source` and `txn.asset_identifier` are tiered restricted, stricter than the spec,
+  because the tier guard restricts every name shaped like a CAD figure or an identifier.
+- A manual cash line in a currency its account does not take becomes no txn and a
+  `manual_entry_error` row (the spec does not say what happens to one).
+- 0010's unique index on line keys is replaced in 0011 by a deferred trigger with the same
+  intent, so that sources of one txn may share a key.
+- Matching first prefers the txn a line's own key already names, ahead of the spec's exact-date
+  order. Such a txn is always on the exact date with the same description, so this only breaks
+  ties among identical candidates, keeping keys aligned.
+- A `line_key_taken` line is a discrepancy even outside every statement period, where the spec
+  would make it a txn: its key already names another txn, so it has no key of its own to take.
+- Superseding needs identical parse output, not only the identical period the spec names.
+- Coverage (stage 6) finds running-balance runs per document. Two exports whose balances
+  chain still leave the months at their seam `partial`: this under-reports and never gives a
+  false `have`. Chaining runs across documents would need deduplicated lines in date order.
+- A month is `have` only when every currency the account lists is verified on every open
+  day. The spec says only "every day"; an account that lists a currency it rarely uses will
+  show `partial` in months with no verified span in that currency. Revisit if one never
+  shows `have`.
+- A running-balance break that reaches into a month that is otherwise `partial` gives it the
+  reason `running_balance_break`; only months wholly inside a break are `missing` for it.
+- `missing_before` names the reason only for months nothing else covers, following stage 6's
+  order (its rules come after `partial`), rather than turning covered months `missing`.

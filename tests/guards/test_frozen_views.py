@@ -7,7 +7,8 @@ revision is applied anywhere (a review fix on an unmerged phase branch, say) re-
 its hash in the same change; a new revision adds its pin.
 
 A revision that creates or recreates a view holds its body in a module-level ``VIEWS``
-dict. For every view a code module compiles (``sinks.views.VIEW_SELECTS``), the newest
+dict. For every view a code module compiles (``sinks.views.VIEW_SELECTS`` and
+``reports.views.VIEW_SELECTS``), the newest
 revision's body must equal what the code compiles to now, whitespace aside. So a rule
 changed in code, ``reversed_clause`` included, fails here until a new revision
 recreates the view with the new body.
@@ -20,8 +21,14 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+from sqlalchemy import Connection, text
+
 from rheo_finance import migrations
-from rheo_finance.sinks.views import VIEW_SELECTS, view_sql
+from rheo_finance.reports.views import VIEW_SELECTS as REPORT_VIEW_SELECTS
+from rheo_finance.sinks.views import VIEW_SELECTS as SINK_VIEW_SELECTS
+from rheo_finance.sinks.views import view_sql
+
+VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
 
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
 
@@ -37,6 +44,34 @@ PINNED = {
     ),
     "0004_sink_views.py": (
         "570690ba75b1777b1c91cb4d4c5144de9206cbcaafc1dfca8405c3ee816bed76"
+    ),
+    "0005_accounts.py": (
+        "60f7a37270474d8c54ed2247313391276ae4f69db3ee5bd3962f7da643e06cda"
+    ),
+    "0006_filed_years.py": (
+        "a699171f54b3ba2c7bda6432ec20f0a4e9cec35daa5b8c3a8ee535fb2026720d"
+    ),
+    "0007_documents.py": (
+        "52457353a3934c1487ba58e7f28b9a1062a7bfabc5398b44ce60ada249e3f17d"
+    ),
+    "0008_archive_skip_unreadable.py": (
+        "6efcdf6ff35187de0e550654fc1f492dfbb68f24617800b90b11e3dc7de9ec37"
+    ),
+    "0009_parse_cache.py": (
+        "241b99575f19c5892cabd1b0610dec391ab7de086ba1bef2bb89c026b9ff4dd0"
+    ),
+    "0010_txn.py": ("c09b65822397ebd0b1546e63b44a30406effd6c6226ba775ff1245103407a1b2"),
+    "0011_overlap.py": (
+        "faec3bb1a0c7accaaead38d9ad2a103427e65a3899cf618c365f90aa484e90ad"
+    ),
+    "0012_coverage.py": (
+        "9bdcd00b29f92b4e26afb32566d4bab0d0c81ede652b627ed74cdaeb43b0f05f"
+    ),
+    "0013_parse_inputs.py": (
+        "a7813de94129e4ced2c9b1b50bc6ffb048cf0b904f563a44b398f946a60cbb90"
+    ),
+    "0014_report_views.py": (
+        "edc083c85e2fd329baa3b7daa2ec45495052bd0fa2330e86129baa2656992995"
     ),
 }
 
@@ -107,3 +142,28 @@ def test_every_revision_file_is_pinned_and_unchanged() -> None:
         "a revision file changed; a database that ran it will not see the edit."
         " Add a new revision instead, or re-pin only if it was never applied."
     )
+
+
+# ``alembic_version_finance.version_num`` is varchar(32), and ``report_status`` selects
+# it, so widening the column would mean dropping and recreating that view first.
+VERSION_NUM_LENGTH = 32
+
+
+def test_every_revision_id_fits_the_version_column() -> None:
+    chain = _chain()
+    assert chain, "the control: the chain has revisions"
+    too_long = [
+        module.revision for module in chain if len(module.revision) > VERSION_NUM_LENGTH
+    ]
+    assert too_long == [], "shorten the revision id to 32 characters or fewer"
+
+
+def test_the_version_column_is_32_characters(owner_conn: Connection) -> None:
+    length = owner_conn.scalar(
+        text(
+            "SELECT character_maximum_length FROM information_schema.columns"
+            " WHERE table_schema = 'finance' AND table_name = 'alembic_version_finance'"
+            " AND column_name = 'version_num'"
+        )
+    )
+    assert length == VERSION_NUM_LENGTH

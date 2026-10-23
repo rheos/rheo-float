@@ -41,7 +41,9 @@ MANUAL_FILES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "hydro_shares.csv": ("bill_date", "amount", "currency", "note"),
         "tax_slips.csv": ("year", "slip", "issuer", "box", "amount", "note"),
         "filed_years.csv": ("year", "filed_on", "note"),
-        "document_periods.csv": ("archive_path", "period_start", "period_end", "note"),
+        "document_periods.csv": (
+            "archive_path", "account", "period_start", "period_end", "note",
+        ),
         "merchant_rules.csv": (
             "merchant_key", "category", "tag", "business_unit", "percent",
         ),

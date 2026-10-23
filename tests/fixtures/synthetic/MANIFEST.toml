@@ -170,3 +170,11 @@ description = "PayPal activity CSV shaped on the vendor's documented export: the
 path = "tests/fixtures/synthetic/wise_statement.csv"
 synthetic = true
 description = "Wise statement CSV shaped on the vendor's documented export, newest first: the transactions of wise_history.txt (a Stripe payout in, a USD to CAD conversion with its fee, two card purchases, two sent transfers with a fee, a zero card check) with a running balance per currency; fake values."
+
+# Prompt 34: the Stripe balance history export, shaped on the vendor's documented export
+# (no real export is on file). Its later payout is the one wise_statement.csv receives.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/stripe_balance.csv"
+synthetic = true
+description = "Stripe balance history CSV shaped on the vendor's documented export, newest first, no balance column: two payouts with the charges (and one refund) they pay out, a fee per charge, and a charge not yet paid out; invented ids and customers, fake values."

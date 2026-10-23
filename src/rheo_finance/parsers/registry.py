@@ -116,6 +116,7 @@ PARSER_MODULES: Final[tuple[str, ...]] = (
     "rheo_finance.parsers.paypal_activity",
     "rheo_finance.parsers.wise_statement_csv",
     "rheo_finance.parsers.paypal_activity_csv",
+    "rheo_finance.parsers.stripe_balance_csv",
     "rheo_finance.parsers.fortisbc_bill",
     "rheo_finance.parsers.invoice_received",
     "rheo_finance.parsers.patient_receipt",

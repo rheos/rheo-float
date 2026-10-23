@@ -1,19 +1,21 @@
 """The fiat CSV exports dedupe against the PDFs of the same account and against a
 second copy of themselves (FR-4, FR-12(a); AC-80 dedupe clause).
 
-Seam: ``derive.run`` over the synthetic PayPal and Wise CSVs filed beside the PDF
-fixtures of the same vendor, read back through ``txn`` and ``txn_source``. The CSV
-parsers give the PDF parsers' lines (same sign, same amount and currency per leg, the
-fee as its own line), so stage 3's one-to-one matcher (account, currency, signed
-amount, a date inside the tolerance) pairs each shared transaction into one txn with
-two sources. Every value is synthetic.
+Seam: ``derive.run`` over the synthetic PayPal, Wise and Stripe CSVs (the first two
+filed beside the PDF fixtures of the same vendor), read back through ``txn`` and
+``txn_source``. The CSV parsers give the PDF parsers' lines (same sign, same amount and
+currency per leg, the fee as its own line), so stage 3's one-to-one matcher (account,
+currency, signed amount, a date inside the tolerance) pairs each shared transaction
+into one txn with two sources. Every value is synthetic.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections import Counter
+from collections.abc import Callable
 
+import pytest
 from sqlalchemy import Table, func, select
 
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
@@ -32,6 +34,7 @@ PAYPAL_PDF = "paypal/activity-2026-04-01_to_2026-04-30.pdf"
 PAYPAL_CSV = "paypal/activity-2026-04-30.csv"
 WISE_PDF = "wise/transactions-2026-02-01_to_2026-02-28.pdf"
 WISE_CSV = "wise/statement-2026-02-28.csv"
+STRIPE_CSV = "stripe/balance-2026-02-26.csv"
 
 
 def fixture(name: str) -> str:
@@ -146,6 +149,36 @@ def test_a_resaved_copy_with_other_line_endings_adds_nothing(ledger: Ledger) -> 
     assert before == (11, 11)
     assert (count(ledger, txn), count(ledger, txn_source)) == before
     assert out.documents == Counter({"parsed": 1, "superseded": 1})
+
+
+@pytest.mark.parametrize(
+    ("copy", "outcomes"),
+    [
+        (lambda text: text, Counter({"parsed": 1})),
+        (
+            lambda text: text.replace("\n", "\r\n"),
+            Counter({"parsed": 1, "superseded": 1}),
+        ),
+    ],
+    ids=["same_bytes", "crlf_resave"],
+)
+def test_a_second_stripe_copy_adds_nothing(
+    ledger: Ledger, copy: Callable[[str], str], outcomes: Counter[str]
+) -> None:
+    """The Stripe export's control is ``none``: a copy of it, byte for byte or saved
+    again with other line endings, adds no txn and no source."""
+    register(ledger, "stripe", "Stripe", "payment_processor", "SAMPLE999STRIPE")
+    text = fixture("stripe_balance.csv")
+    ledger.file(STRIPE_CSV, text)
+    ledger.derive()
+    before = (count(ledger, txn), count(ledger, txn_source))
+
+    ledger.file("stripe/balance-2026-02-26-again.csv", copy(text))
+    out = ledger.derive()
+
+    assert before == (6, 6)
+    assert (count(ledger, txn), count(ledger, txn_source)) == before
+    assert out.documents == outcomes
 
 
 def test_coverage_replays_a_row_with_a_fee_as_one_step(ledger: Ledger) -> None:

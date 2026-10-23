@@ -84,6 +84,9 @@ class Lines:
     evidence_links: int = 0
     # Unmatched receipts, each a txn on "Paid outside recorded accounts".
     from_receipts: int = 0
+    # Unmatched receipts left out because the internal account does not take their
+    # currency.
+    receipts_currency_refused: int = 0
     # Invoices no payment line matched: no txn.
     unmatched_invoices: int = 0
 
@@ -337,5 +340,6 @@ def build_lines(
         manual_currency_refused=manual.manual_currency_refused,
         evidence_links=linked.links,
         from_receipts=linked.receipt_txns,
+        receipts_currency_refused=linked.receipts_currency_refused,
         unmatched_invoices=linked.unmatched_invoices,
     )

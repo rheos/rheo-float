@@ -10,6 +10,7 @@ adds no txn and nothing to any spending total. Every value is synthetic.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -17,11 +18,13 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 
-from rheo_finance.derive.run import Derived
+from rheo_finance.derive.run import Derived, run
+from rheo_finance.derive.stage3 import build_lines
+from rheo_finance.manual.cash_lines import CashLines
 from rheo_finance.manual.stage2 import account_id
-from rheo_finance.storage.schema import document_line, txn, txn_source
+from rheo_finance.storage.schema import document, document_line, txn, txn_source
 
-from .support import FIXTURES, D, Ledger, csv_row
+from .support import FIXTURES, D, Ledger, csv_row, read_as_text
 
 RECEIPT = "receipts/sample-clinic/2026-03-16.pdf"
 INVOICE = "invoices-received/sample-vendor/2025-12-01.pdf"
@@ -30,6 +33,7 @@ CLINIC = "POS PURCHASE   SAMPLE DENTAL CLINIC   99907"
 CONTRACTOR = "E-TRANSFER SENT   SAMPLE CONTRACTOR   99908"
 OTHER_SHOP = "POS PURCHASE   SAMPLE HARDWARE   99904"
 CASH_ROW = "14-Mar-26   Cash   Pmt. Payment #999123 - Patient, Sample   $200.00\n"
+DEBIT_ROW = "15-Mar-26   Debit   Pmt. Payment #999124 - Patient, Sample   $45.00\n"
 
 
 def fixture(name: str) -> str:
@@ -49,6 +53,32 @@ def debit_only_receipt() -> str:
 
 def invoice(issued: str = "Mon, Dec 1, 2025") -> str:
     return changed(fixture("invoice_received.txt"), "Mon, Dec 1, 2025", issued)
+
+
+def clinic_invoice(total: str, issued: str) -> str:
+    """The clinic's invoice of one item for ``total``, paid in full."""
+    text = changed(invoice(issued), "Sample Contractor", "Sample Dental Clinic")
+    for printed, replacement in (
+        ("$40.00   $500.00", f"$40.00   ${total}"),
+        ("Subtotal   $750.00", f"Subtotal   ${total}"),
+        ("Total   $750.00", f"Total   ${total}"),
+        ("Paid   $100.00", f"Paid   ${total}"),
+        ("Amount due   $650.00", "Amount due   $0.00"),
+        ("  Work from Nov 24th to Nov 30th   6.25   $40.00   $250.00\n", ""),
+    ):
+        text = changed(text, printed, replacement)
+    return text
+
+
+def receipt(*rows: tuple[str, str, str, str]) -> str:
+    """The patient receipt with these ``(day, type, amount, payment number)``
+    payments in place of its own two."""
+    text = changed(fixture("patient_receipt.txt"), CASH_ROW + DEBIT_ROW, "".join(
+        f"{day}   {kind}   Pmt. Payment #{number} - Patient, Sample   ${amount}\n"
+        for day, kind, amount, number in rows
+    ))  # fmt: skip
+    total = sum((Decimal(amount) for _, _, amount, _ in rows), Decimal(0))
+    return changed(text, "Total Payments   $245.00", f"Total Payments   ${total}")
 
 
 def payments(ledger: Ledger, *rows: tuple[str, str, str]) -> None:
@@ -269,20 +299,7 @@ def test_an_invoice_and_its_receipt_both_attach_to_one_payment(
     receipt of the same payment out to the internal account."""
     payments(ledger, ("15-Mar-2026", CLINIC, "45.00"))
     ledger.file(RECEIPT, debit_only_receipt())
-    # The clinic's invoice for the same 45.00, paid in full.
-    clinic_invoice = changed(
-        invoice("Sun, Mar 15, 2026"), "Sample Contractor", "Sample Dental Clinic"
-    )
-    for printed, amount in (
-        ("$40.00   $500.00", "$40.00   $45.00"),
-        ("Subtotal   $750.00", "Subtotal   $45.00"),
-        ("Total   $750.00", "Total   $45.00"),
-        ("Paid   $100.00", "Paid   $45.00"),
-        ("Amount due   $650.00", "Amount due   $0.00"),
-        ("  Work from Nov 24th to Nov 30th   6.25   $40.00   $250.00\n", ""),
-    ):
-        clinic_invoice = changed(clinic_invoice, printed, amount)
-    ledger.file(INVOICE, clinic_invoice)
+    ledger.file(INVOICE, clinic_invoice("45.00", "Sun, Mar 15, 2026"))
 
     out = ledger.derive()
 
@@ -313,3 +330,198 @@ def test_receipt_and_invoice_lines_store_their_keys(ledger: Ledger) -> None:
     assert {row.description_norm for row in rows} == {
         "patient receipt: cash", "patient receipt: debit", "invoice sp0042",
     }  # fmt: skip
+
+
+# --- maximal matching, order and re-derives -------------------------------------------
+
+
+def test_matching_is_maximal_not_greedy(ledger: Ledger) -> None:
+    """Receipt payments on 10 and 14 March, card lines on 7 and 11 March. The 10th
+    is nearest the 11th, but taking it there would strand the 14th: both match, the
+    10th to the 7th and the 14th to the 11th, and nothing is paid outside."""
+    payments(ledger, ("11-Mar-2026", CLINIC, "45.00"), ("07-Mar-2026", CLINIC, "45.00"))
+    ledger.file(
+        RECEIPT,
+        receipt(
+            ("10-Mar-26", "Debit", "45.00", "999131"),
+            ("14-Mar-26", "Debit", "45.00", "999132"),
+        ),
+    )
+
+    out = ledger.derive()
+
+    assert counts(out) == (3, 2, 0, 0)
+    assert spending(ledger) == Decimal("-90.00")
+    pairs = ledger.conn.execute(
+        select(document_line.c.posting_date, txn.c.posting_date)
+        .join(txn_source, txn_source.c.document_line_id == document_line.c.id)
+        .join(txn, txn.c.id == txn_source.c.txn_id)
+        .where(txn_source.c.role == "evidence")
+        .order_by(document_line.c.posting_date)
+    ).all()
+    assert [tuple(each) for each in pairs] == [
+        (D(2026, 3, 10), D(2026, 3, 7)), (D(2026, 3, 14), D(2026, 3, 11)),
+    ]  # fmt: skip
+
+
+def test_an_invoice_attaches_to_a_cash_receipt_paid_outside(ledger: Ledger) -> None:
+    """The clinic's invoice for the cash payment its receipt shows: the receipt is
+    the payment (on the internal account) and the invoice is its evidence, so
+    nothing stays open and nothing counts twice."""
+    payments(ledger, ("15-Mar-2026", CLINIC, "45.00"))
+    ledger.file(RECEIPT, fixture("patient_receipt.txt"))
+    ledger.file(INVOICE, clinic_invoice("200.00", "Sat, Mar 14, 2026"))
+
+    out = ledger.derive()
+
+    assert counts(out) == (2, 2, 1, 0)
+    (outside,) = [r for r in ledger.txns() if r["account_id"] == PAID_OUTSIDE]
+    invoice_links = [
+        each.txn_id
+        for each in sources(ledger, "evidence")
+        if each.line_kind == "invoice"
+    ]
+    assert invoice_links == [outside["id"]]
+    assert spending(ledger) == Decimal("-245.00")
+
+
+def test_a_payment_line_that_arrives_later_takes_the_receipt(ledger: Ledger) -> None:
+    """Before the chequing export is filed the receipt is paid outside; once it is,
+    the receipt is evidence of the card line and the internal txn is gone."""
+    ledger.file(RECEIPT, debit_only_receipt())
+    first = ledger.derive()
+    assert counts(first) == (0, 0, 1, 0)
+    assert spending(ledger) == Decimal("-45.00")
+
+    payments(ledger, ("15-Mar-2026", CLINIC, "45.00"))
+    second = ledger.derive()
+
+    assert counts(second) == (2, 1, 0, 0)
+    assert [r for r in ledger.txns() if r["account_id"] == PAID_OUTSIDE] == []
+    assert spending(ledger) == Decimal("-45.00")
+
+
+def test_derive_and_rebuild_give_the_same_links(ledger: Ledger) -> None:
+    payments(ledger, ("15-Mar-2026", CLINIC, "45.00"), ("31-Dec-2025", CONTRACTOR,
+             "750.00"))  # fmt: skip
+    ledger.file(RECEIPT, fixture("patient_receipt.txt"))
+    ledger.file(INVOICE, invoice())
+
+    def snapshot() -> tuple[list[str], list[str]]:
+        return (
+            sorted(repr(tuple(row)) for row in ledger.conn.execute(select(txn))),
+            sorted(repr(tuple(row)) for row in ledger.conn.execute(select(txn_source))),
+        )
+
+    derived = ledger.derive()
+    after_derive = snapshot()
+    rebuilt = run(ledger.uow, ledger.ctx, extract_pdf=read_as_text, reparse=True)
+
+    assert counts(derived) == counts(rebuilt) == (3, 2, 1, 0)
+    assert snapshot() == after_derive
+
+
+@pytest.mark.parametrize("resaved_first", [True, False])
+def test_filing_order_changes_neither_the_primary_copy_nor_the_totals(
+    ledger: Ledger, resaved_first: bool
+) -> None:
+    """Two copies of one receipt: the copy of the larger sha256 is the primary source
+    of the internal txn, whichever was filed first."""
+    text = fixture("patient_receipt.txt")
+    copies = [
+        ("receipts/sample-clinic/2026-03-16.pdf", text),
+        ("receipts/sample-clinic/2026-03-16-resaved.pdf", text.replace("\n", "\r\n")),
+    ]
+    if resaved_first:
+        copies.reverse()
+    docs = {}
+    for relative, content in copies:
+        docs[ledger.file(relative, content)] = content
+        out = ledger.derive()
+
+    larger = max(docs, key=lambda doc: hashlib.sha256(docs[doc].encode()).hexdigest())
+    assert counts(out) == (0, 2, 2, 0)
+    primaries = ledger.conn.execute(
+        select(document_line.c.document_id)
+        .join(txn_source, txn_source.c.document_line_id == document_line.c.id)
+        .where(txn_source.c.role == "primary")
+    ).scalars()
+    assert set(primaries) == {larger}
+    assert spending(ledger) == Decimal("-245.00")
+
+
+def test_two_genuine_receipts_with_identical_payments_count_twice(
+    ledger: Ledger,
+) -> None:
+    """Two receipts in two documents print the same date, type and amount but their
+    own payment numbers: two payments. A re-saved copy of one of them is the same
+    payment again and adds nothing."""
+    one = receipt(("15-Mar-26", "Debit", "45.00", "999141"))
+    two = receipt(("15-Mar-26", "Debit", "45.00", "999142"))
+    ledger.file("receipts/sample-clinic/one.pdf", one)
+    ledger.file("receipts/sample-clinic/two.pdf", two)
+    ledger.file("receipts/sample-clinic/one-resaved.pdf", one.replace("\n", "\r\n"))
+
+    out = ledger.derive()
+
+    assert out.documents == {"parsed": 3}
+    assert counts(out) == (0, 1, 2, 0)
+    assert spending(ledger) == Decimal("-90.00")
+
+
+# --- lines that never count -----------------------------------------------------------
+
+
+def rerun_stage3(ledger: Ledger) -> Any:
+    """Stage 3 again over the stored parse output, the txn tables emptied first."""
+    ledger.conn.execute(txn_source.delete())
+    ledger.conn.execute(txn.delete())
+    return build_lines(
+        ledger.uow, CashLines((), ()), {}, overlap_days=3, receipt_days=3,
+        invoice_days=30,
+    )  # fmt: skip
+
+
+def test_a_receipt_in_a_document_not_parsed_is_ignored(ledger: Ledger) -> None:
+    ledger.file(RECEIPT, fixture("patient_receipt.txt"))
+    assert ledger.derive().lines.from_receipts == 2
+    ledger.conn.execute(document.update().values(status="superseded"))
+
+    lines = rerun_stage3(ledger)
+
+    assert (lines.from_receipts, lines.evidence_links, lines.txns) == (0, 0, 0)
+    assert ledger.txns() == []
+
+
+def test_an_incomplete_receipt_line_is_counted(ledger: Ledger) -> None:
+    ledger.file(RECEIPT, fixture("patient_receipt.txt"))
+    ledger.derive()
+    ledger.conn.execute(
+        document_line.update()
+        .where(document_line.c.posting_date == D(2026, 3, 14))
+        .values(amount=None)
+    )
+
+    lines = rerun_stage3(ledger)
+
+    assert (lines.incomplete_lines, lines.from_receipts) == (1, 1)
+    assert spending(ledger) == Decimal("-45.00")
+
+
+def test_an_unmatched_receipt_in_another_currency_is_refused(ledger: Ledger) -> None:
+    """The internal account takes CAD only: an unmatched USD receipt is counted as
+    refused and booked nowhere, never as CAD spending."""
+    ledger.file(RECEIPT, fixture("patient_receipt.txt"))
+    ledger.derive()
+    ledger.conn.execute(
+        document_line.update()
+        .where(document_line.c.posting_date == D(2026, 3, 14))
+        .values(currency="USD")
+    )
+
+    lines = rerun_stage3(ledger)
+
+    assert (lines.receipts_currency_refused, lines.from_receipts) == (1, 1)
+    assert [(r["amount"], r["currency"]) for r in ledger.txns()] == [
+        (Decimal("-45.00"), "CAD"),
+    ]  # fmt: skip

@@ -312,3 +312,42 @@ def test_the_registered_identifier_matches_whatever_its_separators(
 
     assert setup.parse(doc).status == "parsed"
     assert setup.period(doc)["account_id"] == account_id("chequing")
+
+
+# --- hints (FR-15, Phase 3a deliverable 1) --------------------------------------------
+
+HINTS = FIXTURES / "vancity_chequing_hints.csv"
+HINT_COLUMNS = (
+    document_line.c.transfer_hint,
+    document_line.c.reversal_hint,
+    document_line.c.conversion_hint,
+    document_line.c.etransfer_hint,
+    document_line.c.hint_account_slug,
+    document_line.c.counterparty,
+)
+
+
+def test_each_line_carries_the_hints_its_wording_gives(setup: Setup) -> None:
+    """The e-Transfer carries its hint and its printed name, the chequing leg of a
+    card payment a transfer hint naming the card issuer, a purchase none."""
+    setup.register()
+    doc = setup.file(HINTS.read_text(encoding="utf-8"))
+
+    assert setup.parse(doc) == Parsed(
+        "parsed", None, periods=1, lines=3, segments=1, gaps=0
+    )
+    rows = setup.conn.execute(
+        select(*HINT_COLUMNS)
+        .where(document_line.c.document_id == doc)
+        .order_by(document_line.c.line_no)
+    ).all()
+    assert [tuple(each) for each in rows] == [
+        (False, False, False, True, None, "SAMPLE FRIEND"),
+        (True, False, False, False, "vancity-visa", "VANCITY VISA"),
+        (False, False, False, False, None, None),
+    ]
+
+
+def test_the_chequing_export_registers_as_hint_setting() -> None:
+    parser = vancity_chequing_csv.PARSER
+    assert (parser.version, parser.sets_hints) == ("2", True)

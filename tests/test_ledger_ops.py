@@ -283,20 +283,23 @@ def test_a_new_patterns_file_reparses_the_hint_setting_parsers_documents(
     before = taken(ledger)
     total = sum(SEEDED.values())
     card_csvs = sum(1 for path in CARD_DOCS if path.endswith(".csv")) + 1
+    # The Vancity chequing parser sets hints too: the export and its copy.
+    vancity_exports = 2
+    hinted = card_csvs + vancity_exports
 
     monkeypatch.setattr(patterns, "patterns_digest", lambda: "9" * 64)
     out = derive(ledger)
 
-    assert (out.parsed_now, out.kept) == (card_csvs, total - card_csvs)
+    assert (out.parsed_now, out.kept) == (hinted, total - hinted)
     assert statuses(out) == SEEDED
     assert taken(ledger) != before
 
     # The csv parser stops setting hints: its documents reparse once, and after
-    # that a patterns edit reparses nothing here.
+    # that a patterns edit reparses only the Vancity exports.
     monkeypatch.setitem(registry.PARSERS, csv_parser.parser_id, csv_parser)
     assert derive(ledger).parsed_now == card_csvs
     monkeypatch.setattr(patterns, "patterns_digest", lambda: "8" * 64)
-    assert derive(ledger).parsed_now == 0
+    assert derive(ledger).parsed_now == vancity_exports
 
 
 def test_an_account_that_leaves_the_registry_reparses_its_documents(

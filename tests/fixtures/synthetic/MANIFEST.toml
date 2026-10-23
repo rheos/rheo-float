@@ -32,6 +32,11 @@ synthetic = true
 description = "Headerless Vancity chequing CSV export, newest first, one fake account identifier, with a deliberate running-balance jump (rows missing between two dates); fake values."
 
 [[fixture]]
+path = "tests/fixtures/synthetic/vancity_chequing_hints.csv"
+synthetic = true
+description = "Headerless Vancity chequing CSV export, oldest first, one continuous run: an e-Transfer credit with a From: name, the chequing leg of a Visa card payment and a plain purchase, in the padded sub-field wording of the real exports; fake values."
+
+[[fixture]]
 path = "tests/fixtures/synthetic/virgin_bill.txt"
 synthetic = true
 description = "Virgin Plus bill layout text (pdftotext -layout) whose unpaid balance plus current charges equals the total due; fake values."

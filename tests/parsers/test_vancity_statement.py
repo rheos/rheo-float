@@ -141,7 +141,7 @@ def test_a_tied_out_statement_commits_its_periods_and_lines(setup: Setup) -> Non
 
     row = setup.document_row(doc)
     assert (row["status"], row["parser_id"], row["parser_version"]) == (
-        "parsed", "vancity.statement", "1",
+        "parsed", "vancity.statement", "2",
     )  # fmt: skip
     assert (row["extraction"], row["reject_reason"]) == ("fixed_rule", None)
     assert (row["period_start"], row["period_end"]) == (
@@ -354,3 +354,58 @@ def test_a_line_with_a_withdrawal_and_a_deposit_becomes_two_lines(
         (day, Decimal("50.00"), Decimal("148.00")),
         (dt.date(2025, 12, 20), Decimal("-30.00"), Decimal("118.00")),
     ]
+
+
+# --- hints (FR-15, Phase 3a deliverable 1) --------------------------------------------
+
+
+def hint_rows(setup: Setup, doc: uuid.UUID) -> list[tuple[object, ...]]:
+    rows = setup.conn.execute(
+        select(
+            document_line.c.description_raw,
+            document_line.c.transfer_hint,
+            document_line.c.etransfer_hint,
+            document_line.c.hint_account_slug,
+            document_line.c.counterparty,
+        )
+        .where(document_line.c.document_id == doc)
+        .order_by(document_line.c.line_no)
+    ).all()
+    return [tuple(each) for each in rows]
+
+
+def test_the_chequing_leg_of_a_card_payment_names_the_card_issuer(
+    setup: Setup,
+) -> None:
+    setup.register(("chequing",))
+    text = STATEMENT_SPLIT.read_text(encoding="utf-8")
+    assert text.count("HYDRO CO #0001") == 1
+    card_payment = text.replace("HYDRO CO #0001", "VANCITY VISA #9991")
+    doc = setup.file("2026-01-11.pdf", card_payment)
+
+    assert setup.parse(doc).status == "parsed"
+    payment = hint_rows(setup, doc)[-1]
+    assert payment[1:] == (True, False, "vancity-visa", "VANCITY VISA")
+
+
+def test_an_etransfer_carries_its_hint_and_name_and_a_purchase_none(
+    setup: Setup,
+) -> None:
+    setup.register()
+    doc = setup.file("2026-01-11.pdf", STATEMENT_2026.read_text(encoding="utf-8"))
+    assert setup.parse(doc).status == "parsed"
+
+    by_wording = {str(row[0]): row[1:] for row in hint_rows(setup, doc)}
+    assert by_wording["ETRANSFER CREDIT (FRIEND)"] == (False, True, None, "friend")
+    assert by_wording["ETRANSFER DEBIT (LANDLORD)"] == (False, True, None, "landlord")
+    # A bill payment to a vendor is spending: its payee, no transfer hint.
+    assert by_wording["BILL PAYMENT-ONLINE (HYDRO CO #0001)"] == (
+        False, False, None, "HYDRO CO",
+    )  # fmt: skip
+    purchases = [row for text, row in by_wording.items() if "POINT OF SALE" in text]
+    assert purchases and all(row == (False, False, None, None) for row in purchases)
+
+
+def test_the_statement_registers_as_hint_setting() -> None:
+    parser = vancity_statement.PARSER
+    assert (parser.version, parser.sets_hints) == ("2", True)

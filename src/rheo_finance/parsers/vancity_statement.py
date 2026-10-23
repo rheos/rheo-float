@@ -14,7 +14,10 @@ box; this module only maps its result onto the ledger:
 - each transaction becomes a line with its running balance and ``fee_type``. A line
   holding both a withdrawal and a deposit becomes two lines, the withdrawal first; a
   line moving no money (a notice) is a ``notice_fact`` with no amount;
-- the overdrawn spells docextract reports ride on the period.
+- the overdrawn spells docextract reports ride on the period;
+- every line carries the hints its wording gives (``parsers.hints.with_hints``), and
+  a bill payment or pre-authorized payment keeps the payee it prints in parentheses
+  as its restricted ``counterparty`` (an e-Transfer's name comes from ``with_hints``).
 
 Accounts are matched where ``accounts.csv`` gives the institution as ``INSTITUTION``,
 compared by ``institution_key`` (case and spacing aside).
@@ -23,6 +26,7 @@ compared by ``institution_key`` (case and spacing aside).
 from __future__ import annotations
 
 import datetime as dt
+import re
 from decimal import Decimal
 from typing import Final
 
@@ -41,10 +45,30 @@ from rheo_finance.parsers.docextract_adapter import (
     VancityTransaction,
     vancity_statement,
 )
+from rheo_finance.parsers.hints import with_hints
 from rheo_finance.parsers.registry import Parser, register_parser
 
 INSTITUTION: Final = "Vancity"
+ISSUER: Final = "vancity"
 CURRENCY: Final = "CAD"
+# shortcut: every section is classified as a chequing account. A Vancity statement
+# holds deposit accounts only and every built-in pattern scopes chequing and savings
+# together; pass the registered kind once a pattern tells the two apart.
+ACCOUNT_KIND: Final = "chequing"
+# "BILL PAYMENT-ONLINE (<payee> #<ref>)", "PREAUTHORIZED PAYMENT (<payee>)": the
+# payee runs to the last closing parenthesis (a payee may hold its own).
+_PAYEE: Final = re.compile(
+    r"(?:BILL PAYMENT\S*|PREAUTHORIZED PAYMENT)\s*\((?P<payee>.+)\)\s*", re.IGNORECASE
+)
+_REFERENCE: Final = re.compile(r"\s*#\s*\d+$")
+
+
+def payee(description: str) -> str | None:
+    """The payee a bill or pre-authorized payment prints, without its reference."""
+    match = _PAYEE.fullmatch(" ".join(description.split()))
+    if match is None:
+        return None
+    return _REFERENCE.sub("", match["payee"]).strip() or None
 
 
 def _match(
@@ -75,16 +99,18 @@ def _line(
     amount: Decimal | None,
     balance: Decimal | None,
 ) -> ParsedLine:
-    return ParsedLine(
+    line = ParsedLine(
         "transaction" if amount is not None else "notice_fact",
         account=registered,
         posting_date=txn.date,
         amount=amount,
         currency=CURRENCY,
         description_raw=txn.description,
+        counterparty=payee(txn.description),
         running_balance=balance,
         fee_type=txn.fee_type,
     )
+    return with_hints(line, account_kind=ACCOUNT_KIND, issuer=ISSUER)
 
 
 def _lines(section: VancityAccount, registered: RegisteredAccount) -> list[ParsedLine]:
@@ -149,10 +175,12 @@ def filing_date(text: str) -> dt.date:
 PARSER: Final = register_parser(
     Parser(
         parser_id="vancity.statement",
-        issuer="vancity",
+        issuer=ISSUER,
         format="pdf",
-        version="1",
+        # 2: the lines carry hints and the printed payee.
+        version="2",
         parse=parse,
         filing_date=filing_date,
+        sets_hints=True,
     )
 )

@@ -65,8 +65,21 @@ dates differ by more than the tolerance (Technical Risk 1); discrepancies are co
 account with no tied-out statement has no provisional lines, since there is no last statement to
 be after.
 
-Derive currently reparses every document on every run; reusing the parse cache for unchanged
-documents is a later step, and it must keep this rule (output depends only on the document set).
+`finance.ledger.derive` keeps a document's stored parse output when a parse would reproduce it:
+the file is still at its path with the document's sha256, and the hash stored with the parse
+(`document.parse_inputs`: issuer, format, the id and version of every parser registered for them,
+and the whole account registry) is unchanged. A new document, a moved parser version, any registry
+change (an account leaving or joining included), or a file that left, was withheld or came back,
+is parsed again. Everything after stage 1 is recomputed every run either way.
+`finance.ledger.rebuild` registers the archive again and parses every document; it is how a parser
+fix that keeps its version, or a new docextract pin, reaches all history. A test holds
+derive-after-derive, rebuild-after-derive and derive-after-rebuild to one digest.
+
+`finance.ledger.digest` covers every table a derive clears or rewrites, plus `document` and
+`archive_skip`, which the rebuild's archive walk and the parse write. It leaves out the state
+tables (`decision`, `decision_item`, `decision_target`), which are inputs, and the columns that
+record when a row was written (`document.imported_at`, `sink_spec.computed_at`) or how a parse was
+reached (`document.parse_inputs`). A line's or txn's `occurred_at` is data and stays in.
 
 Recorded here because the repo is public and the spec's wording does not fit it, or the build
 filled a gap:

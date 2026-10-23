@@ -57,8 +57,9 @@ def _canonical_decimal(value: Decimal) -> str:
     return format(value.normalize(exact), "f")
 
 
-def _canonical_part(value: object) -> list[object]:
-    """One natural-key part as a tagged JSON pair, so types and boundaries hold."""
+def canonical_part(value: object) -> list[object]:
+    """One natural-key part as a tagged JSON pair, so types and boundaries hold. The
+    ledger digest renders its scalar values with it too (``derive.digest``)."""
     if value is None:
         return ["none", None]
     if isinstance(value, bool):
@@ -87,7 +88,7 @@ def canonical_key(natural_key: tuple[object, ...]) -> bytes:
     its own tag), dates and aware datetimes are ISO (datetimes in UTC), strings are NFC.
     A float or any other type is refused.
     """
-    parts = [_canonical_part(part) for part in natural_key]
+    parts = [canonical_part(part) for part in natural_key]
     return json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 

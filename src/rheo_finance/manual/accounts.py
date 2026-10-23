@@ -174,17 +174,26 @@ def last_four(identifier: str) -> str | None:
     return "".join(match.groups()) if match else None
 
 
-# Mask characters: an asterisk, a bullet, or a run of two or more X.
-_MASK = re.compile(r"[*•]|[Xx]{2,}")
+# Mask characters: an asterisk, a bullet, a run of two or more X, or an X beside a
+# digit (``9999 99X 9991``).
+_MASK = re.compile(r"[*\u2022]|[Xx]{2,}|(?<=\d)[Xx]|[Xx](?=\d)")
+
+
+def _masked(identifier: str) -> bool:
+    """Whether ``identifier`` shows a mask: a mask character, or X as its only letter
+    (``9999 X 9991``)."""
+    if _MASK.search(identifier):
+        return True
+    return {char.casefold() for char in identifier if char.isalpha()} == {"x"}
 
 
 def full_number(kind: str, identifier: str) -> str | None:
     """The letters and digits of ``identifier`` (casefolded) when it is a full number:
-    kind ``number``, more than four digits and no mask character. None for a
+    kind ``number``, more than four digits and no mask (``_masked``). None for a
     ``masked_card``, a masked number or a number of four digits or fewer, which only a
-    last-four match can use. An account ID that happens to hold a run of X reads as
-    masked: the rule then refuses more, never less."""
-    if kind != "number" or _MASK.search(identifier):
+    last-four match can use. An account ID whose letters include an X beside a digit,
+    or a run of X, reads as masked: the rule then refuses more, never less."""
+    if kind != "number" or _masked(identifier):
         return None
     if sum(char.isdigit() for char in identifier) <= 4:
         return None

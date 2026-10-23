@@ -242,6 +242,34 @@ OTHER = "test-other,Test other,Test Credit Union.,savings,CAD,monthly,,,,,,,,,"
             ],
             [2, 3],
         ),
+        # A single X inside a digit group masks the digits it stands for.
+        (
+            [
+                "test-chequing,9999 99X 9991234,number,,",
+                "test-visa,9995551234,number,,",
+            ],
+            [2, 3],
+        ),
+        # X as the only letter, standing apart, is a mask too.
+        (
+            ["test-chequing,9999 X 9991234,number,,", "test-visa,9995551234,number,,"],
+            [2, 3],
+        ),
+        # An account ID with an X beside a digit reads as masked: refused, the safe way.
+        (
+            ["test-chequing,SAMPLEX9991234,number,,", "test-visa,9995551234,number,,"],
+            [2, 3],
+        ),
+        # An X after a digit in an account ID reads as masked too.
+        (
+            ["test-chequing,AB999X 9991234,number,,", "test-visa,9995551234,number,,"],
+            [2, 3],
+        ),
+        # An X between other letters of an account ID is a letter: both load.
+        (
+            ["test-chequing,SAXMPLE9991234,number,,", "test-visa,9995551234,number,,"],
+            [],
+        ),
         # One full number on two accounts, written with other separators.
         (["test-chequing,9991234,number,,", "test-visa,999-1234,number,,"], [2, 3]),
         # Two distinct full numbers: a parser that matches the whole number tells

@@ -54,6 +54,9 @@ PINNED = {
         "241b99575f19c5892cabd1b0610dec391ab7de086ba1bef2bb89c026b9ff4dd0"
     ),
     "0010_txn.py": ("c09b65822397ebd0b1546e63b44a30406effd6c6226ba775ff1245103407a1b2"),
+    "0011_overlap.py": (
+        "faec3bb1a0c7accaaead38d9ad2a103427e65a3899cf618c365f90aa484e90ad"
+    ),
 }
 
 

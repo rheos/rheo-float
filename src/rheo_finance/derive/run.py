@@ -5,16 +5,18 @@ that fails leaves every table as it found it, whatever the caller does next.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   ``txn`` tables, the parse cache and the events. State tables (decisions and their
-   snapshots) are never touched, and neither are the registry tables the file operation
-   owns (``document``, ``archive_skip``).
+   ``txn`` tables, the source discrepancies, the parse cache and the events. State
+   tables (decisions and their snapshots) are never touched, and neither are the
+   registry tables the file operation owns (``document``, ``archive_skip``).
 2. Stage 2, the manual files: accounts and identifiers first. The parsers match
    accounts from the account table, so this comes before stage 1 although its number is
    higher. The loaders rewrite their own tables.
 3. Stage 1, every registered document through the parser registry. The parse cache was
    cleared in step 1, so a document whose account left the registry is parsed again
-   against the new one and no stale account key reaches the foreign-key check.
-4. Stage 3, lines to txns.
+   against the new one and no stale account key reaches the foreign-key check. Then
+   repeated copies of one document are ``superseded`` (``precedence.supersede``).
+4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
+   source discrepancies (``stage3``, ``precedence``, ``overlap``).
 5. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -42,13 +44,17 @@ from rheo_finance.sinks.store import write_sink_specs
 from rheo_finance.storage.schema import (
     document_line,
     event,
+    source_discrepancy,
     statement_period,
     txn,
     txn_source,
 )
 
+OVERLAP_DAYS_KEY: Final = "finance.import.overlap_day_tolerance"
 # Emptied before anything is rebuilt, children first.
-CLEARED: Final = (txn_source, txn, document_line, statement_period, event)
+CLEARED: Final = (
+    txn_source, txn, source_discrepancy, document_line, statement_period, event,
+)  # fmt: skip
 # Rewritten whole by a loader or a stage.
 REWRITTEN: Final = frozenset(
     {
@@ -96,7 +102,12 @@ def run(
         manual = stage2.load_manual(uow, ctx.paths.data)
         documents = stage1.parse_all(uow, archive, extract_pdf=extract_pdf)
         currencies = {row.slug: set(row.currencies) for row in manual.registry.accounts}
-        lines = stage3.build_lines(uow, manual.cash_lines, currencies)
+        lines = stage3.build_lines(
+            uow,
+            manual.cash_lines,
+            currencies,
+            overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY),
+        )
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

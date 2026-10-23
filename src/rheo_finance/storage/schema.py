@@ -508,3 +508,26 @@ _tiers(
     txn_source,
     {"txn_id": P, "document_line_id": P, "manual_ref": P, "line_key_id": P, "role": P},
 )
+
+# --- source discrepancies (derived, stage 3; migration 0011) --------------------------
+# Keys and codes only: the line's amount and description stay on ``document_line``.
+
+source_discrepancy = Table(
+    "source_discrepancy",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("account_id", Uuid, _account_fk(), nullable=False),
+    Column("document_id", Uuid, ForeignKey("finance.document.id"), nullable=False),
+    Column(
+        "document_line_id",
+        Uuid,
+        ForeignKey("finance.document_line.id"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("kind", Text, nullable=False),
+)
+_tiers(
+    source_discrepancy,
+    {"id": P, "account_id": P, "document_id": P, "document_line_id": P, "kind": P},
+)

@@ -4,10 +4,11 @@
 production context uses (``composition.build_context``). It resolves
 ``finance.txn:<uuid>`` through ``txn_source.line_key_id``, not through ``txn.id``, so a
 reference taken on a provisional line still resolves after a statement line replaces it
-(the old key stays on the txn as a source). A reference no current line carries gives
-``None``, and so does anything that is not a well-formed ``finance.txn`` reference. An
-evidence source (a receipt that matched a payment) is not a line of the payment and
-does not resolve.
+(the old key stays on the txn as a source). Several sources of one txn may carry the
+same key (a CSV and a PDF that print a purchase alike); a key never names two txns
+(migration 0011). A reference no current line carries gives ``None``, and so does
+anything that is not a well-formed ``finance.txn`` reference. An evidence source (a
+receipt that matched a payment) is not a line of the payment and does not resolve.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ def txn_snapshot(uow: UnitOfWork, ref: str) -> LineSnapshot | None:
         return None
     row = uow.execute(
         select(account.c.slug, txn.c.amount, txn.c.currency, txn.c.posting_date)
+        .distinct()
         .select_from(txn_source)
         .join(txn, txn.c.id == txn_source.c.txn_id)
         .join(account, account.c.id == txn.c.account_id)

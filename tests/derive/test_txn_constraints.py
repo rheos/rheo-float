@@ -128,9 +128,32 @@ def test_a_line_key_belongs_to_one_txn(registered: Ledger) -> None:
     first = add_txn(registered, "first")
     second = add_txn(registered, "second")
     add_source(registered, first, "manual:transactions.csv:2", key="shared")
+    add_source(registered, second, "manual:transactions.csv:3")
+    add_source(
+        registered,
+        second,
+        "manual:transactions.csv:4",
+        key="shared",
+        role="additional",
+    )
 
-    with pytest.raises(IntegrityError), registered.conn.begin_nested():
-        add_source(registered, second, "manual:transactions.csv:3", key="shared")
+    with pytest.raises(IntegrityError, match="names more than one txn"):
+        check(registered.conn)
+
+
+def test_sources_of_one_txn_may_share_a_line_key(registered: Ledger) -> None:
+    # A CSV and a PDF that print a purchase alike give two sources one key.
+    txn_id = add_txn(registered, "whole")
+    add_source(registered, txn_id, "manual:transactions.csv:2", key="shared")
+    add_source(
+        registered,
+        txn_id,
+        "manual:transactions.csv:3",
+        key="shared",
+        role="additional",
+    )
+
+    check(registered.conn)
 
 
 def test_a_source_is_a_document_line_or_a_manual_reference_never_both(

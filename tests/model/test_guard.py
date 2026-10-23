@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
+from rheo_finance.manual.headers import MANUAL_DIR_NAME
 from rheo_finance.model.claude_cli import ClaudeCLIClient
 from rheo_finance.model.client import ModelClient
 from rheo_finance.model.guard import (
@@ -47,6 +48,15 @@ SHAPES: list[tuple[RefusalKind, str]] = [
     ("card_shape", "card 9999-9999-9999-9999 at sample grocer"),
     ("card_shape", "card 9999999999999999 at sample grocer"),
     ("card_shape", "card 9999 999999 99999 at sample grocer"),
+    ("card_shape", "card 9999  9999  9999  9999 at sample grocer"),
+    ("card_shape", "card 9999.9999.9999.9999 at sample grocer"),
+    ("card_shape", "card 9999/9999/9999/9999 at sample grocer"),
+    ("card_shape", "card 999 999 999 999 9 at sample grocer"),
+    ("digit_run", "ref 999 999 999 end"),
+    ("digit_run", "ref 9 9 9 1 2 3 4 end"),
+    ("digit_run", "ref 999-12-34 end"),
+    ("digit_run", "ref 999.1234 end"),
+    ("digit_run", "amount 9991234.00 CAD"),
     ("phone_shape", "call (999) 555-0100 about the order"),
     ("phone_shape", "call 999-555-0100 about the order"),
     ("phone_shape", "call +44 20 9999 0100 about the order"),
@@ -109,14 +119,49 @@ def test_the_system_prompt_is_guarded_too() -> None:
     assert client.prompts == []
 
 
-ZERO_WIDTH_SPACE = chr(0x200B)
-FULLWIDTH_DIGITS = "".join(chr(0xFF10 + int(digit)) for digit in "9991234")
+def test_a_number_split_across_the_system_prompt_and_the_text_is_refused() -> None:
+    client = stub()
+    assert refused(client, "1234 is the reference", system=f"{SYSTEM} Ref 999") == (
+        "digit_run"
+    )
+    assert client.prompts == []
+
+
+def test_a_signature_split_across_the_system_prompt_and_the_text_is_refused() -> None:
+    client = stub()
+    assert refused(client, "F-1.7 body", system=f"{SYSTEM} %PD") == "pdf"
+    assert client.prompts == []
+
+
+def fullwidth(text: str) -> str:
+    """``text`` with each printable ASCII character as its fullwidth form."""
+    return "".join(chr(ord(ch) + 0xFEE0) if "!" <= ch <= "~" else ch for ch in text)
+
+
+# Default-ignorable code points (invisible, and not all of them format characters),
+# and a format character that is not default-ignorable.
+IGNORABLES = {
+    "interlinear-anchor": 0xFFF9,
+    "zero-width-space": 0x200B,
+    "soft-hyphen": 0x00AD,
+    "word-joiner": 0x2060,
+    "grapheme-joiner": 0x034F,
+    "variation-selector-16": 0xFE0F,
+    "variation-selector-17": 0xE0100,
+    "mongolian-selector": 0x180B,
+    "hangul-filler": 0x3164,
+    "hangul-choseong-filler": 0x115F,
+    "halfwidth-hangul-filler": 0xFFA0,
+}
 
 
 @pytest.mark.parametrize(
     "text",
-    [f"ref 999{ZERO_WIDTH_SPACE}1234", f"ref {FULLWIDTH_DIGITS}"],
-    ids=["zero-width-space", "fullwidth-digits"],
+    [
+        *(f"ref 999{chr(point)}1234" for point in IGNORABLES.values()),
+        f"ref {fullwidth('9991234')}",
+    ],
+    ids=[*IGNORABLES, "fullwidth-digits"],
 )
 def test_a_lookalike_or_invisible_break_does_not_hide_a_digit_run(text: str) -> None:
     client = stub()
@@ -129,6 +174,8 @@ def test_a_lookalike_or_invisible_break_does_not_hide_a_digit_run(text: str) -> 
     [
         "merchant sample grocer, -45.00 CAD, 2026-03-15",
         "dates 2026-03-15 2026-03-16 2026-03-17, amounts 12.50 7.25",
+        "dates 2026-03-15  2026-03-16, on 2026/03/17 and 2026.03.18",
+        "amounts 1,234.56 and 999,999.99 and 12345.67 and -45.00",
         "invoice SP0042 total 750.00 CAD",
     ],
 )
@@ -161,6 +208,45 @@ def test_each_provided_term_is_refused_before_the_stub_is_called(
 ) -> None:
     client = stub(lambda: ProtectedTerms(), lambda: terms)
     assert refused(client, text) == kind
+    assert client.prompts == []
+
+
+E_ACUTE, A_UMLAUT, COMBINING_ACUTE = chr(0xE9), chr(0xE4), chr(0x301)
+
+
+@pytest.mark.parametrize(
+    ("kind", "terms", "text"),
+    [
+        ("owner_name", ProtectedTerms(owner_names=(OWNER,)),
+         f"from {fullwidth('TESTA OWNERLY')}"),
+        ("identifier", ProtectedTerms(identifiers=("SAMPLEACCT-XQ",)),
+         f"statement {fullwidth('SAMPLEACCT-XQ')}"),
+        ("owner_name", ProtectedTerms(owner_names=(OWNER,)),
+         f"from T{E_ACUTE}st{A_UMLAUT} Ownerly"),
+        ("owner_name", ProtectedTerms(owner_names=(OWNER,)),
+         f"for Te{COMBINING_ACUTE}sta"),
+        ("owner_name", ProtectedTerms(owner_names=(f"T{E_ACUTE}sta Ownerly",)),
+         "from testa ownerly"),
+        ("owner_name", ProtectedTerms(owner_names=(OWNER,)),
+         f"from Tes{chr(0x3164)}ta Owner{chr(0x034F)}ly"),
+    ],
+    ids=["fullwidth-owner", "fullwidth-identifier", "accented-text", "combining-mark",
+         "accented-term", "ignorables-in-name"],
+)  # fmt: skip
+def test_a_variant_spelling_of_a_term_is_refused(
+    kind: RefusalKind, terms: ProtectedTerms, text: str
+) -> None:
+    client = stub(lambda: terms)
+    assert refused(client, text) == kind
+    assert client.prompts == []
+
+
+def test_a_term_split_across_the_system_prompt_and_the_text_is_refused() -> None:
+    """Six letters at the end of the system prompt, six at the start of the text."""
+    client = stub(lambda: ProtectedTerms(identifiers=("SAMPLEACCTXQ",)))
+    assert refused(client, "acctxq statement", system=f"{SYSTEM} For sample") == (
+        "identifier"
+    )
     assert client.prompts == []
 
 
@@ -226,9 +312,26 @@ def test_an_accounts_file_with_a_row_that_fails_refuses_everything(
     assert client.prompts == []
 
 
-def test_no_manual_files_means_no_terms(
-    tmp_path: Path,
+@pytest.mark.parametrize("present", [(), (ACCOUNTS_FILE,), (IDENTIFIERS_FILE,)])
+def test_a_missing_manual_accounts_file_refuses_everything(
+    tmp_path: Path, present: tuple[str, ...]
 ) -> None:
+    """With no file, the guard cannot know the owner's name: it fails closed."""
+    for name in present:
+        write_manual(tmp_path, name)
     client = stub(manual_accounts_terms(tmp_path))
-    client.call("classify", SYSTEM, "from testa ownerly", Verdict)
-    assert len(client.prompts) == 1
+    assert refused(client, ADMITTED) == "terms_unavailable"
+    assert client.prompts == []
+
+
+def test_an_unreadable_manual_accounts_file_refuses_everything(
+    accounts_guard: Callable[..., StubModelClient], tmp_path: Path
+) -> None:
+    client = accounts_guard(ACCOUNT_ROW)
+    accounts = tmp_path / MANUAL_DIR_NAME / ACCOUNTS_FILE
+    accounts.chmod(0)
+    try:
+        assert refused(client, ADMITTED) == "terms_unavailable"
+    finally:
+        accounts.chmod(0o600)
+    assert client.prompts == []

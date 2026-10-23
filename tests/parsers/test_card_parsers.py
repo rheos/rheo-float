@@ -54,6 +54,7 @@ class Card:
     slug: str
     institution: str
     identifier: str
+    kind: str = "masked_card"
 
 
 VISA = Card("visa", "Vancity", "9999 99** **** 9991")
@@ -96,7 +97,7 @@ class Setup:
         (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
         identifiers = [",".join(MANUAL_FILES[IDENTIFIERS_FILE])]
         identifiers += [
-            f"{card.slug},{card.identifier},masked_card,," for card in cards
+            f"{card.slug},{card.identifier},{card.kind},," for card in cards
         ]
         (manual / IDENTIFIERS_FILE).write_text(
             "\n".join(identifiers) + "\n", encoding="utf-8"
@@ -244,6 +245,9 @@ def test_the_visa_statement_lines_dates_signs_and_hints(setup: Setup) -> None:
     ]  # fmt: skip
     assert [line.transfer_hint for line in lines].count(True) == 1
     assert not any(line.reversal_hint or line.etransfer_hint for line in lines)
+    # The cardholder heading is read past: the name reaches no stored row.
+    assert "sample cardholder:" in fixture("vancity_visa_statement.txt").casefold()
+    assert not any(CARDHOLDER in value for value in setup.stored_text(doc))
 
 
 def test_a_foreign_purchase_keeps_the_issuers_cad_amount(setup: Setup) -> None:
@@ -521,6 +525,49 @@ def test_an_mbna_statement_a_cent_off_is_rejected_with_zero_lines(
     assert setup.rejected_reasons(doc) == ["summary_mismatch"]
 
 
+@pytest.mark.parametrize(
+    ("printed", "changed"),
+    [
+        # A section total a cent off its rows; the balances still tie.
+        ("Total   $205.67", "Total   $205.68"),
+        ("Total   -$150.00", "Total   -$150.01"),
+        # The summary's Payments a cent off the PAYMENTS section's rows.
+        ("Payments   -$150.00", "Payments   -$150.01"),
+    ],
+)
+def test_an_mbna_section_or_payments_total_a_cent_off_is_rejected(
+    setup: Setup, printed: str, changed: str
+) -> None:
+    setup.register(MBNA)
+    text = fixture("mbna_statement.txt")
+    assert text.count(printed) == 1
+    doc = setup.file(MBNA_STATEMENT, text.replace(printed, changed))
+
+    assert setup.parse(doc) == Parsed("rejected", "summary_mismatch")
+    assert setup.count(document_line, doc) == 0
+    assert setup.count(statement_period, doc) == 0
+    assert setup.count(rejected_period, doc) == 1
+    assert setup.rejected_reasons(doc) == ["summary_mismatch"]
+
+
+def test_an_mbna_store_number_stays_in_the_description(setup: Setup) -> None:
+    """Only a four-digit number in a column of its own is the reference."""
+    setup.register(MBNA)
+    text = fixture("mbna_statement.txt").replace(
+        "INTEREST CHARGE   $30.50", "INTEREST CHARGE 9917   $30.50"
+    )
+    doc = setup.file(MBNA_STATEMENT, text)
+
+    assert setup.parse(doc).status == "parsed"
+    assert [line.description_raw for line in setup.lines(doc)] == [
+        "PAYMENT",
+        "SAMPLE STREAMING SAMPLE CITY ON",
+        "SAMPLE HARDWARE SAMPLE TOWN BC",
+        "SAMPLE HARDWARE SAMPLE TOWN BC",
+        "INTEREST CHARGE 9917",
+    ]
+
+
 def test_an_mbna_statement_with_no_printed_minimum_has_a_null_minimum(
     setup: Setup,
 ) -> None:
@@ -543,6 +590,28 @@ def test_an_mbna_statement_with_no_printed_minimum_has_a_null_minimum(
 def test_an_mbna_statement_for_an_unregistered_card_is_rejected(setup: Setup) -> None:
     setup.register(VISA)
     doc = setup.file(MBNA_STATEMENT, fixture("mbna_statement.txt"))
+
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+
+
+# --- the last-four match's scope ------------------------------------------------------
+
+
+def test_a_last_four_resolves_only_at_the_statements_institution(setup: Setup) -> None:
+    """Another institution's card ending in the same four digits is no candidate."""
+    same_four_elsewhere = Card("mbna-card", "MBNA", "9999 99XX XXXX 9991")
+    setup.register(VISA, same_four_elsewhere)
+    doc = setup.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
+
+    assert setup.parse(doc).status == "parsed"
+    assert setup.period(doc).account_id == account_id("visa")
+
+
+def test_an_identifier_of_a_kind_outside_the_last_four_kinds_matches_nothing(
+    setup: Setup,
+) -> None:
+    setup.register(dataclasses.replace(VISA, kind="file_token"))
+    doc = setup.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
 
     assert setup.parse(doc) == Parsed("rejected", "unknown_account")
 

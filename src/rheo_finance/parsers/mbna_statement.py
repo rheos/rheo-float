@@ -14,14 +14,23 @@ The layout (what ``pdf_text`` prints):
 - Transactions, under section headings (``PAYMENTS``, ``PURCHASES``, ``INTEREST
   CHARGED`` and others): ``MM/DD/YY   MM/DD/YY   <description>   <reference>
   $<amount>``, the transaction date then the posting date, a four-digit reference
-  number where the line has one, a credit printed ``-$<amount>``. The section totals,
-  the previous and new balance lines and every other line are read past.
+  number in a column of its own where the line has one, a credit printed
+  ``-$<amount>``. Each section ends ``Total   $<amount>``. The previous and new
+  balance lines and every other line are read past.
+
+The reference is told from the description by its column gap (two or more spaces). A
+store number the description carries after a single space stays in it. The limit: a
+line with no reference whose description's last column is a four-digit number would
+lose that number; the real statements print none (every line without a reference is
+an interest charge).
 
 One CAD ``statement_period`` per statement, signed and filled as ``parsers.card``
 says. ``total_payments`` is the printed ``Payments`` figure. The registry ties the
 balances out to the cent. The debit and credit totals are left unset: the summary nets
 a refund printed among the purchases into ``New Purchases``, so its categories are
-not the sums of the lines by sign.
+not the sums of the lines by sign. Instead the parser ties every printed section
+``Total`` to its rows and the summary's ``Payments`` to the ``PAYMENTS`` section's
+rows; a difference of a cent rejects the statement (``summary_mismatch``).
 
 Text that is not this layout is ``NotRecognised``.
 """
@@ -40,6 +49,7 @@ from rheo_finance.parsers.base import (
     ParsedLine,
     ParsedPeriod,
     ParseResult,
+    Rejected,
 )
 from rheo_finance.parsers.card import (
     ACCOUNT_KIND,
@@ -64,10 +74,16 @@ _CLOSING: Final = re.compile(
 )
 _CARD: Final = re.compile(r"\b\d{4} \d\dXX XXXX (\d{4})\b")
 _SIGNED: Final = rf"(-)?\$({AMOUNT_TEXT})\b"
+# The reference is a column of its own: two or more spaces before it. A store number
+# the description carries after a single space stays in the description.
 _ROW: Final = re.compile(
-    rf"^\s*({_SLASHED})\s+({_SLASHED})\s+(.*?)(?:\s+\d{{4}})?\s+(-)?\$"
+    rf"^\s*({_SLASHED})\s+({_SLASHED})\s+(.*?)(?: {{2,}}\d{{4}})?\s+(-)?\$"
     rf"({AMOUNT_TEXT})\s*$"
 )
+_TOTAL: Final = re.compile(rf"^[ \t]*Total[ \t]+{_SIGNED}[ \t]*$")
+_HEADING: Final = re.compile(r"^[ \t]*([A-Z][A-Z &/-]*[A-Z])[ \t]*$")
+_TABLE_START: Final = "Previous statement balance"
+PAYMENTS_SECTION: Final = "PAYMENTS"
 
 
 @dataclass(frozen=True)
@@ -136,6 +152,39 @@ def _statement(text: str) -> _Statement:
     )
 
 
+def _sections_tie(text: str, lines: list[ParsedLine], payments: Decimal) -> bool:
+    """Whether every printed section ``Total`` is the sum of its rows as printed, and
+    the summary's ``Payments`` the sum of the ``PAYMENTS`` section's rows.
+
+    A section's rows are those since the table's start (``Previous statement
+    balance``) or the previous ``Total``; its heading is the first all-capitals line
+    after that point."""
+    rows = iter(lines)
+    section: list[Decimal] = []
+    heading: str | None = None
+    paid = Decimal(0)
+    for row in text.splitlines():
+        if _ROW.match(row) is not None:
+            # As printed: a charge positive, a credit negative.
+            section.append(-(next(rows).amount or Decimal(0)))
+            continue
+        total = _TOTAL.match(row)
+        if total is not None:
+            if sum(section, Decimal(0)) != _signed(total):
+                return False
+            if heading == PAYMENTS_SECTION:
+                paid -= sum(section, Decimal(0))
+            section, heading = [], None
+            continue
+        if _TABLE_START in row:
+            section, heading = [], None
+            continue
+        named = _HEADING.match(row)
+        if named is not None and heading is None and not section:
+            heading = named.group(1)
+    return paid == payments
+
+
 def parse(text: str, accounts: AccountLookup) -> ParseResult:
     statement = _statement(text)
     period = (statement.start, statement.end)
@@ -157,6 +206,8 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
             description_raw=" ".join(description.split()),
         )
         lines.append(with_hints(line, account_kind=ACCOUNT_KIND, issuer=ISSUER))
+    if not _sections_tie(text, lines, statement.payments):
+        raise Rejected("summary_mismatch", period, (registered,))
     return ParseResult(
         periods=(
             ParsedPeriod(

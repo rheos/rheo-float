@@ -21,11 +21,17 @@ This parser and ``vancity_visa_statement`` both read the issuer's PDFs; the regi
 holds one parser per (issuer, format, version), so this one's version names its layout.
 
 An older download prints the card as ``9999 99•• •••• 9999`` and every amount without a
-sign: its Debit and Credit columns are told apart only by position, which the
-extracted text does not keep, so a refund would read as a purchase. That layout is
-``NotRecognised`` and stays ``unparsed``; the export CSV of the same window holds its
-rows with their signs. So is any other text that is not this layout, or a row in a
-currency other than CAD.
+sign: its Debit and Credit columns are told apart only by position. Plain
+``pdftotext -layout`` output does keep them apart (on the real file the two columns
+start about a dozen characters apart, a refund among the credits), but ``pdf_text``
+returns docextract's compacted text, which shrinks every run of four or more spaces
+to three, and after that an amount's offset depends on its description's length: the
+two columns overlap. A parser reads only that text, so it cannot tell a refund from a
+purchase. Reading the old layout by offset would need a second, uncompacted
+extraction through the adapter and the registry, which every PDF parser shares. So
+that layout is ``NotRecognised`` and stays ``unparsed``; the export CSV of the same
+window holds its rows with their signs. So is any other text that is not this
+layout, or a row in a currency other than CAD.
 """
 
 from __future__ import annotations

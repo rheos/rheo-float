@@ -1,0 +1,30 @@
+   FortisBC   Page   1 of 2
+   Your electricity bill
+   Account number   9990001234
+   Bill date   January 15, 2026
+   Billing period   Dec 10, 2025 to Jan 9, 2026   31 days
+
+   SAMPLE CUSTOMER
+   999 SAMPLE RD
+   SAMPLETOWN BC V0A 9A9
+
+   Account summary
+   Previous bill amount   $412.18
+   Payment received Dec 20, 2025   -$150.00
+   Payment received Jan 2, 2026   -$50.00
+   Balance forward   $212.18
+   Current charges   $185.42
+   Total amount due   $397.60
+   Due date   February 5, 2026
+
+   Current charges detail
+   Basic charge   31 days   $20.00
+   Energy charge   Step 1   $157.12
+   GST   $8.30
+   Total current charges   $185.42
+
+   Page   2 of 2
+   Please return this portion with your payment
+   Account number   9990001234
+   Amount due   $397.60
+   Due date   February 5, 2026

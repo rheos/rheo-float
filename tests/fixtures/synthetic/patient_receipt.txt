@@ -1,0 +1,32 @@
+   Sample Dental Clinic   Patient Receipt
+   100-999 Sample Ave   Print date:   16-Mar-2026
+   Sampletown, BC V0A9A9
+   Tel: (999)999-9999
+
+   Sample Patient
+   Box 99
+   Sampletown, BC
+   Canada V0A 9A9
+
+Date   Payment Type   Description   Payment Amount
+
+14-Mar-26   Cash   Pmt. Payment #999123 - Patient, Sample   $200.00
+15-Mar-26   Debit   Pmt. Payment #999124 - Patient, Sample   $45.00
+
+   Total Payments   $245.00
+
+   NEW BALANCE   $0.00
+
+Date   Proc # Description   Th#   Su   Total   Insurance   Patient
+
+Patient, Sample (9991)
+14-Mar-26   999001   Exam / Recall Exam   99   95.00   -   95.00
+14-Mar-26   999002   X-Ray Two Films   99   50.00   -   50.00
+15-Mar-26   999003   Scaling One Unit   99   100.00   -   100.00
+15-Mar-26   999124   Pmt. Payment <Debit> - Patient, Sample   -245.00   -   -245.00
+
+   $0.00   $0.00   $0.00
+
+ Note:
+
+   Page 1 of 1

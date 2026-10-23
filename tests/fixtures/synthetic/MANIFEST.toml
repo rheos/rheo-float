@@ -137,3 +137,22 @@ description = "Wise transaction history layout text, watermark letters between t
 path = "tests/fixtures/synthetic/paypal_activity.txt"
 synthetic = true
 description = "PayPal activity statement layout text: a CAD and USD balance summary, a bank deposit funding a pre-authorized payment, a General Currency Conversion pair across the two currency sections, a pre-authorized payment and a received payment with a fee; fake values."
+
+# Prompt 32: a FortisBC bill (no real PDF exists: the bills on file are photos, so this
+# layout is invented), and an invoice received and a patient receipt shaped on the
+# layouts of the real files (values, payees and people invented).
+
+[[fixture]]
+path = "tests/fixtures/synthetic/fortisbc_bill.txt"
+synthetic = true
+description = "Invented FortisBC electricity bill layout text: two payments, a balance forward and current charges whose identity gives the total amount due, and a payment stub; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/invoice_received.txt"
+synthetic = true
+description = "Invoice received layout text (pdftotext -layout) shaped on the series on file: two items, a partial payment, the amount due; fake values and names."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/patient_receipt.txt"
+synthetic = true
+description = "Patient receipt layout text shaped on the clinic receipt on file: two payments that sum to the total payments, then a treatment table read past; fake values and names."

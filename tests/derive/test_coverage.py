@@ -7,16 +7,19 @@ Seams: ``run`` over fixture documents and manual files, read back from ``coverag
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Iterable
 
 from sqlalchemy import func, select
 
+from rheo_finance.clock import FakeClock
 from rheo_finance.derive.coverage import STATES
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.document_periods import DOCUMENT_PERIODS_FILE
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.virgin_bill import INSTITUTION as VIRGIN
+from rheo_finance.settings import parse_settings
 from rheo_finance.storage.schema import account, coverage, document, rejected_period
 
 from .support import (
@@ -249,7 +252,37 @@ def test_a_jump_inside_one_month_leaves_it_partial(ledger: Ledger) -> None:
 
     ledger.derive()
 
-    assert matrix(ledger, "chequing")[D(2025, 1, 1)] == ("partial", None)
+    assert matrix(ledger, "chequing")[D(2025, 1, 1)] == (
+        "partial",
+        "running_balance_break",
+    )
+
+
+def test_the_months_a_jump_reaches_into_are_partial_with_its_reason(
+    ledger: Ledger,
+) -> None:
+    register_chequing(ledger)
+    ledger.file(
+        "vancity/export.csv",
+        chequing_csv(
+            ("01-Jan-2025", "DEPOSIT 99931", "", "100.00", "1100.00"),
+            ("15-Jan-2025", "PURCHASE 99932", "50.00", "", "1050.00"),
+            # Rows are missing between 15 January and 10 April.
+            ("10-Apr-2025", "PURCHASE 99933", "20.00", "", "900.00"),
+            ("30-Apr-2025", "DEPOSIT 99934", "", "10.00", "910.00"),
+            ("31-May-2025", "DEPOSIT 99935", "", "10.00", "920.00"),
+        ),
+    )
+
+    ledger.derive()
+
+    found = matrix(ledger, "chequing")
+    assert found[D(2025, 1, 1)] == ("partial", "running_balance_break")
+    assert found[D(2025, 2, 1)] == ("missing", "running_balance_break")
+    assert found[D(2025, 3, 1)] == ("missing", "running_balance_break")
+    assert found[D(2025, 4, 1)] == ("partial", "running_balance_break")
+    # The run after the jump covers May whole.
+    assert found[D(2025, 5, 1)] == ("have", None)
 
 
 # --- control none, statements, currencies ---------------------------------------------
@@ -531,8 +564,8 @@ def test_months_before_missing_before_are_missing_with_its_reason(
 
 
 def test_the_jump_fixture_never_shows_its_month_as_have(ledger: Ledger) -> None:
-    # Rows are missing between two February lines: the month is partial, and with no
-    # whole month inside the jump no month is missing for it.
+    # Rows are missing between two February lines: the month is partial for the jump,
+    # and with no whole month inside it no month is missing.
     register_chequing(ledger)
     ledger.file(
         "vancity/jump.csv",
@@ -541,7 +574,9 @@ def test_the_jump_fixture_never_shows_its_month_as_have(ledger: Ledger) -> None:
 
     ledger.derive()
 
-    assert matrix(ledger, "chequing") == {D(2026, 2, 1): ("partial", None)}
+    assert matrix(ledger, "chequing") == {
+        D(2026, 2, 1): ("partial", "running_balance_break")
+    }
 
 
 def test_a_statement_failing_its_checks_shows_rejected_on_every_account_it_names(
@@ -624,3 +659,50 @@ def test_an_opened_date_starts_the_months_before_the_first_document(
         LAST_MONTH: ("missing", None),
     }
     assert first_known(ledger, "card") == D(2025, 8, 10)
+
+
+def test_missing_before_names_only_months_nothing_else_covers(
+    ledger: Ledger, card_parsers: None
+) -> None:
+    register(
+        ledger,
+        card_account(opened="2025-08-01", missing_before="2025-11-01",
+                     missing_reason="mail_purged"),
+    )  # fmt: skip
+    # An unverified export line in October, before the date.
+    ledger.file(
+        "synthetic-card/2025-10-31-export.csv",
+        card_export("2025-10-20 - -5.00 SAMPLE SHOP 99940"),
+    )
+
+    ledger.derive()
+
+    found = matrix(ledger, "card")
+    assert found[D(2025, 8, 1)] == ("missing", "mail_purged")
+    assert found[D(2025, 9, 1)] == ("missing", "mail_purged")
+    assert found[D(2025, 10, 1)] == ("partial", None)
+    assert found[D(2025, 11, 1)] == ("missing", None)
+
+
+def test_the_months_run_to_the_local_month_not_the_utc_one(ledger: Ledger) -> None:
+    register(
+        ledger,
+        (account_row("opened-only", "Sample Bank", "savings", opened="2025-12-20"),
+         "999000000041"),
+    )  # fmt: skip
+    # 00:30 on 1 February in a zone east of UTC, still 31 January in UTC.
+    ledger.ctx = dataclasses.replace(
+        ledger.ctx,
+        clock=FakeClock(dt.datetime(2026, 1, 31, 15, 30, tzinfo=dt.UTC)),
+        settings=parse_settings(
+            f'[finance.paths]\narchive = "{ledger.archive}"\n'
+            f'downloads = "{ledger.archive.parent / "downloads-unset"}"\n'
+            '[finance.locale]\ntimezone = "Asia/Tokyo"\n'
+        ),
+    )
+
+    ledger.derive()
+
+    assert list(matrix(ledger, "opened-only")) == [
+        D(2025, 12, 1), LAST_MONTH, D(2026, 2, 1),
+    ]  # fmt: skip

@@ -39,6 +39,7 @@ from typing import Final
 
 from sqlalchemy import delete, text
 
+from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import coverage, stage1, stage2, stage3, stage5
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
@@ -120,7 +121,7 @@ def run(
         )
 
         stage5.recognize(uow)
-        today = ctx.clock.now_utc().astimezone(ctx.settings.timezone).date()
+        today = local_today(ctx.clock, ctx.settings.timezone)
         months = coverage.build_coverage(uow, manual.document_periods.periods, today)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))

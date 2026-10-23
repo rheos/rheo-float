@@ -32,7 +32,13 @@ from rheo_finance.parsers.registry import (
     parse_document,
 )
 from rheo_finance.storage.refs import format_ref
-from rheo_finance.storage.schema import document, document_line, event, statement_period
+from rheo_finance.storage.schema import (
+    document,
+    document_line,
+    event,
+    rejected_period,
+    statement_period,
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 STATEMENT_2020 = FIXTURES / "vancity_statement_2020.txt"
@@ -214,6 +220,20 @@ def test_one_cent_off_is_rejected_with_zero_lines_and_an_event(setup: Setup) -> 
     assert setup.rejected_events(doc) == [
         {"document_ref": ref, "reason": "checks_failed"}
     ]
+
+
+def test_reparsing_a_rejected_statement_rewrites_its_rejected_periods(
+    setup: Setup,
+) -> None:
+    setup.register(("patronage", "chequing", "savings"))  # not the shares account
+    text = STATEMENT_2026.read_text(encoding="utf-8")
+    summary = "642.00          12.45"
+    doc = setup.file("2026-01-11.pdf", text.replace(summary, "642.00          12.46"))
+
+    for _ in range(2):
+        assert setup.parse(doc) == Parsed("rejected", "checks_failed")
+        # One row per registered account the statement names, never a second copy.
+        assert setup.count(rejected_period, doc) == 3
 
 
 def test_an_unregistered_account_rejects_the_statement(setup: Setup) -> None:

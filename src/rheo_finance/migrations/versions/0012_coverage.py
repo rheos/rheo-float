@@ -4,8 +4,10 @@
 known date: its state and, for some ``missing`` and ``partial`` months, a reason code.
 The primary key is the "exactly one state per account-month" rule. ``month`` is the
 first day of the month. A reason belongs to a state: ``export_period`` and
-``mail_window`` explain a ``partial`` month, the others a ``missing`` one. The mail
-reasons are filled by the mail intake stage; nothing writes them yet.
+``mail_window`` explain a ``partial`` month, ``no_raw_mail`` and ``mail_purged`` a
+``missing`` one, and ``running_balance_break`` either (a month wholly inside a balance
+jump is missing, a month the jump only reaches into is partial). The mail reasons are
+filled by the mail intake stage; nothing writes them yet.
 
 ``rejected_period`` is parse cache, written with the rejection: for each registered
 account a rejected document names, the period it states there. A rejected document
@@ -52,7 +54,8 @@ STATEMENTS = (
             'mail_window', 'export_period', 'running_balance_break')),
         PRIMARY KEY (account_id, month),
         CHECK (reason_code IS NULL
-            OR (state = 'partial' AND reason_code IN ('export_period', 'mail_window'))
+            OR (state = 'partial' AND reason_code IN ('export_period', 'mail_window',
+                'running_balance_break'))
             OR (state = 'missing' AND reason_code IN ('no_raw_mail', 'mail_purged',
                 'running_balance_break')))
     )

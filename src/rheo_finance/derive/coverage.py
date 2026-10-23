@@ -19,11 +19,13 @@ Each month takes the first state that holds:
 4. ``unparsed``: an ``unparsed`` or ``needs_manual_entry`` document with a known period
    on the account (from ``document_periods.csv``) overlaps the month.
 5. ``partial``: some day is verified in some currency, or a ledger line is dated in the
-   month, or the month overlaps the stated period of an unverified (control ``none``)
-   export. Only the last case carries a reason, ``export_period``.
+   month (reason ``running_balance_break`` when the month holds a day strictly between
+   the two lines of a running-balance break, else none), or the month overlaps the
+   stated period of an unverified (control ``none``) export (reason ``export_period``).
 6. ``missing``: with reason ``running_balance_break`` when the month holds a day
-   strictly between the two lines of a running-balance break, else the account's
-   ``missing_reason`` when the month starts before its ``missing_before``, else none.
+   strictly between the two lines of a break, else the account's ``missing_reason``
+   when the month starts before its ``missing_before``, else none. So
+   ``missing_before`` only names the reason for a month nothing else covers.
 
 Only ``parsed`` documents count, so a ``superseded`` copy covers nothing of its own: the
 copy it repeats is the parsed one and covers the period. File names never count (only
@@ -170,13 +172,14 @@ def _month_state(facts: Facts, days: _Days, start: dt.date) -> Month:
         return Month(start, "rejected")
     if _overlaps(facts.unparsed, start, end):
         return Month(start, "unparsed")
+    broken = _overlaps(days.broken, start, end)
     if start in days.line_months or any(
         not open_days.isdisjoint(each) for each in days.verified.values()
     ):
-        return Month(start, "partial")
+        return Month(start, "partial", "running_balance_break" if broken else None)
     if _overlaps(facts.export_periods, start, end):
         return Month(start, "partial", "export_period")
-    if _overlaps(days.broken, start, end):
+    if broken:
         return Month(start, "missing", "running_balance_break")
     if facts.missing_before and start < facts.missing_before:
         return Month(start, "missing", facts.missing_reason)

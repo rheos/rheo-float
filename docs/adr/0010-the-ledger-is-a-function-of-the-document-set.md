@@ -84,3 +84,14 @@ filled a gap:
 - A `line_key_taken` line is a discrepancy even outside every statement period, where the spec
   would make it a txn: its key already names another txn, so it has no key of its own to take.
 - Superseding needs identical parse output, not only the identical period the spec names.
+- Coverage (stage 6) finds running-balance runs per document. Two exports whose balances
+  chain still leave the months at their seam `partial`: this under-reports and never gives a
+  false `have`. Chaining runs across documents would need deduplicated lines in date order.
+- A month is `have` only when every currency the account lists is verified on every open
+  day. The spec says only "every day"; an account that lists a currency it rarely uses will
+  show `partial` in months with no verified span in that currency. Revisit if one never
+  shows `have`.
+- A running-balance break that reaches into a month that is otherwise `partial` gives it the
+  reason `running_balance_break`; only months wholly inside a break are `missing` for it.
+- `missing_before` names the reason only for months nothing else covers, following stage 6's
+  order (its rules come after `partial`), rather than turning covered months `missing`.

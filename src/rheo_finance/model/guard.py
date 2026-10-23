@@ -8,17 +8,19 @@ built, or nothing. A prompt is refused when it holds:
 - a phone shape: a North American number with separators, a ``+`` international
   number, or a hyphenated local number (``phone_shape``);
 - a 13 to 19 digit card shape (``card_shape``) or any other number of 7 or more
-  digits (``digit_run``). Digits joined by runs of spaces, dots, hyphens or slashes
-  are one number whatever the grouping (4-4-4-4, 3-3-3, two spaces as a layout
-  extract prints them, one digit at a time). An ISO date and a money amount with
-  cents (comma-grouped, or at most six digits before the point) are admitted
-  first, so records of dates and amounts pass;
+  digits (``digit_run``). Digits joined by runs of whitespace, dots, slashes,
+  hyphens or Unicode dashes are one number whatever the grouping (4-4-4-4, 3-3-3,
+  two spaces as a layout extract prints them, one digit at a time, across a line
+  break), and so is a comma-grouped integer. An ISO date with a real month and day
+  and a money amount with cents (comma-grouped, or at most six digits before the
+  point) are admitted first, so records of dates and amounts pass;
 - a registered account identifier, a party alias, an own or alias address, a TXID on
   file, or the account holder's name (``identifier``, ``party_alias``, ``address``,
   ``txid``, ``owner_name``): terms a ``TermsProvider`` supplies at check time, so later
   prompts add providers instead of editing the guard;
 - an unbroken run of 26 or more letters and digits (``long_token``);
-- a binary, PDF or image signature, raw or base64 (``binary``, ``pdf``, ``image``).
+- a binary, PDF or image signature, raw or base64 (``binary``, ``pdf``, ``image``),
+  looked for both as given and normalized.
 
 Text is checked after NFKC normalization with every format character and every
 default-ignorable code point (zero-width spaces and joiners, variation selectors,
@@ -116,10 +118,10 @@ _IMAGE: Final = re.compile(
     r"|data:image/|iVBORw0KGgo|R0lGOD[dl]h|UklGR|(?<![A-Za-z0-9+/])/9j/",
     re.DOTALL,
 )
-# Admitted before digits are counted: an ISO date, and a money amount with cents
-# (comma-grouped, or at most six digits before the point).
+# Admitted before digits are counted: an ISO date (a real month and day), and a
+# money amount with cents (comma-grouped, or at most six digits before the point).
 _ADMITTED: Final = re.compile(
-    r"(?<!\d)\d{4}([-/.])\d{2}\1\d{2}(?!\d)"
+    r"(?<!\d)\d{4}([-/.])(?:0[1-9]|1[0-2])\1(?:0[1-9]|[12]\d|3[01])(?!\d)"
     r"|(?<![\d.,])-?\d{1,3}(?:,\d{3})+\.\d{2}(?!\d)"
     r"|(?<![\d.,])\d{1,6}\.\d{2}(?!\d)"
 )
@@ -128,9 +130,12 @@ _PHONE: Final = re.compile(
     r"|\+\d{1,3}(?:[ .()-]?\d){6,14}(?!\d)"
     r"|(?<![\d.-])\d{3}-\d{4}(?![\d-])"
 )
-# Digits joined by runs of spaces, dots, hyphens or slashes count as one number,
-# however they are grouped: 4-4-4-4, 3-3-3, two spaces apart, one digit at a time.
-_DIGITS: Final = re.compile(r"\d+(?:[ .\-/]+\d+)*")
+# Digits joined by runs of whitespace (tabs and newlines too), dots, slashes,
+# hyphens or Unicode dashes (U+2010 to U+2015, U+2212) count as one number, however
+# they are grouped: 4-4-4-4, 3-3-3, two spaces apart, one digit at a time. A comma
+# before exactly three digits joins too, so a comma-grouped integer is one number.
+_DASHES: Final = "".join(re.escape(chr(c)) for c in (*range(0x2010, 0x2016), 0x2212))
+_DIGITS: Final = re.compile(rf"\d+(?:(?:[\s./\-{_DASHES}]+|,(?=\d{{3}}(?!\d)))\d+)*")
 _CARD_DIGITS: Final = range(13, 20)
 _RUN_DIGITS: Final = 7
 _LONG_TOKEN: Final = re.compile(r"[^\W_]{26,}")
@@ -238,7 +243,9 @@ class PromptGuard:
         Each part is checked alone and the parts joined, so nothing split across
         the system prompt and the text gets through."""
         raw = [*texts, "".join(texts)] if len(texts) > 1 else list(texts)
-        for text in raw:
+        # Signatures as given and normalized, so an invisible break inside one (or
+        # a fullwidth spelling) does not hide it.
+        for text in [*raw, *(_normalized(each) for each in raw)]:
             if _BINARY.search(text):
                 return "binary"
             if _PDF.search(text):

@@ -10,7 +10,10 @@ Each loader rewrites the ``manual_entry_error`` rows of its own files and no oth
 - ``load_document_periods``: ``document_periods.csv``, checked against the loaded
   registry and held for stage 6 (``manual.document_periods``);
 - ``load_filed_years``: ``filed_years.csv`` into ``filed_year``
-  (``manual.filed_years``).
+  (``manual.filed_years``);
+- ``load_transfer_hints``: ``transfer_hints.csv``, checked against the loaded
+  registry and held in memory for ``reference.patterns.classify`` and stage 9
+  (``manual.transfer_hints``); its patterns are restricted and never stored.
 
 Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
 no date of their own). An account is keyed by its slug. An identifier is keyed by its
@@ -57,6 +60,12 @@ from rheo_finance.manual.filed_years import (
 )
 from rheo_finance.manual.headers import MANUAL_DIR_NAME
 from rheo_finance.manual.loader import RowError, load_csv
+from rheo_finance.manual.transfer_hints import (
+    TRANSFER_HINTS_FILE,
+    TransferHintRow,
+    TransferHints,
+    build_transfer_hints,
+)
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
@@ -157,6 +166,19 @@ def load_document_periods(
     )
     _rewrite_errors(uow, (DOCUMENT_PERIODS_FILE,), periods.errors)
     return periods
+
+
+def load_transfer_hints(
+    uow: UnitOfWork, data_dir: Path, registry: Registry
+) -> TransferHints:
+    """The ``transfer_hints.csv`` rows whose counterpart (if any) is in ``registry``,
+    for ``reference.patterns.classify`` and stage 9."""
+    hints = build_transfer_hints(
+        load_csv(data_dir / MANUAL_DIR_NAME / TRANSFER_HINTS_FILE, TransferHintRow),
+        {row.slug for row in registry.accounts},
+    )
+    _rewrite_errors(uow, (TRANSFER_HINTS_FILE,), hints.errors)
+    return hints
 
 
 def filed_year_id(year: int) -> uuid.UUID:

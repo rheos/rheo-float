@@ -1,0 +1,212 @@
+{
+  "about": [
+    "Issuer description patterns (SPEC 'Files, paths and settings' > Reference data in the repo).",
+    "Reference data only: issuer wording, never a person's name, an account number or an amount.",
+    "Each wording is matched against a line's description_norm (casefolded, whitespace collapsed),",
+    "as a whole-token run: a match never starts or ends inside a word. Every part of 'all' must",
+    "match and no part of 'unless' may. 'issuers' and 'account_kinds', when present, limit an entry",
+    "to lines of those issuer keys and account kinds. In each section the first matching entry wins.",
+    "A counterpart is an issuer key from the archive's issuer map (rheo_finance.documents.issuers)."
+  ],
+  "transfer": [
+    {
+      "kind": "card_payment",
+      "note": "card side: the payment credit on the card",
+      "all": ["payment received"],
+      "account_kinds": ["credit_card"],
+      "issuers": ["vancity-visa"],
+      "counterpart": "vancity"
+    },
+    {
+      "kind": "card_payment",
+      "note": "card side on a card whose wording names no paying bank",
+      "all": ["payment received"],
+      "account_kinds": ["credit_card"]
+    },
+    {
+      "kind": "card_payment",
+      "note": "card side, the thank-you form",
+      "all": ["payment", "thank you"],
+      "account_kinds": ["credit_card"]
+    },
+    {
+      "kind": "card_payment",
+      "note": "chequing side: a bill payment naming the card, 'vancity visa' or 'vancity <product> visa'",
+      "all": ["bill payment", "vancity", "visa"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "vancity-visa"
+    },
+    {
+      "kind": "card_payment",
+      "note": "chequing side: a bill payment to a Visa card; the only Visa issuer in the map",
+      "all": ["bill payment", "visa"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "vancity-visa"
+    },
+    {
+      "kind": "card_payment",
+      "note": "chequing side: a bill payment naming the MBNA card",
+      "all": ["bill payment", "mbna"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "mbna"
+    },
+    {
+      "kind": "paypal_preauthorized",
+      "note": "chequing side of a PayPal pre-authorized pull, or of a PayPal withdrawal to the bank",
+      "all": ["preauthorized", "paypal"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "paypal"
+    },
+    {
+      "kind": "paypal_preauthorized",
+      "note": "the hyphenated form",
+      "all": ["pre-authorized", "paypal"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "paypal"
+    },
+    {
+      "kind": "stripe_payout",
+      "note": "Wise side: the payout deposit from Stripe",
+      "all": ["stripe"],
+      "issuers": ["wise"],
+      "counterpart": "stripe"
+    },
+    {
+      "kind": "stripe_payout",
+      "note": "Stripe side: the payout debit to the bank (Wise)",
+      "all": ["payout"],
+      "issuers": ["stripe"],
+      "counterpart": "wise"
+    }
+  ],
+  "reversal": [
+    {
+      "direction": "out",
+      "note": "the owner's own payment cancelled: the reversal is a credit",
+      "all": ["debit reversal"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "out",
+      "all": ["customer cancel"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "note": "a received payment clawed back: the reversal is a debit",
+      "all": ["credit reversal"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "all": ["return"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "note": "tuned on the real statements: the past tense is the printed form",
+      "all": ["returned"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "note": "tuned on the real statements; the wording prints no direction, the line's sign settles it",
+      "all": ["reversed"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "all": ["recall"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "all": ["recalled"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "note": "an NSF fee is a charge, not a reversal",
+      "all": ["nsf"],
+      "unless": ["fee", "fees"],
+      "account_kinds": ["chequing", "savings"]
+    }
+  ],
+  "conversion": [
+    {
+      "all": ["converted"],
+      "issuers": ["wise"]
+    },
+    {
+      "note": "tuned on the real Wise history: a move between currency balances prints as 'Moved ... to <currency>'",
+      "all": ["moved"],
+      "issuers": ["wise"]
+    },
+    {
+      "all": ["general currency conversion"],
+      "issuers": ["paypal"]
+    }
+  ],
+  "fee": [
+    {"fee_type": "nsf_fee", "all": ["nsf", "fee"]},
+    {"fee_type": "overdraft_fee", "all": ["overdraft fee"]},
+    {"fee_type": "overdraft_interest", "all": ["overdraft interest"]},
+    {"fee_type": "annual_fee", "all": ["annual fee"]},
+    {"fee_type": "late_fee", "all": ["late payment fee"]},
+    {"fee_type": "late_fee", "all": ["late fee"]},
+    {"fee_type": "foreign_transaction_fee", "all": ["foreign transaction fee"]},
+    {"fee_type": "atm_fee", "all": ["atm", "fee"]},
+    {"fee_type": "service_charge", "all": ["service charge"]},
+    {"fee_type": "service_charge", "all": ["charges applied to account"]},
+    {
+      "fee_type": "interest",
+      "note": "on a card, interest is a charge; on a bank account it may be interest earned",
+      "all": ["interest"],
+      "account_kinds": ["credit_card"]
+    },
+    {
+      "fee_type": "fee",
+      "note": "a bare fee word on an account whose lines are not merchant purchases",
+      "all": ["fee"],
+      "account_kinds": ["chequing", "savings", "wallet", "payment_processor"]
+    },
+    {
+      "fee_type": "fee",
+      "all": ["fees"],
+      "account_kinds": ["chequing", "savings", "wallet", "payment_processor"]
+    }
+  ],
+  "etransfer": [
+    {"wording": "e-transfer from", "name": "after"},
+    {"wording": "payee:", "name": "after"},
+    {
+      "wording": "payer:",
+      "name": "after",
+      "note": "tuned on the real statements: the incoming form of 'payee:'"
+    },
+    {"wording": "transfer to", "name": "after"},
+    {"wording": "transfer from", "name": "after"},
+    {
+      "wording": "e-transfer returned",
+      "name": "parenthesized",
+      "note": "tuned on the real statements"
+    },
+    {
+      "wording": "etransfer",
+      "name": "parenthesized",
+      "note": "tuned on the real statements: 'etransfer credit (<name>)', 'etransfer debit (<name>)'"
+    },
+    {"wording": "e-transfer", "name": "after"},
+    {
+      "wording": "interac",
+      "name": "after",
+      "unless": ["purchase", "retail"],
+      "note": "an Interac debit-card purchase is not an e-Transfer"
+    },
+    {
+      "wording": "emt transfer",
+      "name": "none",
+      "note": "the name follows 'payee:' or 'payer:', matched above; alone it introduces none"
+    }
+  ]
+}

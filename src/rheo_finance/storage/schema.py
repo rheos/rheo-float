@@ -282,6 +282,8 @@ document = Table(
     Column("period_end", Date),
     Column("message_id", Text),
     Column("imported_at", DateTime(timezone=True), nullable=False),
+    # sha256 of what the stored parse depended on besides the bytes (migration 0013).
+    Column("parse_inputs", Text),
 )
 _tiers(
     document,
@@ -289,7 +291,7 @@ _tiers(
         "id": P, "path": P, "sha256": P, "kind": P, "issuer": P, "format": P,
         "official": P, "status": P, "parser_id": P, "parser_version": P,
         "extraction": P, "reject_reason": Tier.INTERNAL, "period_start": P,
-        "period_end": P, "message_id": R, "imported_at": P,
+        "period_end": P, "message_id": R, "imported_at": P, "parse_inputs": P,
     },
 )  # fmt: skip
 

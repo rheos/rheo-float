@@ -60,6 +60,9 @@ PINNED = {
     "0012_coverage.py": (
         "9bdcd00b29f92b4e26afb32566d4bab0d0c81ede652b627ed74cdaeb43b0f05f"
     ),
+    "0013_parse_inputs.py": (
+        "a7813de94129e4ced2c9b1b50bc6ffb048cf0b904f563a44b398f946a60cbb90"
+    ),
 }
 
 

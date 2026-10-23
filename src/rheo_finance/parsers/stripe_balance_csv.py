@@ -19,7 +19,8 @@ A payout (``Type`` ``payout``, its id in ``Source``, a negative ``Amount``) and 
 whose ``Transfer`` names it give, on the Stripe account, three lines dated on the
 payout's created date (UTC):
 
-- the gross: the sum of its rows' ``Amount`` (charges less refunds), a credit;
+- the gross: the sum of its rows' ``Amount`` (charges less refunds: ``GROSS_TYPES``),
+  a credit;
 - the fees: the sum of every ``Fee`` in it, the payout's own included, as one fee line
   (``fee_type`` ``fee``), left out when zero;
 - the payout: its ``Amount``, a transfer-like debit whose hints come from
@@ -38,8 +39,11 @@ carries it.
 Row ids, payout ids, descriptions and the customer columns are stored nowhere (a
 description can name a customer); the lines' descriptions are the parser's own words
 and no line has a counterparty. A row whose ``Net`` is not ``Amount`` less ``Fee``, a
-negative ``Fee``, a payout that is not a debit, two payouts with one id, or a payout
-whose rows are in another currency is not this layout.
+negative ``Fee``, a row of a type outside ``payout`` and ``GROSS_TYPES``, a payout that
+is not a debit, two payouts with one id, or a payout whose rows are in another currency
+is not this layout. An unknown type makes the whole file ``unparsed`` rather than
+joining a gross it does not belong to: the first real file that holds one (an
+adjustment, a dispute, a Stripe billing fee) says where it goes.
 
 The export prints no account identifier, so the account is the one
 ``payment_processor`` account with a ``number`` identifier registered at
@@ -80,6 +84,9 @@ COLUMNS: Final = (
     "Customer Facing Currency", "Transfer", "Transfer Date (UTC)", "Transfer Group",
 )  # fmt: skip
 PAYOUT: Final = "payout"
+# The row types a payout's gross is made of: charges, and the refunds netted against
+# them. Any other type (an adjustment, a dispute, a Stripe billing fee) is not read yet.
+GROSS_TYPES: Final = frozenset({"charge", "payment", "refund", "payment_refund"})
 GROSS_TEXT: Final = "Gross charges"
 FEE_TEXT: Final = "Stripe fees"
 PAYOUT_TEXT: Final = "Payout to bank"
@@ -119,7 +126,7 @@ def _rows(text: str) -> list[_Row]:
         fee = balance_csv.signed(cells["Fee"] or "0", WHAT)
         net = balance_csv.signed(cells["Net"], WHAT)
         kind = cells["Type"].strip()
-        if fee < 0 or amount - fee != net or not kind:
+        if fee < 0 or amount - fee != net or kind not in (PAYOUT, *GROSS_TYPES):
             raise NotRecognised(WHAT)
         found.append(
             _Row(

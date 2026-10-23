@@ -487,8 +487,15 @@ def test_a_stripe_csv_with_another_header_is_unparsed(setup: Setup) -> None:
         ('"120.00","3.78","116.22"', '"120.00","3.78","116.32"'),
         ('"120.00","3.78","116.22"', '"120.00","-3.78","123.78"'),
         ('"-250.00","0.00","-250.00"', '"250.00","0.00","250.00"'),
+        # A type the parser does not read joins no gross: the file is unparsed.
+        ('"txn_999SAMPLE05","charge"', '"txn_999SAMPLE05","adjustment"'),
     ],
-    ids=["net_not_amount_less_fee", "negative_fee", "payout_not_a_debit"],
+    ids=[
+        "net_not_amount_less_fee",
+        "negative_fee",
+        "payout_not_a_debit",
+        "unknown_row_type",
+    ],  # fmt: skip
 )
 def test_a_stripe_row_outside_the_layout_is_unparsed(
     setup: Setup, printed: str, wrong: str

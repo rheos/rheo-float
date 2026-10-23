@@ -1,0 +1,24 @@
+Invoice SP0042
+Issue date: Mon, Dec 1, 2025
+   FROM
+Due date: Mon, Dec 15, 2025
+   Sample Contractor
+
+   TO
+   Sample Customer
+
+  Description   Qty   Unit price   Amount
+
+  Work from Nov 17th to Nov 23rd   12.5   $40.00   $500.00
+
+  Work from Nov 24th to Nov 30th   6.25   $40.00   $250.00
+
+   Subtotal   $750.00
+
+   Total   $750.00
+
+   Paid   $100.00
+
+   Amount due   $650.00
+
+ Made with   sample.test

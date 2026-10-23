@@ -32,6 +32,11 @@ synthetic = true
 description = "Headerless Vancity chequing CSV export, newest first, one fake account identifier, with a deliberate running-balance jump (rows missing between two dates); fake values."
 
 [[fixture]]
+path = "tests/fixtures/synthetic/vancity_chequing_hints.csv"
+synthetic = true
+description = "Headerless Vancity chequing CSV export, oldest first, one continuous run: an e-Transfer credit with a From: name, the chequing leg of a Visa card payment and a plain purchase, in the padded sub-field wording of the real exports; fake values."
+
+[[fixture]]
 path = "tests/fixtures/synthetic/virgin_bill.txt"
 synthetic = true
 description = "Virgin Plus bill layout text (pdftotext -layout) whose unpaid balance plus current charges equals the total due; fake values."
@@ -81,3 +86,95 @@ description = "Synthetic card export (control none) for May 2023 that overlaps c
 path = "tests/fixtures/synthetic/card_2023_export_b.csv"
 synthetic = true
 description = "Synthetic card export (control none) for May 2023 that words one purchase of card_2023_export_a.csv differently; fake values."
+
+# The card issuers' own layouts (prompt 30), shaped on the real files' layout text with
+# every value, name and number invented.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_statement.txt"
+synthetic = true
+description = "Vancity Visa statement layout text, a period crossing the new year, two foreign purchases with their FOREIGN CURRENCY lines, a payment, a refund, a fee and interest, right-column text after amounts; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_statement_no_minimum.txt"
+synthetic = true
+description = "Vancity Visa statement layout text that prints no minimum payment; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_export.csv"
+synthetic = true
+description = "Headerless Vancity Visa CSV export, newest first: an invented cardholder name and masked card on every row, separate debit and credit columns; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_transactions.txt"
+synthetic = true
+description = "Vancity Visa transaction download layout text (signed amounts, descriptions running on to a second line, a page footer); fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/mbna_statement.txt"
+synthetic = true
+description = "MBNA statement layout text: summary, payment information, payments, purchases with a refund netted into new purchases, interest; fake values."
+
+# Phase 3a bank sources, shaped on the real layouts (counts only were read from the
+# real files); every name, number and amount is invented.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/ndcu_statement_current.txt"
+synthetic = true
+description = "Nelson & District Credit Union statement, the current layout (letter-spaced labels): a chequing section across two pages with an e-Transfer debit, its reversal by customer cancel with no payee printed, the same debit again, a wrapped payer name, fees and interest, and a share section with no lines; invented dates and amounts."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/ndcu_statement_2018.txt"
+synthetic = true
+description = "Nelson & District Credit Union statement, the 2018 layout (labels printed whole): a chequing section with a wrapped ATM deposit, a fee, an e-Transfer to a payee, service charges and interest, and a share section; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/wise_history.txt"
+synthetic = true
+description = "Wise transaction history layout text, watermark letters between the cells: a Stripe payout in, a USD to CAD conversion with its fee, a CAD card purchase, a USD card purchase from the CAD balance, two sent transfers with a fee (one whose fee exceeds what arrived) and a zero card check; no balance printed; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/paypal_activity.txt"
+synthetic = true
+description = "PayPal activity statement layout text: a CAD and USD balance summary, a bank deposit funding a pre-authorized payment, a General Currency Conversion pair across the two currency sections, a pre-authorized payment and a received payment with a fee; fake values."
+
+# Prompt 32: a FortisBC bill (no real PDF exists: the bills on file are photos, so this
+# layout is invented), and an invoice received and a patient receipt shaped on the
+# layouts of the real files (values, payees and people invented).
+
+[[fixture]]
+path = "tests/fixtures/synthetic/fortisbc_bill.txt"
+synthetic = true
+description = "Invented FortisBC electricity bill layout text: two payments, a balance forward and current charges whose identity gives the total amount due, and a payment stub; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/invoice_received.txt"
+synthetic = true
+description = "Invoice received layout text (pdftotext -layout) shaped on the series on file: two items, a partial payment, the amount due; fake values and names."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/patient_receipt.txt"
+synthetic = true
+description = "Patient receipt layout text shaped on the clinic receipt on file: two payments that sum to the total payments, then a treatment table read past; fake values and names."
+
+# Prompt 33: the fiat CSV exports. No real export is on file, so both are shaped on the
+# vendors' documented exports and carry the same transactions as the PDF fixtures of
+# the same vendor, for the overlap dedupe tests.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/paypal_activity.csv"
+synthetic = true
+description = "PayPal activity CSV shaped on the vendor's documented export: the April rows of paypal_activity.txt (the conversion pair, a bank deposit, a pre-authorized payment, a received payment with a fee), a March purchase before the statement, a Memo authorization and a balance per currency; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/wise_statement.csv"
+synthetic = true
+description = "Wise statement CSV shaped on the vendor's documented export, newest first: the transactions of wise_history.txt (a Stripe payout in, a USD to CAD conversion with its fee, two card purchases, two sent transfers with a fee, a zero card check) with a running balance per currency; fake values."
+
+# Prompt 34: the Stripe balance history export, shaped on the vendor's documented export
+# (no real export is on file). Its later payout is the one wise_statement.csv receives.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/stripe_balance.csv"
+synthetic = true
+description = "Stripe balance history CSV shaped on the vendor's documented export, newest first, no balance column: two payouts with the charges (and one refund) they pay out, a fee per charge, a fee on the first payout itself, and a charge not yet paid out; invented ids and customers, fake values."

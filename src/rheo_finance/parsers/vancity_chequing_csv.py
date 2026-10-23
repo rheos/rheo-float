@@ -18,6 +18,10 @@ running balance. The export may list rows newest first; lines are kept oldest fi
   when its lines form one segment with no gap.
 - A row holding both a withdrawal and a deposit becomes two lines, the withdrawal
   first, carrying the balance between them (the printed balance less the deposit).
+- Every line carries the hints its wording gives (``parsers.hints.with_hints``). The
+  description is padded sub-fields: the type, then for a bill payment the payee and
+  for an e-Transfer a ``From:`` or ``To:`` name. That name goes into the restricted
+  ``counterparty`` column and nowhere else.
 
 A file that is not this layout (another column count, a header row, a date or an amount
 that does not read, a row moving no money, rows out of date order, a CSV the reader
@@ -29,6 +33,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -46,11 +51,17 @@ from rheo_finance.parsers.base import (
     VerifiedSegment,
     balance_runs,
 )
+from rheo_finance.parsers.hints import with_hints
 from rheo_finance.parsers.registry import Parser, register_parser
 
 INSTITUTION: Final = "Vancity"
+ISSUER: Final = "vancity"
+# The export is of one chequing account (the layout carries no account type).
+ACCOUNT_KIND: Final = "chequing"
 CURRENCY: Final = "CAD"
 COLUMNS: Final = 7
+_SUBFIELDS: Final = re.compile(r"\s{2,}")
+_NAMED: Final = re.compile(r";?\s*(?:from|to):\s*(?P<name>.+)", re.IGNORECASE)
 _MONTHS: Final = {
     name: number
     for number, name in enumerate(
@@ -115,6 +126,21 @@ def _rows(text: str) -> dict[str, list[_Row]]:
     return by_account
 
 
+def counterparty(description: str) -> str | None:
+    """The name a row prints: a bill payment's payee sub-field, or an e-Transfer's
+    ``From:`` or ``To:`` name."""
+    fields = _SUBFIELDS.split(description.strip())
+    kind = fields[0].casefold()
+    if kind.startswith("bill payment") and len(fields) > 1:
+        return fields[1]
+    if "e-transfer" in kind:
+        for field in fields[1:]:
+            named = _NAMED.fullmatch(field)
+            if named is not None:
+                return named["name"].strip() or None
+    return None
+
+
 Triple = tuple[dt.date, Decimal, Decimal]
 
 
@@ -126,17 +152,17 @@ def _lines(
     triples: list[Triple] = []
 
     def add(row: _Row, amount: Decimal, balance: Decimal) -> None:
-        lines.append(
-            ParsedLine(
-                "transaction",
-                account=registered,
-                posting_date=row.date,
-                amount=amount,
-                currency=CURRENCY,
-                description_raw=row.description,
-                running_balance=balance,
-            )
+        line = ParsedLine(
+            "transaction",
+            account=registered,
+            posting_date=row.date,
+            amount=amount,
+            currency=CURRENCY,
+            description_raw=row.description,
+            counterparty=counterparty(row.description),
+            running_balance=balance,
         )
+        lines.append(with_hints(line, account_kind=ACCOUNT_KIND, issuer=ISSUER))
         triples.append((row.date, amount, balance))
 
     for row in rows:
@@ -217,10 +243,12 @@ def filing_date(text: str) -> dt.date:
 PARSER: Final = register_parser(
     Parser(
         parser_id="vancity.chequing_csv",
-        issuer="vancity",
+        issuer=ISSUER,
         format="csv",
-        version="1",
+        # 2: the lines carry hints and the printed name.
+        version="2",
         parse=parse,
         filing_date=filing_date,
+        sets_hints=True,
     )
 )

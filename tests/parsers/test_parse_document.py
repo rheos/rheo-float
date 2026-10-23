@@ -23,9 +23,7 @@ from sqlalchemy import Connection, func, select, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import WITHHELD_PATH, document_id, file_archive
 from rheo_finance.events import record_event
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import load_accounts
+from rheo_finance.manual.accounts import full_number
 from rheo_finance.parsers import registry
 from rheo_finance.parsers.base import (
     AccountLookup,
@@ -35,6 +33,7 @@ from rheo_finance.parsers.base import (
     ParsedPeriod,
     ParseResult,
     RegisteredAccount,
+    RegisteredIdentifier,
 )
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import (
@@ -48,28 +47,15 @@ from rheo_finance.parsers.registry import (
 )
 from rheo_finance.storage.schema import document, document_line, event, statement_period
 
+from .conftest import ManualAccount, register_accounts
+
 NOW = dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)
 PACKAGE = Path(registry.__file__).resolve().parent
 
 
-def write_card_registry(data_dir: Path) -> None:
-    manual = data_dir / "manual"
-    manual.mkdir(parents=True, exist_ok=True)
-    columns = MANUAL_FILES[ACCOUNTS_FILE]
-    cells = dict.fromkeys(columns, "")
-    cells.update(
-        slug="card", label="Card", institution="Card Bank", kind="credit_card",
-        currencies="CAD", cadence="monthly",
-    )  # fmt: skip
-    (manual / ACCOUNTS_FILE).write_text(
-        ",".join(columns) + "\n" + ",".join(cells[c] for c in columns) + "\n",
-        encoding="utf-8",
-    )
-    (manual / IDENTIFIERS_FILE).write_text(
-        ",".join(MANUAL_FILES[IDENTIFIERS_FILE]) + "\ncard,9999 99** **** 4321,"
-        "masked_card,,\n",
-        encoding="utf-8",
-    )
+CARD = ManualAccount(
+    "card", "Card Bank", "credit_card", ("9999 99** **** 4321",), "masked_card"
+)
 
 
 def fixture_parser(text: str, accounts: AccountLookup) -> ParseResult:
@@ -122,8 +108,7 @@ class Archive:
         self.data = tmp_path / "data"
         self.root = tmp_path / "archive"
         self.root.mkdir()
-        write_card_registry(self.data)
-        load_accounts(self.uow, self.data)
+        register_accounts(self.uow, self.data, CARD)
 
     def file(self, relative: str, data: bytes) -> uuid.UUID:
         target = self.root / relative
@@ -211,7 +196,7 @@ def test_stated_totals_must_match_the_lines_too() -> None:
 
 
 def test_a_document_with_no_parser_for_its_issuer_is_unparsed(archive: Archive) -> None:
-    doc = archive.file("wise/2026-01.pdf", b"anything at all\n")
+    doc = archive.file("cra/2026-01.pdf", b"anything at all\n")
     assert archive.parse(doc) == Parsed("unparsed", "no_parser")
     assert archive.lines(doc) == 0
 
@@ -329,3 +314,30 @@ def test_an_event_needs_its_registered_model(owner_conn: Connection) -> None:
 
 class _Other(BaseModel):
     pass
+
+
+@pytest.mark.parametrize(
+    ("registered", "printed"),
+    [
+        ("SAMPLE99901A9ID", "sample-99901-a9id"),
+        ("999 000 123", "999000123"),
+        ("999/000/123", "999-000-123"),
+        ("999000123", "999000124"),
+        ("SAMPLE99901A9ID", "SAMPLE99901A9IE"),
+    ],
+)
+def test_the_loader_and_the_lookup_agree_on_one_number(
+    registered: str, printed: str
+) -> None:
+    """The loader's "same full number" and ``by_identifier``'s whole-number match
+    use one normalizer: a number the loader calls the same is the one the lookup
+    finds."""
+    holder = RegisteredAccount(uuid.uuid4(), "holder")
+    lookup = AccountLookup(
+        [RegisteredIdentifier(holder, "Sample Bank", registered, "number")]
+    )
+    day = dt.date(2026, 1, 1)
+    same = full_number("number", registered) == full_number("number", printed)
+    assert full_number("number", registered) is not None
+
+    assert (lookup.by_identifier("sample bank", printed, day, day) == (holder,)) is same

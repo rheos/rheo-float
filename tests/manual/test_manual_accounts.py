@@ -177,7 +177,9 @@ def test_a_shared_last_four_at_one_institution_is_an_error_on_both_rows(
         tmp_path,
         [CHEQUING, SAVINGS, CARD],
         [
-            "test-chequing,9991234,number,,",
+            # A last-four-only number beside a full one: a last-four match could
+            # confuse them.
+            "test-chequing,XXXX1234,number,,",
             "test-savings,999-555-1234,number,,",
             # Another institution, and a second number of the same account: no clash.
             "test-card,9997771234,number,,",
@@ -205,6 +207,38 @@ def test_a_shared_last_four_at_one_institution_is_an_error_on_both_rows(
     assert [row.slug for row in registry.accounts] == ["paid-outside", "test-card"]
 
 
+def test_one_confusable_pair_refuses_every_row_ending_alike(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    """Refusing only the confusable pair would leave the chequing account's full number
+    as the one holder of the last four, and a last-four parse of the savings account's
+    statement would land on it."""
+    write(
+        tmp_path,
+        [CHEQUING, SAVINGS],
+        [
+            "test-chequing,9991234,number,,",
+            "test-chequing,XXXX1234,number,,",
+            "test-chequing,9995678,number,,",  # another last four: kept
+            "test-savings,9995551234,number,,",
+        ],
+    )
+    registry = load_accounts(UnitOfWork(owner_conn), tmp_path)
+
+    shared = [
+        line
+        for file, line, reason in errors(owner_conn)
+        if file == IDENTIFIERS_FILE and "last four" in reason
+    ]
+    assert shared == [2, 3, 5]
+    kept = sorted(
+        (ident.account, ident.identifier)
+        for ident in registry.identifiers
+        if ident.kind == "number"
+    )
+    assert kept == [("test-chequing", "9995678")]
+
+
 # The same institution as CHEQUING, spelled with other case and spacing.
 VISA = "test-visa,Test visa,test  credit   UNION,credit_card,CAD,monthly,,,,,,,,,"
 # Punctuation is not normalized: another institution.
@@ -230,6 +264,84 @@ OTHER = "test-other,Test other,Test Credit Union.,savings,CAD,monthly,,,,,,,,,"
             ],
             [2, 3],
         ),
+        # A number of four digits beside a full number.
+        (["test-chequing,1234,number,,", "test-visa,9995551234,number,,"], [2, 3]),
+        # A masked number (more than four digits shown) beside a full number.
+        (
+            [
+                "test-chequing,9999 99** **** 1234,number,,",
+                "test-visa,9995551234,number,,",
+            ],
+            [2, 3],
+        ),
+        # A single X inside a digit group masks the digits it stands for.
+        (
+            [
+                "test-chequing,9999 99X 9991234,number,,",
+                "test-visa,9995551234,number,,",
+            ],
+            [2, 3],
+        ),
+        # X as the only letter, standing apart, is a mask too.
+        (
+            ["test-chequing,9999 X 9991234,number,,", "test-visa,9995551234,number,,"],
+            [2, 3],
+        ),
+        # An account ID with an X beside a digit reads as masked: refused, the safe way.
+        (
+            ["test-chequing,SAMPLEX9991234,number,,", "test-visa,9995551234,number,,"],
+            [2, 3],
+        ),
+        # An X after a digit in an account ID reads as masked too.
+        (
+            ["test-chequing,AB999X 9991234,number,,", "test-visa,9995551234,number,,"],
+            [2, 3],
+        ),
+        # An X between other letters of an account ID is a letter: both load.
+        (
+            ["test-chequing,SAXMPLE9991234,number,,", "test-visa,9995551234,number,,"],
+            [],
+        ),
+        # One full number on two accounts, written with other separators.
+        (["test-chequing,9991234,number,,", "test-visa,999-1234,number,,"], [2, 3]),
+        # One account ID on two accounts, in other case and with separators.
+        (
+            [
+                "test-chequing,SAMPLE9991234,number,,",
+                "test-visa,sample-999-1234,number,,",
+            ],
+            [2, 3],
+        ),
+        # Slash, hyphen and single spaces join the parts of a full number.
+        (
+            ["test-chequing,999/999 1234,number,,", "test-visa,999-555-1234,number,,"],
+            [],
+        ),
+        # Any other character, or a run of separators, is not a full number's shape.
+        *(
+            (
+                [
+                    f"test-chequing,999{glyph}9991234,number,,",
+                    "test-visa,9995551234,number,,",
+                ],
+                [2, 3],
+            )
+            for glyph in (
+                "\u25cf",
+                "#",
+                "\u00b7",
+                "_",
+                "\uff0a",
+                "..",
+                "--",
+                "??",
+                "  ",
+                ".",
+            )
+        ),
+        # Two distinct full numbers: a parser that matches the whole number tells
+        # them apart, so they may end alike.
+        (["test-chequing,9991234,number,,", "test-visa,9995551234,number,,"], []),
         # A file token is not matched by last four, so it never clashes.
         (["test-chequing,9991234,number,,", "test-visa,stmt-1234,file_token,,"], []),
         # Punctuation makes another institution.
@@ -352,7 +464,8 @@ def test_no_reason_repeats_an_identifier(
         [CHEQUING, SAVINGS],
         [
             "test-chequing,9991234,cardnumber,,",
-            "test-chequing,9995678,number,,",
+            # A last-four-only number beside a full one ending alike: a clash.
+            "test-chequing,XXXX5678,number,,",
             "test-savings,9998885678,number,,",
         ],
     )

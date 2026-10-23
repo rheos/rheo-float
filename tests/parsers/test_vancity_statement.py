@@ -20,9 +20,7 @@ from sqlalchemy import Connection, Table, func, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers import vancity_statement
 from rheo_finance.parsers.base import OverdrawnSpell
 from rheo_finance.parsers.registry import (
@@ -40,6 +38,8 @@ from rheo_finance.storage.schema import (
     statement_period,
 )
 
+from .conftest import ManualAccount, register_accounts
+
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 STATEMENT_2020 = FIXTURES / "vancity_statement_2020.txt"
 STATEMENT_2026 = FIXTURES / "vancity_statement_2026.txt"
@@ -56,30 +56,6 @@ ACCOUNTS = {
 }
 
 
-def write_registry(data_dir: Path, slugs: tuple[str, ...] = tuple(ACCOUNTS)) -> None:
-    manual = data_dir / "manual"
-    manual.mkdir(parents=True, exist_ok=True)
-    columns = MANUAL_FILES[ACCOUNTS_FILE]
-    rows = [",".join(columns)]
-    for slug in slugs:
-        cells = dict.fromkeys(columns, "")
-        cells.update(
-            slug=slug,
-            label=ACCOUNTS[slug][0],
-            institution="vancity",  # compared without case
-            kind="chequing",
-            currencies="CAD",
-            cadence="monthly",
-        )
-        rows.append(",".join(cells[column] for column in columns))
-    (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
-    identifiers = [",".join(MANUAL_FILES[IDENTIFIERS_FILE])]
-    identifiers += [f"{slug},{ACCOUNTS[slug][1]},number,," for slug in slugs]
-    (manual / IDENTIFIERS_FILE).write_text(
-        "\n".join(identifiers) + "\n", encoding="utf-8"
-    )
-
-
 def read_as_text(path: Path) -> str:
     """The fixtures are already layout text: what pdftotext would print."""
     return path.read_text(encoding="utf-8")
@@ -94,8 +70,20 @@ class Setup:
         self.archive.mkdir()
 
     def register(self, slugs: tuple[str, ...] = tuple(ACCOUNTS)) -> None:
-        write_registry(self.data, slugs)
-        load_accounts(self.uow, self.data)
+        register_accounts(
+            self.uow,
+            self.data,
+            *(
+                ManualAccount(
+                    slug,
+                    "vancity",  # compared without case
+                    "chequing",
+                    (ACCOUNTS[slug][1],),
+                    label=ACCOUNTS[slug][0],
+                )
+                for slug in slugs
+            ),
+        )
 
     def file(self, name: str, text: str) -> uuid.UUID:
         target = self.archive / "vancity" / name
@@ -141,7 +129,7 @@ def test_a_tied_out_statement_commits_its_periods_and_lines(setup: Setup) -> Non
 
     row = setup.document_row(doc)
     assert (row["status"], row["parser_id"], row["parser_version"]) == (
-        "parsed", "vancity.statement", "1",
+        "parsed", "vancity.statement", "2",
     )  # fmt: skip
     assert (row["extraction"], row["reject_reason"]) == ("fixed_rule", None)
     assert (row["period_start"], row["period_end"]) == (
@@ -249,6 +237,49 @@ def test_an_unregistered_account_rejects_the_statement(setup: Setup) -> None:
     ]
 
 
+def vancity(slug: str, *numbers: str) -> ManualAccount:
+    return ManualAccount(slug, "vancity", "chequing", numbers, label=slug.title())
+
+
+def test_a_section_two_accounts_hold_is_ambiguous_before_a_later_unknown_one(
+    setup: Setup,
+) -> None:
+    """Two distinct full numbers ending in the patronage section's last four both
+    load; that section names two accounts. It comes before the unregistered shares
+    section, and the first failing section decides the reason."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        *(
+            vancity(slug, ACCOUNTS[slug][1])
+            for slug in ("patronage", "chequing", "savings")
+        ),
+        vancity("other", "999000100011"),
+    )
+    doc = setup.file("2026-01-11.pdf", STATEMENT_2026.read_text(encoding="utf-8"))
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(document_line, doc) == 0
+    assert [each["reason"] for each in setup.rejected_events(doc)] == [
+        "ambiguous_account"
+    ]
+
+
+def test_two_sections_on_one_account_are_ambiguous(setup: Setup) -> None:
+    """One account holding the numbers of two sections would take both: ambiguous."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        vancity("patronage", ACCOUNTS["patronage"][1]),
+        vancity("chequing", ACCOUNTS["chequing"][1], ACCOUNTS["savings"][1]),
+        vancity("shares", ACCOUNTS["shares"][1]),
+    )
+    doc = setup.file("2026-01-11.pdf", STATEMENT_2026.read_text(encoding="utf-8"))
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(statement_period, doc) == 0
+
+
 def test_registering_the_account_and_reparsing_loads_it_and_drops_the_event(
     setup: Setup,
 ) -> None:
@@ -354,3 +385,58 @@ def test_a_line_with_a_withdrawal_and_a_deposit_becomes_two_lines(
         (day, Decimal("50.00"), Decimal("148.00")),
         (dt.date(2025, 12, 20), Decimal("-30.00"), Decimal("118.00")),
     ]
+
+
+# --- hints (FR-15, Phase 3a deliverable 1) --------------------------------------------
+
+
+def hint_rows(setup: Setup, doc: uuid.UUID) -> list[tuple[object, ...]]:
+    rows = setup.conn.execute(
+        select(
+            document_line.c.description_raw,
+            document_line.c.transfer_hint,
+            document_line.c.etransfer_hint,
+            document_line.c.hint_account_slug,
+            document_line.c.counterparty,
+        )
+        .where(document_line.c.document_id == doc)
+        .order_by(document_line.c.line_no)
+    ).all()
+    return [tuple(each) for each in rows]
+
+
+def test_the_chequing_leg_of_a_card_payment_names_the_card_issuer(
+    setup: Setup,
+) -> None:
+    setup.register(("chequing",))
+    text = STATEMENT_SPLIT.read_text(encoding="utf-8")
+    assert text.count("HYDRO CO #0001") == 1
+    card_payment = text.replace("HYDRO CO #0001", "VANCITY VISA #9991")
+    doc = setup.file("2026-01-11.pdf", card_payment)
+
+    assert setup.parse(doc).status == "parsed"
+    payment = hint_rows(setup, doc)[-1]
+    assert payment[1:] == (True, False, "vancity-visa", "VANCITY VISA")
+
+
+def test_an_etransfer_carries_its_hint_and_name_and_a_purchase_none(
+    setup: Setup,
+) -> None:
+    setup.register()
+    doc = setup.file("2026-01-11.pdf", STATEMENT_2026.read_text(encoding="utf-8"))
+    assert setup.parse(doc).status == "parsed"
+
+    by_wording = {str(row[0]): row[1:] for row in hint_rows(setup, doc)}
+    assert by_wording["ETRANSFER CREDIT (FRIEND)"] == (False, True, None, "friend")
+    assert by_wording["ETRANSFER DEBIT (LANDLORD)"] == (False, True, None, "landlord")
+    # A bill payment to a vendor is spending: its payee, no transfer hint.
+    assert by_wording["BILL PAYMENT-ONLINE (HYDRO CO #0001)"] == (
+        False, False, None, "HYDRO CO",
+    )  # fmt: skip
+    purchases = [row for text, row in by_wording.items() if "POINT OF SALE" in text]
+    assert purchases and all(row == (False, False, None, None) for row in purchases)
+
+
+def test_the_statement_registers_as_hint_setting() -> None:
+    parser = vancity_statement.PARSER
+    assert (parser.version, parser.sets_hints) == ("2", True)

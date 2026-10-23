@@ -21,7 +21,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final, Literal
 
-from rheo_finance.manual.accounts import LAST_FOUR_KINDS, institution_key, last_four
+from rheo_finance.manual.accounts import (
+    LAST_FOUR_KINDS,
+    identifier_key,
+    institution_key,
+    last_four,
+)
 
 ControlKind = Literal["summary", "running_balance", "bill_identity", "none"]
 LineKind = Literal[
@@ -85,7 +90,8 @@ class RegisteredAccount:
 
 @dataclass(frozen=True)
 class RegisteredIdentifier:
-    """One ``account_identifier`` row with its account and institution."""
+    """One ``account_identifier`` row with its account, institution and (for
+    ``AccountLookup.by_institution``) the account's kind."""
 
     account: RegisteredAccount
     institution: str
@@ -93,6 +99,7 @@ class RegisteredIdentifier:
     kind: str
     valid_from: dt.date | None = None
     valid_to: dt.date | None = None
+    account_kind: str | None = None
 
     def covers(self, start: dt.date, end: dt.date) -> bool:
         """Whether the identifier was valid at some point of ``start`` to ``end``."""
@@ -107,7 +114,10 @@ class AccountLookup:
     ``by_last_four`` matches the last four digits of an identifier of a
     ``LAST_FOUR_KINDS`` kind at an institution compared by ``institution_key``
     (``manual.accounts``), valid during the period: the same scope in which the
-    loader refuses two accounts sharing a last four. Never by a printed name.
+    loader refuses two accounts sharing a last four. The loader lets two distinct full
+    numbers of different accounts share one, so a last-four match can find both: every
+    caller then rejects ``ambiguous_account`` and never picks one. Never by a printed
+    name.
     """
 
     def __init__(self, identifiers: Iterable[RegisteredIdentifier]) -> None:
@@ -133,25 +143,49 @@ class AccountLookup:
     ) -> tuple[RegisteredAccount, ...]:
         """Every distinct registered account holding ``identifier`` in full as a
         ``number`` identifier at ``institution``, valid during the period, sorted by
-        slug. Digits are compared and separators ignored; an identifier with no digit
-        matches nothing."""
+        slug. Digits and letters are compared (letters without case) and separators
+        ignored, so an account ID that mixes letters and digits matches in full; an
+        identifier with no digit matches nothing."""
         wanted = institution_key(institution)
-        digits = _digits(identifier)
-        if not digits:
+        key = identifier_key(identifier)
+        if not re.search(r"\d", key):
             return ()
         found = {
             each.account
             for each in self._identifiers
             if each.kind == "number"
             and institution_key(each.institution) == wanted
-            and _digits(each.identifier) == digits
+            and identifier_key(each.identifier) == key
             and each.covers(start, end)
         }
         return tuple(sorted(found, key=lambda account: account.slug))
 
+    def by_institution(
+        self, institution: str, account_kind: str, start: dt.date, end: dt.date
+    ) -> tuple[RegisteredAccount, ...]:
+        """Every distinct registered account of ``account_kind`` at ``institution``
+        (compared by ``institution_key``) holding a ``number`` identifier valid during
+        the period, sorted by slug: the accounts the vendor's statement parser could
+        match by its printed number. An account of another kind at the same
+        institution (a crypto wallet), or one whose number was replaced before the
+        period, is no candidate.
 
-def _digits(identifier: str) -> str:
-    return re.sub(r"\D", "", identifier)
+        For an export that prints no account identifier at all: the parser takes the
+        one account it finds and rejects none or several. Residual risk: an export of
+        a second account at the vendor that is not registered lands on the registered
+        one. Inside a tied-out statement window of that account its lines match no
+        statement line and show as discrepancies; outside every window they load as
+        the registered account's lines and nothing flags them."""
+        wanted = institution_key(institution)
+        found = {
+            each.account
+            for each in self._identifiers
+            if each.kind == "number"
+            and each.account_kind == account_kind
+            and institution_key(each.institution) == wanted
+            and each.covers(start, end)
+        }
+        return tuple(sorted(found, key=lambda account: account.slug))
 
 
 @dataclass(frozen=True)
@@ -227,6 +261,8 @@ class ParsedLine:
     result: Decimal | None = None
     trading_fee: Decimal | None = None
     funding_fee: Decimal | None = None
+    # A receipt payment's own reference, as a digest: never the reference itself.
+    payment_ref_digest: str | None = None
 
 
 @dataclass(frozen=True)

@@ -19,9 +19,7 @@ from sqlalchemy import Connection, Table, func, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import NotRecognised
 from rheo_finance.parsers.docextract_adapter import reference_bill
 from rheo_finance.parsers.registry import (
@@ -31,6 +29,8 @@ from rheo_finance.parsers.registry import (
 )
 from rheo_finance.storage.refs import format_ref
 from rheo_finance.storage.schema import document, document_line, event, statement_period
+
+from .conftest import ManualAccount, register_accounts
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 BILL = FIXTURES / "virgin_bill.txt"
@@ -53,23 +53,11 @@ class Setup:
         self.archive.mkdir()
 
     def register(self, number: str = NUMBER) -> None:
-        manual = self.data / "manual"
-        manual.mkdir(parents=True, exist_ok=True)
-        columns = MANUAL_FILES[ACCOUNTS_FILE]
-        cells = dict.fromkeys(columns, "")
-        cells.update(
-            slug="mobile", label="Mobile", institution="virgin plus",
-            kind="bill_vendor", currencies="CAD", cadence="monthly",
-        )  # fmt: skip
-        (manual / ACCOUNTS_FILE).write_text(
-            ",".join(columns) + "\n" + ",".join(cells[c] for c in columns) + "\n",
-            encoding="utf-8",
+        register_accounts(
+            self.uow,
+            self.data,
+            ManualAccount("mobile", "virgin plus", "bill_vendor", (number,)),
         )
-        (manual / IDENTIFIERS_FILE).write_text(
-            ",".join(MANUAL_FILES[IDENTIFIERS_FILE]) + f"\nmobile,{number},number,,\n",
-            encoding="utf-8",
-        )
-        load_accounts(self.uow, self.data)
 
     def file(self, text: str) -> uuid.UUID:
         target = self.archive / "virgin-plus" / "2026-02-02.pdf"
@@ -183,6 +171,40 @@ def test_a_bill_for_an_unregistered_account_is_rejected(setup: Setup) -> None:
     assert setup.parse(doc) == Parsed("rejected", "unknown_account")
     assert setup.count(statement_period, doc) == 0
     assert setup.rejected_reasons(doc) == ["unknown_account"]
+
+
+def test_a_bill_whose_last_four_two_accounts_hold_is_ambiguous(setup: Setup) -> None:
+    register_accounts(
+        setup.uow,
+        setup.data,
+        ManualAccount("mobile", "virgin plus", "bill_vendor", (NUMBER,)),
+        ManualAccount("home", "virgin plus", "bill_vendor", ("999100123",)),
+    )
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(statement_period, doc) == 0
+    assert setup.rejected_reasons(doc) == ["ambiguous_account"]
+
+
+def test_a_mixed_group_never_puts_the_bill_on_the_account_left_standing(
+    setup: Setup,
+) -> None:
+    """The bill is the home account's. A masked row of the mobile account beside two
+    full numbers ending alike refuses all three, so the bill is unknown, never loaded
+    onto the mobile account that refusing only the masked pair would keep."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        ManualAccount(
+            "mobile", "virgin plus", "bill_vendor", ("999100123", "XXXXX0123")
+        ),
+        ManualAccount("home", "virgin plus", "bill_vendor", (NUMBER, "999000456")),
+    )
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+    assert setup.count(statement_period, doc) == 0
 
 
 def test_text_that_is_not_a_bill_is_unparsed(setup: Setup) -> None:

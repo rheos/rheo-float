@@ -8,4 +8,5 @@ Decision, Consequences). ADRs 0001 to 0009 were written in Phase 1. The remainin
 (Key decisions 4, 6, 8 to 13, 15 and 17 to 20 in the design spec) each get their own
 next-numbered ADR in the PR of the phase that first builds them. A changed
 decision gets a new ADR, and the old one's `Status:` becomes `superseded-by-NNNN`; old bodies are
-not rewritten.
+not rewritten. A decision that a later ADR narrows without replacing keeps its status and gains an
+`Amended-by: ADR-NNNN` line after `Date:`; its body is not rewritten either.

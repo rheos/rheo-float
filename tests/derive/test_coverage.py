@@ -314,6 +314,40 @@ def test_a_control_none_export_never_yields_have(
     assert "have" not in states(found.values())
 
 
+def visa_export_row(day: dt.date, debit: str) -> str:
+    """One row of the Vancity Visa CSV export for a fake card."""
+    return (
+        f"SAMPLE CARDHOLDER,9999 99•• •••• 9991,{day.isoformat()},"
+        f"{day.isoformat()}T00:00,SAMPLE SHOP SAMPLE CITY BC,CAD,{debit},"
+    )
+
+
+def test_the_vancity_visa_csv_loads_unverified_and_never_yields_have(
+    ledger: Ledger,
+) -> None:
+    """AC-3a end to end through the real parser: the export states no control data, so
+    a month with a line on every day stays ``partial`` and every line is an
+    unverified export."""
+    ledger.manual(ACCOUNTS_FILE, account_row("visa", "Vancity", "credit_card"))
+    ledger.manual(IDENTIFIERS_FILE, "visa,9999 99** **** 9991,masked_card,,")
+    days = [D(2024, 1, 31), *(D(2024, 2, day) for day in range(1, 30)), D(2024, 3, 1)]
+    # The export lists rows newest first.
+    ledger.file(
+        "vancity-visa/2024-03-01.csv",
+        "\n".join(visa_export_row(day, "1.00") for day in reversed(days)) + "\n",
+    )
+
+    out = ledger.derive()
+
+    assert out.documents["parsed"] == 1
+    rows = ledger.txns()
+    assert len(rows) == len(days)
+    assert {row["basis"] for row in rows} == {"unverified_export"}
+    found = matrix(ledger, "visa")
+    assert found[D(2024, 2, 1)] == ("partial", None)
+    assert "have" not in states(found.values())
+
+
 def test_a_tied_out_statement_covering_every_day_gives_have(
     ledger: Ledger, card_parsers: None
 ) -> None:

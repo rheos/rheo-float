@@ -1,0 +1,82 @@
+   Your Credit Card Account Statement
+
+   Statement Period:
+   Payment information   September: 08/21/25 to 09/20/25
+   New Balance (including any Payment Plans)   $1,086.17   Account Number:
+   Your Minimum Payment   $32.00   9999 99XX XXXX 9992
+   Your Minimum Payment Due Date   October 14, 2025   Primary Cardholder:
+   SAMPLE CARDHOLDER
+   Estimated Time to Pay
+   The estimated time to pay your New Balance in full if you pay only the Minimum Payment each month
+   Ways to Pay:
+   is 3 year(s) and 2 month(s).   Online Banking
+   Telephone Banking
+   Summary of your account   Most Financial Institutions
+   Previous Statement Balance   $1,000.00
+   By Mail To:
+   Payments   -$150.00   MBNA
+   New Purchases   $205.67   P.O. Box 9999 Station A
+   Balance Transfers and Access Cheques   $0.00
+   Cash Advances   $0.00   Contact Information:
+   Interest   $30.50
+   Customer Service/Lost or Stolen
+   Fees   $0.00   1-999-999-9999
+   Subtotal   $86.17
+   Your New Balance   $1,086.17
+
+   Credit Limit   $2,000.00
+   Cash Advance Limit   $500.00
+   Credit Available   $913.83
+   Statement Closing Date   September 20, 2025   Bonus Points   999
+   Days in Statement Period   31
+   Annual Interest Rate for Purchases   19.99%
+   Annual Interest Rate for Cash Advances   24.99%
+
+   Page 1 of 3
+
+   Payment slip   Account Number
+   Your New Balance
+   9999 99XX XXXX 9992
+   $1,086.17
+   Your Minimum Payment   $32.00
+   Your Minimum Payment Due Date October 14, 2025
+   SAMPLE CARDHOLDER
+   99 SAMPLE ROAD   See reverse for information on how to pay.
+   Amount you're paying:   $
+
+   Page 2 of 3
+
+   SAMPLE CARDHOLDER   Your Credit Card Account Statement
+   9999 99XX XXXX 9992   Statement Date: 09/20/25
+   Previous Statement: 08/20/25
+   Statement Period: 08/21/25 to 09/20/25
+
+   Interest information
+   Purchases
+   Standard AIR   19.99%   $1,100.00   $30.50
+   Cash Advances
+   Standard AIR   24.99%   $0.00   $0.00
+
+   Details of your transactions
+   SAMPLE CARDHOLDER
+   9999 99XX XXXX 9992
+
+   Trans   Posting   Promotional   Reference
+   Date   Date   Description   AIR   Number   Amount ($)
+
+   Previous statement balance   $1,000.00
+   PAYMENTS
+   09/02/25   09/02/25   PAYMENT   9911   -$150.00
+   Total   -$150.00
+   PURCHASES
+   08/25/25   08/26/25   SAMPLE STREAMING   SAMPLE CITY ON   9912   $9.99
+   09/05/25   09/08/25   SAMPLE HARDWARE   SAMPLE TOWN BC   9913   $215.68
+   09/12/25   09/13/25   SAMPLE HARDWARE   SAMPLE TOWN BC   9914   -$20.00
+   Total   $205.67
+   INTEREST CHARGED
+   09/20/25   09/20/25   INTEREST CHARGE   $30.50
+   Total   $30.50
+   Subtotal of Activity   $86.17
+   New Balance   $1,086.17
+
+   Page 3 of 3

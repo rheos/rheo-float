@@ -279,8 +279,11 @@ def _running_balance(
     currency: str,
 ) -> None:
     """The verified segments and breaks of one running-balance period, from its stored
-    lines in line order. A line without an amount or a balance cannot continue a run,
-    so it is left out and the lines either side are compared directly."""
+    lines in line order. A line without a date or an amount cannot continue a run, so
+    it is left out and the lines either side are compared directly. A line with an
+    amount and no balance is part of the row the next balanced line ends (a fiat CSV
+    row's principal before its fee line, ``parsers.balance_csv``): its amount is added
+    to that line's, so the row continues the run as one step."""
     rows = uow.execute(
         select(
             document_line.c.posting_date,
@@ -295,13 +298,16 @@ def _running_balance(
         )
         .order_by(document_line.c.line_no)
     )
-    triples: list[tuple[dt.date, Decimal, Decimal]] = [
-        (row.posting_date, row.amount, row.running_balance)
-        for row in rows
-        if row.posting_date is not None
-        and row.amount is not None
-        and row.running_balance is not None
-    ]
+    triples: list[tuple[dt.date, Decimal, Decimal]] = []
+    pending = Decimal(0)
+    for row in rows:
+        if row.posting_date is None or row.amount is None:
+            continue
+        if row.running_balance is None:
+            pending += row.amount
+            continue
+        triples.append((row.posting_date, pending + row.amount, row.running_balance))
+        pending = Decimal(0)
     segments, gaps = balance_runs(RegisteredAccount(account_ref, ""), triples)
     facts.verified[currency].extend(
         (each.start_date, each.end_date) for each in segments

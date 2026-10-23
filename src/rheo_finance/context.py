@@ -15,23 +15,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Connection, CursorResult, Executable, ScalarResult
 
 from rheo_finance.clock import Clock
 from rheo_finance.contracts import Role
+from rheo_finance.model.client import ModelClient
 from rheo_finance.settings import Settings
 
 if TYPE_CHECKING:
     from rheo_finance.operations import _Databases
 
 ConnectionName = Literal["owner", "reader"]
-
-
-class ModelClient(Protocol):
-    """The model step's client. Prompt 36 declares its methods; tests pass a stub."""
 
 
 class LineSnapshot(BaseModel):

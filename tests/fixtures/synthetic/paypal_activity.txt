@@ -1,0 +1,52 @@
+Merchant Account ID: SAMPLE999A9ID   PayPal ID: owner@example.test   01/04/2026 - 30/04/2026
+
+Activity Statement for 1 April 2026 to 30 April 2026
+Sample Holder
+PO Box 1
+V0A0A0 Anytown BC
+Balance Summary (01/04/2026 - 30/04/2026)
+
+   Available Beginning   Available Ending   Holding Beginning   Holding Ending
+ CAD   10.00   0.00   0.00   0.00
+
+ USD   5.00   19.20   0.00   0.00
+
+   Page 1
+
+Merchant Account ID: SAMPLE999A9ID   PayPal ID: owner@example.test   01/04/2026 - 30/04/2026
+
+Transaction History - CAD
+ Date   Description   Name \ Email   Gross   Fee   Net
+
+   Bank Deposit to PP Account
+ 03/04/2026   30.00   0.00   30.00
+   ID: 9SAMPLE99900001
+
+   General Currency Conversion
+ 03/04/2026   -40.00   0.00   -40.00
+   ID: 9SAMPLE99900002
+
+   Page 2
+
+Merchant Account ID: SAMPLE999A9ID   PayPal ID: owner@example.test   01/04/2026 - 30/04/2026
+
+Transaction History - USD
+ Date   Description   Name \ Email   Gross   Fee   Net
+
+   General Currency Conversion
+ 03/04/2026   28.50   0.00   28.50
+   ID: 9SAMPLE99900003
+
+   PreApproved Payment Bill User
+   Sample Streaming Co
+ 04/04/2026   Payment   -33.50   0.00   -33.50
+   billing@streaming.example.test
+   ID: 9SAMPLE99900004
+
+   Mass Pay Payment   Sample Client Inc.
+ 20/04/2026   20.00   -0.80   19.20
+   ID: 9SAMPLE99900005   client@example.test
+
+To cancel a pre-authorized or recurring payment, sample notice text for the synthetic layout.
+
+   Page 3

@@ -8,8 +8,10 @@ Its parts:
 - ``manual``: the sha256 of each manual file (``absent`` for a missing one);
 - ``decisions``: the newest decision's id and the count;
 - ``settings``: ``settings.settings_hash``;
-- ``parsers``: every registered parser's id, issuer, format and version, and the
-  installed ``doc-extraction-api`` (``docextract_adapter.docextract_version``);
+- ``parsers``: every registered parser's id, issuer, format and version, the
+  installed ``doc-extraction-api`` (``docextract_adapter.docextract_version``), and
+  the digest of ``reference/patterns.json`` (``reference.patterns.patterns_digest``),
+  which the hint-setting parsers read;
 - ``features``: the feature packages in the tree (Key decision 14);
 - ``local_date``: today in ``finance.locale.timezone``. Stage 6 reads today, and later
   stage 14's overdue figures and stage 16's overdue-statement event do too, so a run
@@ -44,6 +46,7 @@ from rheo_finance.documents.registry import ARCHIVE_KEY
 from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
 from rheo_finance.parsers import docextract_adapter
 from rheo_finance.parsers.registry import load_parsers
+from rheo_finance.reference import patterns
 from rheo_finance.settings import settings_hash
 from rheo_finance.storage.schema import decision
 
@@ -107,7 +110,13 @@ def _parsers() -> str:
         [each.parser_id, each.issuer, each.format, each.version]
         for each in load_parsers().values()
     )
-    return _sha([registered, docextract_adapter.docextract_version()])
+    return _sha(
+        [
+            registered,
+            docextract_adapter.docextract_version(),
+            patterns.patterns_digest(),
+        ]
+    )
 
 
 def _features() -> str:

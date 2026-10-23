@@ -1,0 +1,40 @@
+   Card Services and Account Inquiries
+   999.999.9999 or 1.999.999.9999
+   sample.test
+   Sample Gold Visa * card   sample.test
+
+Statement period: February 6 to March 5, 2026   Account Number: 9999 99** **** 9991
+
+Statement summary   Payment information
+ Credit limit   $2,000.00   Statement balance   $25.00
+ Available credit   $1,975.00
+ Past due amount   $0.00   Payment due date   March 30, 2026
+ Overlimit amount   $0.00
+ Previous balance   $400.00
+ Payments & credits   -   $400.00
+ Purchases & debits   +   $25.00
+ Cash advances   +   $0.00
+ Interest   +   $0.00
+ Fees   +   $0.00
+Statement balance   $25.00
+
+   Page 1 of 2
+
+   Sample Gold Visa * card   Account Number: 9999 99** **** 9991
+
+   Statement balance   Payment due date   Payment amount
+
+   $25.00   March 30, 2026   $ _________________
+
+   Page 2 of 2
+
+Statement period: February 6 to March 5, 2026   Account Number: 9999 99** **** 9991
+
+Transaction details
+Trans.   Post
+   Description   Amount
+ date   date
+
+SAMPLE CARDHOLDER: 9999 99** **** 9991
+FEB 10   FEB 11 SAMPLE PHARMACY SAMPLE CITY BC   $25.00
+FEB 20   FEB 20 PAYMENT RECEIVED -- THANK YOU   - $400.00

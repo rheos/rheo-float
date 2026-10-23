@@ -83,8 +83,13 @@ a rolled-back transaction, with a fake clock. Tests make no network calls except
 servers.
 
 The suite drops and recreates `finance_test` whenever the migration chain it was built from
-differs from the checkout's, so two checkouts with different chains must not run their suites at
-the same moment: the second one's drop cuts the first one's connections.
+differs from the checkout's. Each test session holds a Postgres advisory lock on `finance_test`
+(shared, on a connection to the `postgres` database) for as long as it runs, and a rebuild takes
+that lock alone. So checkouts on the same chain run their suites side by side, two sessions that
+find the same stale stamp rebuild it once, and a checkout on another chain waits until the running
+suites finish (up to 30 minutes, then it fails saying so) instead of cutting their connections.
+The lock protects only checkouts whose suite takes it, so a worktree of an older branch from
+before the lock still drops the database without waiting.
 
 `finance db init` sets up both databases (`finance` and `finance_test`); `--database NAME`
 (repeatable) limits it to the ones named, so a checkout that only runs the suite can pass

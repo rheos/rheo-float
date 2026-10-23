@@ -48,6 +48,7 @@ from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.documents import issuers
 from rheo_finance.operations import dispatch
 from rheo_finance.parsers import docextract_adapter, registry
+from rheo_finance.reference import patterns
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
@@ -264,6 +265,41 @@ def test_a_new_docextract_version_reparses_the_kept_pdfs_and_moves_the_fingerpri
     assert (out.parsed_now, out.kept) == (pdfs, total - int(pdfs or 0))
     assert statuses(out) == SEEDED
     assert taken(ledger) != before
+
+
+def test_a_new_patterns_file_reparses_the_hint_setting_parsers_documents(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing ``reference/patterns.json`` reparses what a hint-setting parser read and
+    moves the fingerprint; documents of parsers that set no hints are kept."""
+    csv_parser = next(p for p in CARD_PARSERS if p.parser_id.endswith("_csv"))
+    monkeypatch.setitem(
+        registry.PARSERS,
+        csv_parser.parser_id,
+        dataclasses.replace(csv_parser, sets_hints=True),
+    )
+    seed(ledger)
+    derive(ledger)
+    before = taken(ledger)
+    total = sum(SEEDED.values())
+    card_csvs = sum(1 for path in CARD_DOCS if path.endswith(".csv")) + 1
+    # The Vancity chequing parser sets hints too: the export and its copy.
+    vancity_exports = 2
+    hinted = card_csvs + vancity_exports
+
+    monkeypatch.setattr(patterns, "patterns_digest", lambda: "9" * 64)
+    out = derive(ledger)
+
+    assert (out.parsed_now, out.kept) == (hinted, total - hinted)
+    assert statuses(out) == SEEDED
+    assert taken(ledger) != before
+
+    # The csv parser stops setting hints: its documents reparse once, and after
+    # that a patterns edit reparses only the Vancity exports.
+    monkeypatch.setitem(registry.PARSERS, csv_parser.parser_id, csv_parser)
+    assert derive(ledger).parsed_now == card_csvs
+    monkeypatch.setattr(patterns, "patterns_digest", lambda: "8" * 64)
+    assert derive(ledger).parsed_now == vancity_exports
 
 
 def test_an_account_that_leaves_the_registry_reparses_its_documents(

@@ -3,8 +3,9 @@ data holds no restricted field.
 
 - Every column of the migrated schema has a tier (FR-46), and the shared ``MetaData``
   mirrors the migrated database, so a column a migration adds cannot dodge the check.
-- A column or output field named as money, a memo, a description, a counterparty or an
-  identifier (``RESTRICTED_NAMES`` and its prefixes and suffixes) is restricted.
+- A column or output field named as money, a memo, a description, a counterparty, a
+  person (``owner``, the account holder's name) or an identifier
+  (``RESTRICTED_NAMES`` and its prefixes and suffixes) is restricted.
 - Every ``Numeric`` column and every output field holding a ``Decimal`` is restricted,
   unless ``NUMERIC_EXCEPTIONS`` or ``DECIMAL_OUTPUT_EXCEPTIONS`` names it with its
   reason (a percentage is not an amount). An exception naming nothing, or something
@@ -98,7 +99,7 @@ RESTRICTED_NAMES = frozenset(
         "amount", "note", "memo", "description", "counterparty", "merchant_key",
         "identifier", "alias", "address", "txid", "cad", "total_cad", "cad_total",
         "balance", "opening_balance", "quantity", "fee", "account_number", "payee",
-        "principal", "alias_norm",
+        "principal", "alias_norm", "owner",
     }
 )  # fmt: skip
 RESTRICTED_PREFIXES = (

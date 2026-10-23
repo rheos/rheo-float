@@ -281,7 +281,10 @@ def test_a_transaction_line_missing_a_field_is_counted_not_a_txn(
         .values(posting_date=None)
     )
 
-    lines = build_lines(ledger.uow, CashLines((), ()), {}, overlap_days=3)
+    lines = build_lines(
+        ledger.uow, CashLines((), ()), {}, overlap_days=3, receipt_days=3,
+        invoice_days=30,
+    )  # fmt: skip
 
     assert (lines.from_documents, lines.incomplete_lines) == (3, 3)
     assert count(ledger.conn, txn) == 3
@@ -319,6 +322,8 @@ def test_a_derive_that_fails_leaves_every_table_as_it_was(
         _currencies: dict[str, set[str]],
         *,
         overlap_days: int,
+        receipt_days: int,
+        invoice_days: int,
     ) -> Lines:
         raise RuntimeError("stage 3 failed")
 
@@ -338,7 +343,10 @@ def test_a_line_of_a_document_that_is_not_parsed_is_not_a_txn(ledger: Ledger) ->
     ledger.conn.execute(delete(txn_source))
     ledger.conn.execute(delete(txn))
 
-    lines = build_lines(ledger.uow, CashLines((), ()), {}, overlap_days=3)
+    lines = build_lines(
+        ledger.uow, CashLines((), ()), {}, overlap_days=3, receipt_days=3,
+        invoice_days=30,
+    )  # fmt: skip
 
     assert lines.txns == 0
     assert ledger.txns() == []
@@ -356,8 +364,13 @@ def test_a_violated_constraint_fails_the_derive_itself(
         currencies: dict[str, set[str]],
         *,
         overlap_days: int,
+        receipt_days: int,
+        invoice_days: int,
     ) -> Lines:
-        lines = real(uow, cash, currencies, overlap_days=overlap_days)
+        lines = real(
+            uow, cash, currencies, overlap_days=overlap_days,
+            receipt_days=receipt_days, invoice_days=invoice_days,
+        )  # fmt: skip
         ledger.conn.execute(
             insert(txn).values(
                 id=derived_id(D(2026, 2, 1), ("orphan",)),

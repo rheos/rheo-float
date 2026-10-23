@@ -1,6 +1,7 @@
 # ADR-0001: Import docextract
 Status: accepted
 Date: 2026-10-22
+Amended-by: ADR-0011 (the shared last-four rule is scoped; this body is unchanged)
 
 ## Context
 

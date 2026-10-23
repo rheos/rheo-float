@@ -3,7 +3,9 @@
 
 Parsers register under an id with the issuer directory and file format they read
 and a version (``register_parser``); ``PARSER_MODULES`` lists every module that
-registers one, and ``load_parsers`` imports them. ``parse_document`` picks the
+registers one, and ``load_parsers`` imports them. A parser registered for a nested
+archive directory (``invoices-received``, ``receipts``: each sub-directory is its own
+issuer) reads the files of every sub-directory too. ``parse_document`` picks the
 parsers for the document's issuer and format, gives each the document's text in id
 order, and keeps the first result that is not ``NotRecognised``. Then:
 
@@ -49,6 +51,7 @@ from sqlalchemy import delete, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.contracts import Tiered
+from rheo_finance.documents.issuers import ISSUER_DIRS
 from rheo_finance.documents.registry import WITHHELD_PATH, DocumentStatus
 from rheo_finance.events import record_event
 from rheo_finance.parsers.base import (
@@ -104,6 +107,19 @@ PARSER_MODULES: Final[tuple[str, ...]] = (
     "rheo_finance.parsers.vancity_statement",
     "rheo_finance.parsers.vancity_chequing_csv",
     "rheo_finance.parsers.virgin_bill",
+    "rheo_finance.parsers.vancity_visa_statement",
+    "rheo_finance.parsers.vancity_visa_csv",
+    "rheo_finance.parsers.vancity_visa_transactions",
+    "rheo_finance.parsers.mbna_statement",
+    "rheo_finance.parsers.ndcu_statement",
+    "rheo_finance.parsers.wise_history",
+    "rheo_finance.parsers.paypal_activity",
+    "rheo_finance.parsers.wise_statement_csv",
+    "rheo_finance.parsers.paypal_activity_csv",
+    "rheo_finance.parsers.stripe_balance_csv",
+    "rheo_finance.parsers.fortisbc_bill",
+    "rheo_finance.parsers.invoice_received",
+    "rheo_finance.parsers.patient_receipt",
 )
 
 
@@ -114,7 +130,10 @@ class Parser:
 
     ``filing_date``, when set, reads from the same text the date a new file is filed
     under (``documents.filer``): a statement's period end or a bill's date. It needs no
-    account registry and raises ``NotRecognised`` where ``parse`` would."""
+    account registry and raises ``NotRecognised`` where ``parse`` would.
+
+    ``sets_hints`` says the parser sets its lines' hint columns from
+    ``reference.patterns.classify``, so its output depends on ``patterns.json`` too."""
 
     parser_id: str
     issuer: str
@@ -122,6 +141,7 @@ class Parser:
     version: str
     parse: Parse
     filing_date: Callable[[str], dt.date] | None = None
+    sets_hints: bool = False
 
 
 PARSERS: dict[str, Parser] = {}
@@ -150,9 +170,15 @@ def load_parsers() -> dict[str, Parser]:
 
 
 def parsers_for(issuer: str, fmt: str) -> list[Parser]:
+    """The parsers for ``issuer`` and ``fmt`` in id order. A nested directory's issuer
+    (``receipts/<vendor>``) also takes the parsers registered for the directory
+    itself (``receipts``)."""
+    top = issuer.split("/", 1)[0]
+    directory = ISSUER_DIRS.get(top)
+    own = (issuer, top) if directory is not None and directory.nested else (issuer,)
     return sorted(
         (each for each in load_parsers().values()
-         if each.issuer == issuer and each.format == fmt),
+         if each.issuer in own and each.format == fmt),
         key=lambda each: each.parser_id,
     )  # fmt: skip
 
@@ -169,6 +195,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
             account_identifier.c.kind,
             account_identifier.c.valid_from,
             account_identifier.c.valid_to,
+            account.c.kind.label("account_kind"),
         )
         .join(account, account.c.id == account_identifier.c.account_id)
         .where(account_identifier.c.kind != "internal")
@@ -181,6 +208,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
             kind=row.kind,
             valid_from=row.valid_from,
             valid_to=row.valid_to,
+            account_kind=row.account_kind,
         )
         for row in rows
     )
@@ -188,10 +216,17 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
 
 # --- the summary check ----------------------------------------------------------------
 
+# Line kinds a document states as evidence of a payment, with no account of their own.
+EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt"})
+
 
 def summary_ties_out(result: ParseResult) -> bool:
     """Whether every ``summary`` period reconciles to the cent with its own lines,
     and every money line belongs to a period.
+
+    An ``invoice`` or ``receipt`` line belongs to no account and no period: it is
+    evidence of a payment, read against the payment lines in stage 3, so it is
+    outside this check.
 
     A period's lines are its account's and currency's lines that carry an amount:
     opening plus their sum is closing, and where the period states them, the debits
@@ -200,7 +235,7 @@ def summary_ties_out(result: ParseResult) -> bool:
     """
     sums: dict[tuple[uuid.UUID, str], list[Decimal]] = defaultdict(list)
     for line in result.lines:
-        if line.amount is None:
+        if line.amount is None or line.line_kind in EVIDENCE_KINDS:
             continue
         if line.account is None or line.currency is None:
             return False

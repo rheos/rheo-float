@@ -1,0 +1,71 @@
+   St at ement Of Account s
+   100 Sample St., PO Box 100, Anytown, BC V0A 0A0
+
+   Dat e   November 30, 2025
+
+   M ember No.   99900001
+
+   Page   1 of 2
+
+   SAMPLE A MEMBER
+   PO BOX 1
+   ANYTOWN BC V0A 0A0
+
+   M ember Account Summary
+
+   CAD Deposit s   Balances   USD Deposit s   Balances   Loans   Balances
+   Chequing   $2,270.81   Chequing   $0.00   Mortgage   $0.00
+   Savings   $0.00   Loans   $0.00
+   Shares   $15.00
+
+   M ember M essage
+   Sample member message text for the synthetic layout.
+
+CHEQUING
+
+Chequing   Owner(s)
+Account # 999000000101   SAMPLE A MEMBER
+Dat e   Description   Withdraw als   Deposits   Balance
+01 Nov 25   Opening Balance   3,100.00
+04 Nov 25   EMT Transfer - Debit Payee: Sample Payee   1,234.56   1,865.44
+09 Nov 25   EMT Transfer - Debit Reversal Customer Cancel   1,234.56   3,100.00
+10 Nov 25   EMT Transfer - Debit Payee: Sample Payee   1,234.56   1,865.44
+18 Nov 25   08-15 EMT Transfer - Credit Payer: SAMPLE   412.30   2,277.74
+   PAYER
+   - con t inued -
+
+   www.example.test
+
+   Dat e   November 30, 2025
+
+   M ember No.   99900001
+
+   Page   2 of 2
+
+CHEQUING (con t inued)
+
+Chequing (continued)
+Account # 999000000101   SAMPLE A MEMBER
+Dat e   Description   Withdraw als   Deposits   Balance
+28 Nov 25   Service Charges   5.00   2,272.74
+28 Nov 25   Monthly Statement Fee   2.00   2,270.74
+28 Nov 25   Credit Interest   0.07   2,270.81
+
+Total W ithdr aw als and Deposits   $2,476.12   $1,646.93
+   -
+
+SHARES
+Membership Share (Shares - Membership Equity)   Owner(s )
+Account # 999000000102   SAMPLE A MEMBER
+Date   Descr iption   Withdraw als   Deposits   Balance
+01 Nov 25   Opening Balance   15.00
+_
+
+Total Wit hdraw als and Deposits   $0.00   $0.00
+
+   M ember Cont act Inf ormat ion
+   Sample Branch
+   100 Sample St.
+   Anytown, BC
+
+   -   End of St at ement   -

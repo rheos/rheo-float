@@ -9,6 +9,13 @@
 - ``digest`` hashes the derived tables (``derive.digest``). READ on the owner
   connection: it reads base tables, so it lists no ``member`` and names no tool (Key
   decision 21).
+- ``finance.statement.list`` returns, for the documents the named parsers read, each
+  document's status, rejection reason, period and the totals of its statement periods
+  (opening, closing, debits, credits, balance due, due date). It is what the local
+  parity check (``scripts/parity_check.py``, AC-7) compares with the existing parsers'
+  outputs. READ on the owner connection, owner only, no tool: the totals are
+  restricted. A ``superseded`` copy is left out (its twin is the parsed one); a
+  document no parser read (``unparsed``) has no parser and is not listed.
 
 Neither derive nor rebuild calls a model or the network: the stages read stored
 proposals and rates, never fetch them. The handlers take the model client out of the
@@ -21,10 +28,13 @@ derive arrives with ``job_run`` (prompt 66), so here a derive always runs when a
 from __future__ import annotations
 
 import dataclasses
-from collections import Counter
+import datetime as dt
+from collections import Counter, defaultdict
+from decimal import Decimal
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
@@ -34,9 +44,11 @@ from rheo_finance.derive.fingerprint import fingerprint
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused, file_archive
 from rheo_finance.operations import OperationSpec, register
 from rheo_finance.parsers import docextract_adapter
+from rheo_finance.storage.schema import document, statement_period
 from rheo_finance.tier import Tier
 
 P = Tier.PUBLIC
+R = Tier.RESTRICTED
 
 
 class LedgerIn(BaseModel):
@@ -136,6 +148,100 @@ def digest(_ctx: FinanceContext, uow: UnitOfWork, _data: LedgerIn) -> DigestOut:
     )
 
 
+# --- finance.statement.list --------------------------------------------------------
+
+
+class StatementListIn(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Parser ids ("vancity.statement", "virgin_plus.bill").
+    parsers: Annotated[tuple[str, ...], Field(min_length=1)]
+
+
+class PeriodTotals(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    opening: Decimal | None
+    closing: Decimal | None
+    total_debits: Decimal | None
+    total_credits: Decimal | None
+    balance_due: Decimal | None
+    due_date: dt.date | None
+
+
+class StatementDocument(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    parser_id: Annotated[str, Tiered(P)]
+    status: Annotated[str, Tiered(P)]
+    reject_reason: Annotated[str | None, Tiered(P)]
+    period_start: Annotated[dt.date | None, Tiered(P)]
+    period_end: Annotated[dt.date | None, Tiered(P)]
+    # One entry per statement period, no account: the parity check compares them as
+    # a multiset per statement.
+    periods: Annotated[list[PeriodTotals], Tiered(R)]
+
+
+class StatementListOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    documents: Annotated[list[StatementDocument], Tiered(P)]
+
+
+def statement_list(
+    _ctx: FinanceContext, uow: UnitOfWork, data: StatementListIn
+) -> StatementListOut:
+    docs = uow.execute(
+        select(
+            document.c.id,
+            document.c.parser_id,
+            document.c.status,
+            document.c.reject_reason,
+            document.c.period_start,
+            document.c.period_end,
+        )
+        .where(
+            document.c.parser_id.in_(data.parsers),
+            document.c.status != "superseded",
+        )
+        .order_by(document.c.period_end, document.c.id)
+    ).all()
+    sp = statement_period.c
+    periods: dict[object, list[PeriodTotals]] = defaultdict(list)
+    rows = uow.execute(
+        select(
+            sp.document_id, sp.opening, sp.closing, sp.total_debits,
+            sp.total_credits, sp.balance_due, sp.due_date,
+        )
+        .where(sp.document_id.in_([each.id for each in docs]))
+        .order_by(sp.document_id, sp.account_id, sp.currency)
+    )  # fmt: skip
+    for row in rows:
+        periods[row.document_id].append(
+            PeriodTotals(
+                opening=row.opening,
+                closing=row.closing,
+                total_debits=row.total_debits,
+                total_credits=row.total_credits,
+                balance_due=row.balance_due,
+                due_date=row.due_date,
+            )
+        )
+    return StatementListOut(
+        documents=[
+            StatementDocument(
+                parser_id=each.parser_id,
+                status=each.status,
+                reject_reason=each.reject_reason,
+                period_start=each.period_start,
+                period_end=each.period_end,
+                periods=periods.get(each.id, []),
+            )
+            for each in docs
+        ]
+    )
+
+
 register(
     OperationSpec(
         name="finance.ledger.derive",
@@ -179,6 +285,22 @@ register(
         description=(
             "The sha256 of the canonical rows of every derived table, timestamps left"
             " out, with the row count of each."
+        ),
+    )
+)
+register(
+    OperationSpec(
+        name="finance.statement.list",
+        input_model=StatementListIn,
+        output_model=StatementListOut,
+        handler=statement_list,
+        safety_class=SafetyClass.READ,
+        roles=frozenset({Role.OWNER}),
+        connection="owner",
+        description=(
+            "For the documents the named parsers read: status, rejection reason,"
+            " period and the totals of each statement period. Leaves out superseded"
+            " copies."
         ),
     )
 )

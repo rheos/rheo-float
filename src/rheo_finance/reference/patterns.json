@@ -32,6 +32,14 @@
     },
     {
       "kind": "card_payment",
+      "note": "card side, tuned on the real MBNA statements: the payment prints as the bare word",
+      "all": ["payment"],
+      "unless": ["fee", "fees", "plan", "interest", "protection", "reversal"],
+      "account_kinds": ["credit_card"],
+      "issuers": ["mbna"]
+    },
+    {
+      "kind": "card_payment",
       "note": "chequing side: a bill payment naming the card, 'vancity visa' or 'vancity <product> visa'",
       "all": ["bill payment", "vancity", "visa"],
       "account_kinds": ["chequing", "savings"],
@@ -156,6 +164,17 @@
     {"fee_type": "late_fee", "all": ["late payment fee"]},
     {"fee_type": "late_fee", "all": ["late fee"]},
     {"fee_type": "foreign_transaction_fee", "all": ["foreign transaction fee"]},
+    {
+      "fee_type": "overlimit_fee",
+      "note": "tuned on the real card statements; its adjustment (a credit) carries it too",
+      "all": ["overlimit fee"]
+    },
+    {
+      "fee_type": "interest",
+      "note": "tuned on the real Vancity Visa statements: 'PURCHASE INT. CHARGED'",
+      "all": ["int. charged"],
+      "account_kinds": ["credit_card"]
+    },
     {"fee_type": "atm_fee", "all": ["atm", "fee"]},
     {"fee_type": "service_charge", "all": ["service charge"]},
     {"fee_type": "service_charge", "all": ["charges applied to account"]},

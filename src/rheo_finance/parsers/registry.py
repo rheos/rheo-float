@@ -104,6 +104,10 @@ PARSER_MODULES: Final[tuple[str, ...]] = (
     "rheo_finance.parsers.vancity_statement",
     "rheo_finance.parsers.vancity_chequing_csv",
     "rheo_finance.parsers.virgin_bill",
+    "rheo_finance.parsers.vancity_visa_statement",
+    "rheo_finance.parsers.vancity_visa_csv",
+    "rheo_finance.parsers.vancity_visa_transactions",
+    "rheo_finance.parsers.mbna_statement",
 )
 
 

@@ -81,3 +81,31 @@ description = "Synthetic card export (control none) for May 2023 that overlaps c
 path = "tests/fixtures/synthetic/card_2023_export_b.csv"
 synthetic = true
 description = "Synthetic card export (control none) for May 2023 that words one purchase of card_2023_export_a.csv differently; fake values."
+
+# The card issuers' own layouts (prompt 30), shaped on the real files' layout text with
+# every value, name and number invented.
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_statement.txt"
+synthetic = true
+description = "Vancity Visa statement layout text, a period crossing the new year, two foreign purchases with their FOREIGN CURRENCY lines, a payment, a refund, a fee and interest, right-column text after amounts; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_statement_no_minimum.txt"
+synthetic = true
+description = "Vancity Visa statement layout text that prints no minimum payment; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_export.csv"
+synthetic = true
+description = "Headerless Vancity Visa CSV export, newest first: an invented cardholder name and masked card on every row, separate debit and credit columns; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/vancity_visa_transactions.txt"
+synthetic = true
+description = "Vancity Visa transaction download layout text (signed amounts, descriptions running on to a second line, a page footer); fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/mbna_statement.txt"
+synthetic = true
+description = "MBNA statement layout text: summary, payment information, payments, purchases with a refund netted into new purchases, interest; fake values."

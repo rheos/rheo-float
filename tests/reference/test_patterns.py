@@ -141,6 +141,7 @@ def test_conversion_wording_of_another_issuer_is_no_conversion() -> None:
         ("PAYMENT RECEIVED -- THANK YOU", "vancity-visa", "vancity"),
         ("Payment Received", "mbna", None),
         ("Payment - Thank You", "mbna", None),
+        ("PAYMENT", "mbna", None),
     ],
 )
 def test_the_card_side_payment_is_a_card_payment(
@@ -174,6 +175,16 @@ def test_a_bill_payment_to_a_vendor_is_spending_not_a_transfer() -> None:
 
 def test_card_side_wording_on_a_bank_account_is_no_card_payment() -> None:
     assert hints("Payment Received", *VANCITY).transfer_hint is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "issuer"),
+    [("PAYMENT PLAN FEE", "mbna"), ("PAYMENT", "vancity-visa")],
+)
+def test_the_bare_payment_word_is_a_payment_only_on_its_own_card(
+    raw: str, issuer: str
+) -> None:
+    assert hints(raw, "credit_card", issuer).transfer_hint is None
 
 
 # --- PayPal and Stripe
@@ -259,6 +270,9 @@ def test_an_interac_card_purchase_is_no_etransfer() -> None:
         ("NSF Fee", BANK, "nsf_fee"),
         ("Annual Fee", ("credit_card", "mbna"), "annual_fee"),
         ("Purchase Interest", ("credit_card", "vancity-visa"), "interest"),
+        ("PURCHASE INT. CHARGED", ("credit_card", "vancity-visa"), "interest"),
+        ("OVERLIMIT FEE", ("credit_card", "vancity-visa"), "overlimit_fee"),
+        ("INTEREST CHARGE", ("credit_card", "mbna"), "interest"),
         ("Fee", ("wallet", "wise"), "fee"),
     ],
 )

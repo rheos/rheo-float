@@ -1,0 +1,28 @@
+   Downloaded on Oct 21, 2025
+
+Transactions for Sample™ Visa* Gold card
+Sep 6, 2025 to Oct 20, 2025
+SAMPLE CARDHOLDER
+
+Credit limit   $2,000.00
+Available credit   $1,500.00
+Last payment   $300.00
+Last payment date   Oct 15, 2025
+Current balance   $500.00
+
+SAMPLE CARDHOLDER   999999XXXXXX9991
+
+Transaction Date   Posted Date   Description   Currency   Debit   Credit
+2025-10-18   2025-10-20   SAMPLE AI SUBSCRIPTION   CAD   $140.00
+   SAMPLE.TEST CA 99901
+
+2025-10-15   2025-10-15   PAYMENT RECEIVED -- THANK   CAD   -$300.00
+   YOU
+
+2025-10-02   2025-10-03   SAMPLE BOOKSHOP SAMPLE CITY BC   CAD   -$12.50
+
+2025-09-28   2025-09-29   SAMPLE GROCER   CAD   $45.20
+   SAMPLE CITY BC 99902
+
+2025-09-10   2025-09-11   OVERLIMIT FEE   CAD   $29.00
+   1 of 1   Sample Credit Union GST NO. R999999999

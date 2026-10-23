@@ -148,3 +148,25 @@ def test_exports_of_one_period_with_different_lines_are_not_superseded(
 
     assert out.documents == {"parsed": 2}
     assert (out.lines.txns, out.lines.additional_sources) == (4, 2)
+
+
+def test_two_bills_of_one_month_with_different_amounts_are_not_superseded(
+    ledger: Ledger,
+) -> None:
+    # A bill's money is on its period (the amount due), not on lines. Two bills of one
+    # month that print different amounts due are not copies of each other.
+    ledger.accounts(("mobile", "virgin plus", "bill_vendor", "999000123"))
+    bill = (FIXTURES / "virgin_bill.txt").read_text(encoding="utf-8")
+    unpaid = "   Unpaid balance   $45.10\n"
+    total = "Total amount due   Please pay by* Feb 23, 2026   $126.30"
+    assert bill.count(unpaid) == 1 and bill.count(total) == 1
+    printed = bill.replace(unpaid, "")  # no identity: loads as printed
+    ledger.file("virgin-plus/2026-02-02.pdf", printed)
+    ledger.file(
+        "virgin-plus/2026-02-02-reissued.pdf",
+        printed.replace(total, total.replace("126.30", "130.00")),
+    )
+
+    out = ledger.derive()
+
+    assert out.documents == {"parsed": 2}

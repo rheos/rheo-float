@@ -15,10 +15,12 @@ Every input is stored parse output, so the order is a function of the document s
 never of the order the files were imported in.
 
 ``supersede`` is the stage 1 half: of two or more parsed documents that rank equally
-on every account they cover, for exactly the same periods, with the same transaction
-lines, the one with the larger sha256 stays ``parsed`` and the others become
-``superseded``. The lines are compared too: two exports can state the same period and
-still differ inside it, and superseding one would drop its lines without a trace.
+on every account they cover, for exactly the same periods, with the same parse output
+(every line of every kind and every period's figures), the one with the larger sha256
+stays ``parsed`` and the others become ``superseded``. The content is compared too:
+two exports can state the same period and still differ inside it, and two bills of
+one month can differ in the amount due; superseding one would drop what it says
+without a trace.
 Documents that differ in lines, or share a period on only some of their accounts, are
 left to stage 3's matcher, which records the repeated lines as additional sources and
 keeps the rest.
@@ -65,13 +67,17 @@ class Standing:
     # (currency, start, end) of every period the document states for the account.
     periods: frozenset[Period]
 
-    @property
-    def windows(self) -> tuple[tuple[dt.date, dt.date], ...]:
-        """The periods this document owns on the account: its tied-out statement
-        periods, none for an export."""
+    def windows(self, currency: str) -> tuple[tuple[dt.date, dt.date], ...]:
+        """The periods this document owns on the account in ``currency``: its tied-out
+        statement periods in that currency, none for an export. A statement of one
+        currency owns nothing of another."""
         if self.control != STATEMENT:
             return ()
-        return tuple(sorted({(start, end) for _, start, end in self.periods}))
+        return tuple(
+            sorted(
+                {(start, end) for cur, start, end in self.periods if cur == currency}
+            )
+        )
 
     @property
     def basis(self) -> Basis:
@@ -181,49 +187,47 @@ def standings(uow: UnitOfWork) -> dict[uuid.UUID, list[Standing]]:
     return {account: ranked(found) for account, found in by_account.items()}
 
 
-LineFingerprint = frozenset[tuple[tuple[object, ...], int]]
+ParseFingerprint = frozenset[tuple[tuple[object, ...], int]]
+
+# Columns that identify where a row sits, or that stage 3 fills, rather than what the
+# document says: two copies of one document may differ in them.
+_LINE_PLACE: Final = frozenset(
+    {"id", "document_id", "line_no", "page", "description_norm", "line_key_id"}
+)
 
 
-def _line_fingerprints(uow: UnitOfWork) -> dict[uuid.UUID, LineFingerprint]:
-    """Each parsed document's transaction lines as a multiset of (account, posting
-    date, transaction date, amount, currency, normalized description)."""
+def _parse_fingerprints(uow: UnitOfWork) -> dict[uuid.UUID, ParseFingerprint]:
+    """Each parsed document's whole parse output as a multiset: every period row (its
+    control figures, due date and tie-out included) and every line of every kind,
+    with the raw description compared normalized."""
     found: dict[uuid.UUID, Counter[tuple[object, ...]]] = defaultdict(Counter)
-    rows = uow.execute(
-        select(
-            document_line.c.document_id,
-            document_line.c.account_id,
-            document_line.c.posting_date,
-            document_line.c.txn_date,
-            document_line.c.amount,
-            document_line.c.currency,
-            document_line.c.description_raw,
+    parsed = select(document.c.id).where(document.c.status == "parsed")
+    period_columns = [c for c in statement_period.c if c.name != "document_id"]
+    for row in uow.execute(
+        select(statement_period.c.document_id, *period_columns).where(
+            statement_period.c.document_id.in_(parsed)
         )
-        .join(document, document.c.id == document_line.c.document_id)
-        .where(
-            document.c.status == "parsed",
-            document_line.c.line_kind == "transaction",
+    ):
+        found[row.document_id][("period", *row[1:])] += 1
+    line_columns = [c for c in document_line.c if c.name not in _LINE_PLACE]
+    for row in uow.execute(
+        select(document_line.c.document_id, *line_columns).where(
+            document_line.c.document_id.in_(parsed)
         )
-    )
-    for row in rows:
-        found[row.document_id][
-            (
-                row.account_id,
-                row.posting_date,
-                row.txn_date,
-                row.amount,
-                row.currency,
-                normalize_description(row.description_raw or ""),
-            )
-        ] += 1
-    return {
-        document_id: frozenset(lines.items()) for document_id, lines in found.items()
-    }
+    ):
+        values = dict(row._mapping)
+        values["description_raw"] = normalize_description(
+            values["description_raw"] or ""
+        )
+        del values["document_id"]
+        found[row.document_id][("line", *values.values())] += 1
+    return {document_id: frozenset(rows.items()) for document_id, rows in found.items()}
 
 
 def supersede(uow: UnitOfWork) -> int:
     """Mark ``superseded`` every parsed document that another parsed document with a
     larger sha256 matches on every account: the same control, format and periods, and
-    the same transaction lines. Returns how many were marked."""
+    the same parse output (``_parse_fingerprints``). Returns how many were marked."""
     signatures: dict[uuid.UUID, set[tuple[uuid.UUID, int, int, frozenset[Period]]]] = (
         defaultdict(set)
     )
@@ -234,10 +238,10 @@ def supersede(uow: UnitOfWork) -> int:
             signatures[each.document_id].add(
                 (each.account_id, each.control, each.format_rank, each.periods)
             )
-    fingerprints = _line_fingerprints(uow)
+    fingerprints = _parse_fingerprints(uow)
     groups: dict[
         tuple[
-            frozenset[tuple[uuid.UUID, int, int, frozenset[Period]]], LineFingerprint
+            frozenset[tuple[uuid.UUID, int, int, frozenset[Period]]], ParseFingerprint
         ],
         list[str],
     ] = defaultdict(list)

@@ -10,13 +10,15 @@ last, which a third statement then covers), read back through ``txn``, ``txn_sou
 from __future__ import annotations
 
 import dataclasses
-import itertools
+import hashlib
 import uuid
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import ColumnElement, Connection, Table, delete, func, select
 
+from rheo_finance.derive import overlap
+from rheo_finance.derive.precedence import STATEMENT, Standing
 from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.documents.registry import file_archive
 from rheo_finance.manual.stage2 import account_id
@@ -59,11 +61,21 @@ DOCS = {
         "card_2025_download.txt",
     ),
     "statement_dec": ("synthetic-card/2025-12-05.pdf", "card_statement_2025_12.txt"),
+    # Two exports of equal rank that overlap and word one purchase differently: the
+    # sha256 tie-break decides whose line is the txn.
+    "export_2023_a": ("synthetic-card/2023-05-09-a.csv", "card_2023_export_a.csv"),
+    "export_2023_b": ("synthetic-card/2023-05-15-b.csv", "card_2023_export_b.csv"),
 }
 NAMES = tuple(DOCS)
-# Every 60th of the 720 orders (12 orders, each document first in two of them), plus
-# the reverse of the declared order.
-ORDERS = [list(p) for p in itertools.permutations(NAMES)][::60] + [list(NAMES[::-1])]
+# Every rotation of the declared order and of its reverse: 16 orders, each document
+# first in two of them.
+ORDERS = [
+    list(names[i:] + names[:i]) for names in (NAMES, NAMES[::-1]) for i in range(8)
+]
+
+
+def sha(name: str) -> str:
+    return hashlib.sha256(card_fixture(DOCS[name][1]).encode("utf-8")).hexdigest()
 
 
 def file(ledger: Ledger, name: str) -> uuid.UUID:
@@ -101,10 +113,16 @@ def file_all_at_once(ledger: Ledger) -> None:
     ledger.derive()
 
 
-def card_text(header: str, *lines: str, period: str = "", opening: str = "0") -> str:
+def card_text(
+    header: str,
+    *lines: str,
+    period: str = "",
+    opening: str = "0",
+    currency: str = "CAD",
+) -> str:
     """A card document in the synthetic layout; a statement's closing is its opening
     plus its lines."""
-    rows = [header, f"ACCOUNT {CARD_IDENTIFIER}"]
+    rows = [header, f"ACCOUNT {CARD_IDENTIFIER}", f"CURRENCY {currency}"]
     if header == CARD_STATEMENT:
         total = Decimal(opening) + sum(
             (Decimal(line.split(" ")[2]) for line in lines), Decimal(0)
@@ -149,13 +167,26 @@ def test_import_order_does_not_change_the_ledger(
     file_all_at_once(ledger)
 
     assert contents(ledger.conn) == in_order
-    # And the union is the right ledger: 8 txns in 2024 and 9 in 2025, every overlap
-    # line a source, one discrepancy, nothing provisional once December is in.
-    assert count(ledger.conn, txn) == 17
-    assert count(ledger.conn, txn_source) == 28
-    assert count(ledger.conn, txn_source, txn_source.c.role == "additional") == 11
+    # And the union is the right ledger: 3 txns in 2023, 8 in 2024 and 9 in 2025,
+    # every overlap line a source, one discrepancy, nothing provisional once December
+    # is in.
+    assert count(ledger.conn, txn) == 20
+    assert count(ledger.conn, txn_source) == 32
+    assert count(ledger.conn, txn_source, txn_source.c.role == "additional") == 12
     assert count(ledger.conn, source_discrepancy) == 1
     assert count(ledger.conn, txn, txn.c.provisional) == 0
+    # The diner purchase is one txn, keyed by the line of the export with the larger
+    # sha256; the other export's line is its additional source.
+    larger = max(("export_2023_a", "export_2023_b"), key=lambda name: sha(name))
+    diner = ledger.conn.execute(
+        select(txn.c.id).where(txn.c.posting_date == D(2023, 5, 2))
+    ).scalar_one()
+    primary_line = ledger.conn.scalar(
+        select(document_line.c.line_key_id)
+        .join(document, document.c.id == document_line.c.document_id)
+        .where(document.c.sha256 == sha(larger), document_line.c.line_no == 1)
+    )
+    assert diner == primary_line
 
 
 def test_overlapping_exports_with_no_statement_share_their_lines(
@@ -527,3 +558,157 @@ def test_each_txn_carries_the_basis_of_its_first_source(
     assert all(
         str(row["posting_date"]) > "2026-01-10" for row in rows if row["provisional"]
     )
+
+
+def test_an_export_listed_newest_first_matches_its_lines_oldest_first(
+    ledger: Ledger, card_parsers: None
+) -> None:
+    # The statement ends on 5 Dec with a cafe purchase posted that day. The export,
+    # newest first, has a new cafe purchase on 7 Dec and the statement's one dated by
+    # its purchase day, 3 Dec. Both are two days from the statement line: the older
+    # one is the statement's purchase, and the newer one is a provisional txn.
+    ledger.card()
+    ledger.file(
+        "synthetic-card/2025-12-05.pdf",
+        card_text(
+            CARD_STATEMENT,
+            "2025-12-05 - -4.50 SAMPLE CAFE 99941",
+            period="2025-11-06 2025-12-05",
+        ),
+    )
+    export = ledger.file(
+        "synthetic-card/2025-12-08-export.csv",
+        card_text(
+            CARD_TRANSACTIONS,
+            "2025-12-07 - -4.50 SAMPLE CAFE 99941",
+            "2025-12-03 - -4.50 SAMPLE CAFE 99941",
+        ),
+    )
+
+    out = ledger.derive()
+
+    assert (out.lines.txns, out.lines.additional_sources) == (2, 1)
+    assert out.lines.discrepancies == 0
+    assert joined(ledger.conn, 2, export) == D(2025, 12, 5)
+    newer = ledger.conn.execute(
+        select(txn.c.provisional).where(txn.c.posting_date == D(2025, 12, 7))
+    ).scalar_one()
+    assert newer is True
+
+
+def test_a_statement_period_owns_only_lines_of_its_own_currency(
+    ledger: Ledger, card_parsers: None
+) -> None:
+    # A tied-out USD period covers October; no CAD statement does. CAD export lines in
+    # October and November are ordinary txns, neither provisional nor a discrepancy,
+    # while a USD export line in October that matches nothing is a discrepancy.
+    ledger.card()
+    ledger.file(
+        "synthetic-card/2025-10-31-usd.pdf",
+        card_text(
+            CARD_STATEMENT,
+            "2025-10-03 - -20.00 SAMPLE STORE 99971",
+            period="2025-10-01 2025-10-31",
+            currency="USD",
+        ),
+    )
+    ledger.file(
+        "synthetic-card/2025-10-20-cad.csv",
+        card_text(
+            CARD_TRANSACTIONS,
+            "2025-10-12 - -9.00 SAMPLE KIOSK 99972",
+            "2025-11-12 - -9.00 SAMPLE KIOSK 99972",
+        ),
+    )
+    ledger.file(
+        "synthetic-card/2025-10-20-usd.csv",
+        card_text(
+            CARD_TRANSACTIONS,
+            "2025-10-14 - -6.00 SAMPLE KIOSK 99973",
+            currency="USD",
+        ),
+    )
+
+    out = ledger.derive()
+
+    assert (out.lines.txns, out.lines.discrepancies) == (3, 1)
+    # Neither CAD line is provisional: the account has no CAD statement for them to
+    # come after, though the November one is after the USD statement.
+    cad = ledger.conn.execute(
+        select(txn.c.provisional).where(txn.c.currency == "CAD")
+    ).all()
+    assert [tuple(row) for row in cad] == [(False,), (False,)]
+
+
+def test_a_reissued_statement_of_one_period_does_not_double_its_lines(
+    ledger: Ledger, card_parsers: None
+) -> None:
+    # Two tied-out statements of one period that differ (a corrected reissue): one
+    # words the cafe line differently and adds a kiosk line. Neither is a copy, so
+    # neither is superseded; the first in rank owns the period and the other's lines
+    # are matched against it.
+    ledger.card()
+    period = "2025-01-06 2025-02-05"
+    first = card_text(
+        CARD_STATEMENT,
+        "2025-01-10 - -4.50 SAMPLE CAFE 99941",
+        "2025-01-20 - -30.00 SAMPLE FUEL 99942",
+        period=period,
+    )
+    second = card_text(
+        CARD_STATEMENT,
+        "2025-01-10 - -4.50 SAMPLE CAFE #99941",
+        "2025-01-20 - -30.00 SAMPLE FUEL 99942",
+        "2025-01-25 - -8.00 SAMPLE KIOSK 99943",
+        period=period,
+    )
+    ledger.file("synthetic-card/2025-02-05-a.pdf", first)
+    ledger.file("synthetic-card/2025-02-05-b.pdf", second)
+
+    out = ledger.derive()
+
+    assert out.documents == {"parsed": 2}
+    assert out.lines.additional_sources == 2
+    for amount in ("-4.50", "-30.00"):
+        assert count(ledger.conn, txn, txn.c.amount == Decimal(amount)) == 1
+    hashes = {
+        text: hashlib.sha256(text.encode()).hexdigest() for text in (first, second)
+    }
+    if hashes[first] > hashes[second]:
+        # The first owns the period: the kiosk line matches nothing inside it.
+        assert (out.lines.txns, out.lines.discrepancies) == (2, 1)
+    else:
+        assert (out.lines.txns, out.lines.discrepancies) == (3, 0)
+
+
+def test_a_statement_with_a_period_per_currency_owns_each_in_its_own_currency() -> None:
+    # One statement summarizes CAD for September and USD for October (``match_lines``
+    # directly: no fixture parser prints two currencies). A CAD export line in October
+    # is outside every CAD period, so it is a txn.
+    account, statement, export = (uuid.uuid4() for _ in range(3))
+    standings = {
+        account: [
+            Standing(
+                statement, account, STATEMENT, 0, "9" * 64,
+                frozenset({("CAD", D(2025, 9, 1), D(2025, 9, 30)),
+                           ("USD", D(2025, 10, 1), D(2025, 10, 31))}),
+            ),
+            Standing(export, account, 2, 2, "8" * 64, frozenset()),
+        ]
+    }  # fmt: skip
+    line = overlap.Line(
+        id=uuid.uuid4(),
+        document_id=export,
+        account_id=account,
+        posting_date=D(2025, 10, 12),
+        txn_date=None,
+        amount=Decimal("-9.00"),
+        currency="CAD",
+        description_norm="sample kiosk 99972",
+        key=uuid.uuid4(),
+    )
+
+    outcome = overlap.match_lines(standings, {(account, export): [line]}, 3)
+
+    assert [commit.line for commit in outcome.commits] == [line]
+    assert outcome.discrepancies == []

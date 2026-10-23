@@ -19,22 +19,25 @@ is carried over from an earlier derive; the derived tables are cleared and rebui
 Documents rank per account by control (a tied-out statement, then a running-balance export, then
 an unverified export), then format (statement PDF, transaction PDF, CSV, other), then the larger
 sha256 (`derive/precedence.py`). Two documents of equal rank for exactly the same periods on every
-account they cover, with the same transaction lines, are one document twice: the larger sha256
-stays `parsed`, the other becomes `superseded` in stage 1. The lines are compared as well as the
-periods because two exports can state one period and differ inside it; superseding one of them
-would drop its lines without a trace, so such a pair is left to the matcher.
+account they cover, with the same parse output (every line of every kind and every period's
+figures), are one document twice: the larger sha256 stays `parsed`, the other becomes
+`superseded` in stage 1. Content is compared as well as periods because two exports can state one
+period and differ inside it, and two bills of one month can differ in the amount due; superseding
+one would drop what it says without a trace, so such a pair is left to the matcher.
 
 Stage 3 (`derive/overlap.py`) then decides each line:
 
-- A tied-out statement owns its period. Its lines dated inside its period, and outside the
-  periods of statements ranked before it, become txns first. Two statements never match each
-  other's lines across a period boundary.
+- A tied-out statement owns its period, per currency. Its lines dated inside its period in their
+  currency, and outside the periods of statements ranked before it, become txns first. Two
+  statements never match each other's lines across a period boundary.
 - Every other line matches one to one against txns other documents committed on the account:
   same currency and amount, a posting or transaction date within
   `finance.import.overlap_day_tolerance` of one of the txn's. It prefers the txn its own key
   already names, then an exact date with the same normalized description, then an exact date,
   then the tolerance with the same description, then the tolerance; among equals, the earliest.
-  A match is an additional `txn_source` and adds no txn.
+  A document's lines take their turn in posting date order, not file order, so an export
+  printed newest first cannot hand an older purchase's txn to a newer line. A match is an
+  additional `txn_source` and adds no txn.
 - An unmatched line becomes a txn outside every tied-out statement period, and a
   `source_discrepancy` (`unmatched_in_statement_window`) inside one.
 
@@ -47,7 +50,11 @@ already took is a `source_discrepancy` (`line_key_taken`) rather than a second t
 that is not its own.
 
 A txn's basis is its first document's standing. A txn from an export is provisional when the
-account has a tied-out statement and the txn is dated after the last one ends.
+account has a tied-out statement in the txn's currency and the txn is dated after the last one
+ends.
+
+Derive is single-writer: two derives at once would insert the same derived txn ids, so the
+second fails on the txn primary key before the deferred line-key trigger could be outrun.
 
 ## Consequences
 
@@ -71,3 +78,9 @@ filled a gap:
   `manual_entry_error` row (the spec does not say what happens to one).
 - 0010's unique index on line keys is replaced in 0011 by a deferred trigger with the same
   intent, so that sources of one txn may share a key.
+- Matching first prefers the txn a line's own key already names, ahead of the spec's exact-date
+  order. Such a txn is always on the exact date with the same description, so this only breaks
+  ties among identical candidates, keeping keys aligned.
+- A `line_key_taken` line is a discrepancy even outside every statement period, where the spec
+  would make it a txn: its key already names another txn, so it has no key of its own to take.
+- Superseding needs identical parse output, not only the identical period the spec names.

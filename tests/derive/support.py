@@ -61,10 +61,11 @@ def card_fixture(name: str) -> str:
 
 def parse_card(text: str, accounts: AccountLookup) -> ParseResult:
     """The synthetic card layout: a header (statement or transactions), ``ACCOUNT``,
-    for a statement ``PERIOD``, ``OPENING`` and ``CLOSING``, then one ``LINE`` per
-    transaction as posting date, transaction date (``-`` for none), signed amount and
-    description. A transactions document's period runs from its first line's date to
-    its last's, with control ``none``."""
+    an optional ``CURRENCY`` (CAD when absent), for a statement ``PERIOD``,
+    ``OPENING`` and ``CLOSING``, then one ``LINE`` per transaction as posting date,
+    transaction date (``-`` for none), signed amount and description. A transactions
+    document's period runs from its earliest line's date to its latest, with control
+    ``none``."""
     rows = [row.strip() for row in text.splitlines() if row.strip()]
     if not rows or rows[0] not in (CARD_STATEMENT, CARD_TRANSACTIONS):
         raise NotRecognised
@@ -94,9 +95,10 @@ def parse_card(text: str, accounts: AccountLookup) -> ParseResult:
     if len(matched) != 1:
         raise Rejected("unknown_account", (first, last))
     account = matched[0]
+    currency = fields.get("CURRENCY", "CAD")
     period = ParsedPeriod(
         account=account,
-        currency="CAD",
+        currency=currency,
         period_start=first,
         period_end=last,
         control_kind="summary" if statement else "none",
@@ -112,7 +114,7 @@ def parse_card(text: str, accounts: AccountLookup) -> ParseResult:
                 posting_date=posting,
                 txn_date=txn_date,
                 amount=amount,
-                currency="CAD",
+                currency=currency,
                 description_raw=description,
             )
             for posting, txn_date, amount, description in found

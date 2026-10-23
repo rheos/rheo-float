@@ -20,19 +20,27 @@ Per account, documents are taken in precedence order (``precedence``):
    the earliest txn. Each txn takes at most one line of a document. A matched line is
    an additional source of its txn and adds no txn.
 3. **An unmatched line** becomes a txn when its posting date is outside every
-   tied-out statement period of the account, and is a ``unmatched_in_statement_window``
-   discrepancy when it is inside one: a tied-out statement owns its period.
+   tied-out statement period of the account in its currency, and is a
+   ``unmatched_in_statement_window`` discrepancy when it is inside one: a tied-out
+   statement owns its period.
+
+Statement periods are per currency (a statement can summarize each currency on its
+own), so a USD period owns no CAD line. Within one document, lines are matched in
+posting date order, then line order, whatever order the file lists them in: an export
+printed newest first must not hand an older purchase's txn to a newer line.
 
 A line key names one txn. A line whose own key already names a txn that another line
 of the same document has taken (the document repeats a purchase the other sources
 saw once) cannot join a second txn under that key or start one: it is a
-``line_key_taken`` discrepancy.
+``line_key_taken`` discrepancy, inside a statement period or outside every one. SPEC
+would make it a txn outside every period; it has no key of its own to take (ADR-0010).
 
 A txn's basis is its first document's standing (statement, verified or unverified
 export). A txn from an export is provisional when the account has a tied-out
-statement and the txn is dated after the last one ends. A later statement covering
-it puts its own line first: the export line then matches it as an additional source
-and keeps its key, so a reference taken on the provisional txn still resolves.
+statement in its currency and the txn is dated after the last one ends. A later
+statement covering it puts its own line first: the export line then matches it as an
+additional source and keeps its key, so a reference taken on the provisional txn
+still resolves.
 """
 
 from __future__ import annotations
@@ -161,18 +169,23 @@ class _Account:
         self.preferences = _preferences(overlap_days)
         self.key_owner = key_owner
         self.outcome = outcome
-        self.windows: tuple[Window, ...] = tuple(
-            window for each in standings for window in each.windows
-        )
-        self.last_end = max((end for _, end in self.windows), default=None)
+        self.windows: dict[str, list[Window]] = defaultdict(list)
+        for each in standings:
+            for currency, _, _ in each.periods:
+                for window in each.windows(currency):
+                    if window not in self.windows[currency]:
+                        self.windows[currency].append(window)
         self.txns: dict[uuid.UUID, _Txn] = {}
         self.by_amount: dict[tuple[str, Decimal], list[_Txn]] = defaultdict(list)
 
     def commit(self, line: Line, standing: Standing) -> None:
+        last_end = max(
+            (end for _, end in self.windows.get(line.currency, ())), default=None
+        )
         provisional = (
             standing.control != STATEMENT
-            and self.last_end is not None
-            and line.posting_date > self.last_end
+            and last_end is not None
+            and line.posting_date > last_end
         )
         self.outcome.commits.append(Commit(line, standing.basis, provisional))
         txn = _Txn(
@@ -189,21 +202,25 @@ class _Account:
 
     def run(self) -> None:
         pending: dict[uuid.UUID, list[Line]] = {}
-        earlier: list[Window] = []
+        earlier: dict[str, list[Window]] = defaultdict(list)
         for standing in self.standings:
             rest = pending[standing.document_id] = []
-            own = standing.windows
             for line in self.lines.get(standing.document_id, ()):
-                day = line.posting_date
-                if _inside(day, own) and not _inside(day, earlier):
+                day, currency = line.posting_date, line.currency
+                if _inside(day, standing.windows(currency)) and not _inside(
+                    day, earlier[currency]
+                ):
                     self.commit(line, standing)
                 else:
                     rest.append(line)
-            earlier.extend(own)
+            for currency, _, _ in standing.periods:
+                earlier[currency].extend(standing.windows(currency))
         for standing in self.standings:
             self.match(pending[standing.document_id], standing)
 
-    def match(self, lines: Sequence[Line], standing: Standing) -> None:
+    def match(self, in_file_order: Sequence[Line], standing: Standing) -> None:
+        # Stable: lines of one date keep their order in the document.
+        lines = sorted(in_file_order, key=lambda line: line.posting_date)
         taken: set[uuid.UUID] = set()
         found: dict[uuid.UUID, uuid.UUID] = {}
         blocked: set[uuid.UUID] = set()
@@ -240,7 +257,7 @@ class _Account:
                 self.key_owner[line.key] = found[line.id]
             elif line.id in blocked:
                 self.outcome.discrepancies.append(Discrepancy(line, "line_key_taken"))
-            elif _inside(line.posting_date, self.windows):
+            elif _inside(line.posting_date, self.windows.get(line.currency, ())):
                 self.outcome.discrepancies.append(
                     Discrepancy(line, "unmatched_in_statement_window")
                 )

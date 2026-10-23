@@ -71,3 +71,13 @@ description = "Synthetic card statement (summary control) for the period after t
 path = "tests/fixtures/synthetic/card_2025_download.txt"
 synthetic = true
 description = "Synthetic card transaction download (filed as a PDF) overlapping two statements, with one line no statement has, and running past the last statement; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2023_export_a.csv"
+synthetic = true
+description = "Synthetic card export (control none) for May 2023 that overlaps card_2023_export_b.csv, an equal-rank pair; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/card_2023_export_b.csv"
+synthetic = true
+description = "Synthetic card export (control none) for May 2023 that words one purchase of card_2023_export_a.csv differently; fake values."

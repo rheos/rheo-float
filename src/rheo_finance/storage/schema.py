@@ -531,3 +531,28 @@ _tiers(
     source_discrepancy,
     {"id": P, "account_id": P, "document_id": P, "document_line_id": P, "kind": P},
 )
+
+# --- rejected documents' accounts (parse cache) and coverage (stage 6; 0012) ----------
+
+rejected_period = Table(
+    "rejected_period",
+    metadata,
+    Column("document_id", Uuid, ForeignKey("finance.document.id"), primary_key=True),
+    Column("account_id", Uuid, _account_fk(), primary_key=True),
+    Column("period_start", Date, nullable=False),
+    Column("period_end", Date, nullable=False),
+)
+_tiers(
+    rejected_period,
+    {"document_id": P, "account_id": P, "period_start": P, "period_end": P},
+)
+
+coverage = Table(
+    "coverage",
+    metadata,
+    Column("account_id", Uuid, _account_fk(), primary_key=True),
+    Column("month", Date, primary_key=True),
+    Column("state", Text, nullable=False),
+    Column("reason_code", Text),
+)
+_tiers(coverage, {"account_id": P, "month": P, "state": P, "reason_code": P})

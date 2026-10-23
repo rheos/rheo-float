@@ -57,6 +57,9 @@ PINNED = {
     "0011_overlap.py": (
         "faec3bb1a0c7accaaead38d9ad2a103427e65a3899cf618c365f90aa484e90ad"
     ),
+    "0012_coverage.py": (
+        "606db6393f75b9534e94a98b3f8b1be0772825ce1c111d2e6b5c7e21092e44ea"
+    ),
 }
 
 

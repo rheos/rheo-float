@@ -50,18 +50,23 @@ CURRENCY: Final = "CAD"
 def _match(
     statement: VancityStatement, accounts: AccountLookup
 ) -> list[tuple[VancityAccount, RegisteredAccount]]:
+    """Each section with its registered account. A rejection names the accounts that
+    did match one section each, so coverage shows their months as rejected."""
     period = (statement.period_start, statement.period_end)
-    matched: list[tuple[VancityAccount, RegisteredAccount]] = []
-    for section in statement.accounts:
-        found = accounts.by_last_four(INSTITUTION, section.ref, *period)
-        if not found:
-            raise Rejected("unknown_account", period)
-        if len(found) > 1:
-            raise Rejected("ambiguous_account", period)
-        matched.append((section, found[0]))
-    if len({registered.id for _, registered in matched}) != len(matched):
-        raise Rejected("ambiguous_account", period)
-    return matched
+    found = [
+        (section, accounts.by_last_four(INSTITUTION, section.ref, *period))
+        for section in statement.accounts
+    ]
+    named = tuple(dict.fromkeys(each[0] for _, each in found if len(each) == 1))
+    # The first section that fails decides the reason, as when matching stopped there.
+    for _, each in found:
+        if not each:
+            raise Rejected("unknown_account", period, named)
+        if len(each) > 1:
+            raise Rejected("ambiguous_account", period, named)
+    if len(named) != len(found):
+        raise Rejected("ambiguous_account", period, named)
+    return [(section, each[0]) for section, each in found]
 
 
 def _line(
@@ -104,7 +109,13 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
     statement = vancity_statement(text)
     period = (statement.period_start, statement.period_end)
     if statement.failed_checks:
-        raise Rejected("checks_failed", period)
+        # The reason stays checks_failed whatever the accounts say; the accounts that
+        # match are named, for coverage.
+        try:
+            named = tuple(registered for _, registered in _match(statement, accounts))
+        except Rejected as unmatched:
+            named = unmatched.accounts
+        raise Rejected("checks_failed", period, named)
     periods: list[ParsedPeriod] = []
     lines: list[ParsedLine] = []
     for section, registered in _match(statement, accounts):

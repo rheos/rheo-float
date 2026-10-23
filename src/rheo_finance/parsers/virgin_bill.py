@@ -75,7 +75,11 @@ def _account(
     return found[0]
 
 
-def _tied_out(bill: Mapping[str, Any], period: tuple[dt.date, dt.date]) -> bool:
+def _tied_out(
+    bill: Mapping[str, Any],
+    period: tuple[dt.date, dt.date],
+    registered: RegisteredAccount,
+) -> bool:
     """Whether the bill's identity holds; False when it prints none."""
     unpaid = money(bill["unpaid_balance"])
     total = money(bill["total_due"])
@@ -83,7 +87,7 @@ def _tied_out(bill: Mapping[str, Any], period: tuple[dt.date, dt.date]) -> bool:
         return False
     current = money(bill["current_charges"]) or Decimal("0.00")
     if unpaid + current != total:
-        raise Rejected("identity_mismatch", period)
+        raise Rejected("identity_mismatch", period, (registered,))
     return True
 
 
@@ -91,7 +95,7 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
     bill = reference_bill(text)
     period = _bill_month(_date(bill["bill_date"]))
     registered = _account(text, accounts, period)
-    tied_out = _tied_out(bill, period)
+    tied_out = _tied_out(bill, period, registered)
     return ParseResult(
         periods=(
             ParsedPeriod(

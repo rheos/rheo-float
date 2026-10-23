@@ -12,17 +12,19 @@ order, and keeps the first result that is not ``NotRecognised``. Then:
 - a PDF with no text layer: ``needs_manual_entry`` (no OCR in v1);
 - the parser rejects (an unregistered account gives ``unknown_account``, a failed
   check its own reason), or a ``summary`` period whose lines do not reconcile to the
-  cent (``summary_mismatch``): ``rejected``, zero lines, and one
-  ``finance.document.rejected`` event;
+  cent (``summary_mismatch``): ``rejected``, zero lines, one
+  ``finance.document.rejected`` event, and a ``rejected_period`` row for each
+  registered account the rejection names, with the period it states there (coverage
+  reads it);
 - otherwise ``parsed``: its ``statement_period`` and ``document_line`` rows are
   written, and ``tied_out`` is true on every summary period.
 
 A document whose file is not where it is registered gives ``unparsed`` and a reason
 instead of an error: its path is withheld (``WITHHELD_PATH``, which no parser
 opens), the file has left the archive, or the bytes there are no longer the
-document's (the sha256 differs). Reparsing a document first deletes its lines, periods
-and rejection event, so the result depends only on the bytes, the parsers and the
-account registry. Images and drop records are never parsed.
+document's (the sha256 differs). Reparsing a document first deletes its lines,
+periods, rejected periods and rejection event, so the result depends only on the
+bytes, the parsers and the account registry. Images and drop records are never parsed.
 
 Nothing here prints or raises a document's content: outcomes are a status, a reason
 code and counts.
@@ -72,6 +74,7 @@ from rheo_finance.storage.schema import (
     document,
     document_line,
     event,
+    rejected_period,
     statement_period,
 )
 from rheo_finance.tier import Tier
@@ -244,6 +247,9 @@ def _clear(uow: UnitOfWork, document_id: uuid.UUID, ref: str) -> None:
         delete(statement_period).where(statement_period.c.document_id == document_id)
     )
     uow.execute(
+        delete(rejected_period).where(rejected_period.c.document_id == document_id)
+    )
+    uow.execute(
         delete(event).where(
             event.c.type == DOCUMENT_REJECTED, event.c.subject_ref == ref
         )
@@ -383,7 +389,15 @@ def parse_document(
             return _reject(uow, document_id, ref, row.imported_at, parser, rejected)
         if not summary_ties_out(result):
             mismatch = Rejected("summary_mismatch", _span(result))
-            return _reject(uow, document_id, ref, row.imported_at, parser, mismatch)
+            return _reject(
+                uow,
+                document_id,
+                ref,
+                row.imported_at,
+                parser,
+                mismatch,
+                _account_spans(result),
+            )
         return _store(uow, document_id, parser, result)
     return _set_status(uow, document_id, Parsed("unparsed", "not_recognised"))
 
@@ -397,6 +411,23 @@ def _span(result: ParseResult) -> tuple[dt.date, dt.date] | None:
     )
 
 
+Span = tuple[uuid.UUID, dt.date, dt.date]
+
+
+def _account_spans(result: ParseResult) -> list[Span]:
+    """Each account's span over the periods a result states for it."""
+    found: dict[uuid.UUID, tuple[dt.date, dt.date]] = {}
+    for period in result.periods:
+        start, end = found.get(
+            period.account.id, (period.period_start, period.period_end)
+        )
+        found[period.account.id] = (
+            min(start, period.period_start),
+            max(end, period.period_end),
+        )
+    return [(account_id, *span) for account_id, span in found.items()]
+
+
 def _reject(
     uow: UnitOfWork,
     document_id: uuid.UUID,
@@ -404,7 +435,10 @@ def _reject(
     imported_at: dt.datetime,
     parser: Parser,
     rejected: Rejected,
+    spans: list[Span] | None = None,
 ) -> Parsed:
+    """Store a rejection. ``spans`` are the accounts and periods it names; by default
+    every account the parser named, over the period it stated."""
     parsed = _set_status(
         uow,
         document_id,
@@ -412,6 +446,26 @@ def _reject(
         parser=parser,
         period=rejected.period,
     )
+    if spans is None:
+        period = rejected.period
+        spans = (
+            [(each.id, *period) for each in dict.fromkeys(rejected.accounts)]
+            if period
+            else []
+        )
+    if spans:
+        uow.execute(
+            insert(rejected_period),
+            [
+                {
+                    "document_id": document_id,
+                    "account_id": account_id,
+                    "period_start": start,
+                    "period_end": end,
+                }
+                for account_id, start, end in spans
+            ],
+        )
     # Keyed on the document alone and dated by its registration, so a reparse or a
     # rebuild recreates the same event.
     record_event(

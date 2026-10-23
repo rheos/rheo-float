@@ -58,17 +58,23 @@ class NoTextLayer(Exception):
 class Rejected(Exception):
     """The parser read the layout and the document must not load.
 
-    ``period`` is the stated period when the parser read one, so coverage can show
-    the months as rejected. The message is the reason code alone: it never carries a
-    name, a number or an amount from the document.
+    ``period`` is the stated period when the parser read one, and ``accounts`` the
+    registered accounts the document names when the parser matched them before
+    rejecting, so coverage can show those accounts' months in the period as rejected.
+    The message is the reason code alone: it never carries a name, a number or an
+    amount from the document.
     """
 
     def __init__(
-        self, reason: RejectReason, period: tuple[dt.date, dt.date] | None = None
+        self,
+        reason: RejectReason,
+        period: tuple[dt.date, dt.date] | None = None,
+        accounts: tuple[RegisteredAccount, ...] = (),
     ) -> None:
         super().__init__(reason)
         self.reason: RejectReason = reason
         self.period = period
+        self.accounts = accounts
 
 
 @dataclass(frozen=True)

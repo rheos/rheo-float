@@ -109,7 +109,10 @@ class AccountLookup:
     ``by_last_four`` matches the last four digits of an identifier of a
     ``LAST_FOUR_KINDS`` kind at an institution compared by ``institution_key``
     (``manual.accounts``), valid during the period: the same scope in which the
-    loader refuses two accounts sharing a last four. Never by a printed name.
+    loader refuses two accounts sharing a last four. The loader lets two distinct full
+    numbers of different accounts share one, so a last-four match can find both: every
+    caller then rejects ``ambiguous_account`` and never picks one. Never by a printed
+    name.
     """
 
     def __init__(self, identifiers: Iterable[RegisteredIdentifier]) -> None:

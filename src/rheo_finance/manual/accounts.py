@@ -10,8 +10,13 @@ involved:
 - two last-four identifiers (``LAST_FOUR_KINDS``: ``number`` and ``masked_card``) of
   different accounts at one institution that end in the same four digits, the
   institution compared by ``institution_key`` (casefolded, whitespace collapsed,
-  otherwise exact): the reused Vancity parser matches an account on its last four only
-  (Key decision 1), and the Vancity adapter matches with these same two functions;
+  otherwise exact), unless both are distinct full numbers (``full_number``): the reused
+  Vancity parser matches an account on its last four only (Key decision 1), and the
+  Vancity adapter matches with these same two functions. A masked or last-four-only
+  identifier on either side is what a last-four match could confuse, so that pair is
+  refused. Two distinct full numbers are told apart by a parser that matches the whole
+  number (a credit union prints one per section, and two sections may end alike); a
+  last-four match that finds both is ``ambiguous_account``, never a pick;
 - a slug or label that the adopted-path check (``path_check.PathCheck``) refuses: a
   run of 8 or more digits that is not a date, or a registered identifier. The report
   views show both, so neither may carry one;
@@ -169,6 +174,30 @@ def last_four(identifier: str) -> str | None:
     return "".join(match.groups()) if match else None
 
 
+# Mask characters: an asterisk, a bullet, or a run of two or more X.
+_MASK = re.compile(r"[*•]|[Xx]{2,}")
+
+
+def full_number(kind: str, identifier: str) -> str | None:
+    """The letters and digits of ``identifier`` (casefolded) when it is a full number:
+    kind ``number``, more than four digits and no mask character. None for a
+    ``masked_card``, a masked number or a number of four digits or fewer, which only a
+    last-four match can use. An account ID that happens to hold a run of X reads as
+    masked: the rule then refuses more, never less."""
+    if kind != "number" or _MASK.search(identifier):
+        return None
+    if sum(char.isdigit() for char in identifier) <= 4:
+        return None
+    return "".join(char for char in identifier if char.isalnum()).casefold()
+
+
+def _confusable(a: AccountIdentifierRow, b: AccountIdentifierRow) -> bool:
+    """Whether two last-four identifiers ending alike could be confused: unless both
+    are full numbers and they differ."""
+    first, second = full_number(a.kind, a.identifier), full_number(b.kind, b.identifier)
+    return first is None or second is None or first == second
+
+
 @dataclass(frozen=True)
 class Registry:
     """The accounts and identifiers that passed every rule, the built-in account
@@ -226,25 +255,32 @@ def build_registry(
         reject(IDENTIFIERS_FILE, line, "identifier: another row has the same one")
     bad_identifiers |= repeated
 
-    # Two accounts at one institution whose last-four identifiers share them.
-    by_four: dict[tuple[str, str], list[tuple[int, str]]] = defaultdict(list)
+    # Two accounts at one institution whose last-four identifiers share them, unless
+    # both are distinct full numbers.
+    by_four: dict[tuple[str, str], list[tuple[int, AccountIdentifierRow]]] = (
+        defaultdict(list)
+    )
     for line, ident in identifier_rows:
         account = by_slug.get(ident.account)
         four = last_four(ident.identifier)
         if account is None or ident.kind not in LAST_FOUR_KINDS or four is None:
             continue
-        key = (institution_key(account.institution), four)
-        by_four[key].append((line, account.slug))
+        by_four[(institution_key(account.institution), four)].append((line, ident))
     for group in by_four.values():
-        if len({slug for _, slug in group}) > 1:
-            for line, _ in group:
-                reject(
-                    IDENTIFIERS_FILE,
-                    line,
-                    "identifier: another account at this institution has an"
-                    " identifier with the same last four digits",
-                )
-                bad_identifiers.add(line)
+        clashing = {
+            line
+            for line, ident in group
+            for other_line, other in group
+            if other.account != ident.account and _confusable(ident, other)
+        }
+        for line in sorted(clashing):
+            reject(
+                IDENTIFIERS_FILE,
+                line,
+                "identifier: another account at this institution has an"
+                " identifier with the same last four digits",
+            )
+            bad_identifiers.add(line)
 
     kept_identifiers = [
         ident for line, ident in identifier_rows if line not in bad_identifiers

@@ -23,14 +23,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import Connection, select
+from sqlalchemy import Connection, func, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import NotRecognised
 from rheo_finance.parsers.registry import Parsed, parse_document, parsers_for
-from rheo_finance.storage.schema import document, document_line, statement_period
+from rheo_finance.storage.schema import (
+    document,
+    document_line,
+    manual_entry_error,
+    statement_period,
+)
 
 from .conftest import ManualAccount, register_accounts
 
@@ -254,6 +259,28 @@ def test_an_unregistered_account_number_rejects_the_statement(setup: Setup) -> N
     doc = setup.file(CURRENT, fixture(CURRENT_TEXT))
 
     assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+
+
+def test_two_section_numbers_ending_alike_load_and_resolve_each_section(
+    setup: Setup,
+) -> None:
+    """The real statements print a share number that ends in the same four digits as
+    the chequing number. Both are full numbers, so the loader keeps both and each
+    section resolves to its own account by its whole number."""
+    shares_number = "999000010101"
+    assert shares_number[-4:] == CHEQUING.identifiers[0][-4:]
+    text = fixture(CURRENT_TEXT)
+    assert text.count(SHARES.identifiers[0]) == 1
+    text = text.replace(SHARES.identifiers[0], shares_number)
+    setup.register(CHEQUING, dataclasses.replace(SHARES, identifiers=(shares_number,)))
+    assert setup.conn.scalar(select(func.count()).select_from(manual_entry_error)) == 0
+    doc = setup.file(CURRENT, text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=2, lines=7)
+    by_account = {period.account_id: period for period in setup.periods(doc)}
+    assert set(by_account) == {account_id("cu-chequing"), account_id("cu-shares")}
+    assert (by_account[account_id("cu-shares")].opening,) == (Decimal("15.00"),)
+    assert (by_account[account_id("cu-chequing")].opening,) == (Decimal("3100.00"),)
 
 
 @pytest.mark.parametrize(

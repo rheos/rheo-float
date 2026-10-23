@@ -24,8 +24,10 @@ the PDF-to-text helper and its not-a-text-PDF error, and the money converter (`t
 exact for two-decimal values). It imports nothing from the monitor code or the model-based
 extractor: sending a statement that has a working parser to a model is forbidden. Each parsed
 account is matched to the account registry by its identifier, never by its printed name, since an
-institution can rename an account and keep its number; two identifiers at one institution sharing
-a last four is a loader error.
+institution can rename an account and keep its number; two identifiers of different accounts at
+one institution sharing a last four is a loader error unless both are distinct full numbers (a
+masked or last-four-only identifier on either side is refused), and a last-four match that finds
+two accounts is `ambiguous_account`.
 
 ## Consequences
 

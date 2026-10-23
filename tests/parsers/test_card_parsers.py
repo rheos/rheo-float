@@ -580,6 +580,20 @@ def test_a_last_four_resolves_only_at_the_statements_institution(setup: Setup) -
     assert setup.period(doc).account_id == account_id("visa")
 
 
+def test_a_last_four_two_accounts_hold_is_ambiguous_never_a_pick(setup: Setup) -> None:
+    """Two distinct full numbers of two accounts may end alike (the loader keeps
+    both); a statement matched by its last four then names neither."""
+    setup.register(
+        ManualAccount("visa", "Vancity", "credit_card", ("999000009991",)),
+        ManualAccount("other-visa", "Vancity", "credit_card", ("999000019991",)),
+    )
+    doc = setup.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(document_line, doc) == 0
+    assert setup.rejected_reasons(doc) == ["ambiguous_account"]
+
+
 def test_an_identifier_of_a_kind_outside_the_last_four_kinds_matches_nothing(
     setup: Setup,
 ) -> None:

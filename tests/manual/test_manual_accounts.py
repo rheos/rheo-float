@@ -177,7 +177,9 @@ def test_a_shared_last_four_at_one_institution_is_an_error_on_both_rows(
         tmp_path,
         [CHEQUING, SAVINGS, CARD],
         [
-            "test-chequing,9991234,number,,",
+            # A last-four-only number beside a full one: a last-four match could
+            # confuse them.
+            "test-chequing,XXXX1234,number,,",
             "test-savings,999-555-1234,number,,",
             # Another institution, and a second number of the same account: no clash.
             "test-card,9997771234,number,,",
@@ -230,6 +232,21 @@ OTHER = "test-other,Test other,Test Credit Union.,savings,CAD,monthly,,,,,,,,,"
             ],
             [2, 3],
         ),
+        # A number of four digits beside a full number.
+        (["test-chequing,1234,number,,", "test-visa,9995551234,number,,"], [2, 3]),
+        # A masked number (more than four digits shown) beside a full number.
+        (
+            [
+                "test-chequing,9999 99** **** 1234,number,,",
+                "test-visa,9995551234,number,,",
+            ],
+            [2, 3],
+        ),
+        # One full number on two accounts, written with other separators.
+        (["test-chequing,9991234,number,,", "test-visa,999-1234,number,,"], [2, 3]),
+        # Two distinct full numbers: a parser that matches the whole number tells
+        # them apart, so they may end alike.
+        (["test-chequing,9991234,number,,", "test-visa,9995551234,number,,"], []),
         # A file token is not matched by last four, so it never clashes.
         (["test-chequing,9991234,number,,", "test-visa,stmt-1234,file_token,,"], []),
         # Punctuation makes another institution.
@@ -352,7 +369,8 @@ def test_no_reason_repeats_an_identifier(
         [CHEQUING, SAVINGS],
         [
             "test-chequing,9991234,cardnumber,,",
-            "test-chequing,9995678,number,,",
+            # A last-four-only number beside a full one ending alike: a clash.
+            "test-chequing,XXXX5678,number,,",
             "test-savings,9998885678,number,,",
         ],
     )

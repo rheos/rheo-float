@@ -53,7 +53,7 @@ PINNED = {
     "0009_parse_cache.py": (
         "241b99575f19c5892cabd1b0610dec391ab7de086ba1bef2bb89c026b9ff4dd0"
     ),
-    "0010_txn.py": ("f3a389a558902f2877ef5f0c5d41829ff337df57030b9d1b9fddd156a7f9accb"),
+    "0010_txn.py": ("c09b65822397ebd0b1546e63b44a30406effd6c6226ba775ff1245103407a1b2"),
 }
 
 

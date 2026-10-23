@@ -82,6 +82,10 @@ Database tests run against the local Postgres container, database `finance_test`
 a rolled-back transaction, with a fake clock. Tests make no network calls except to local stub
 servers.
 
+The suite drops and recreates `finance_test` whenever the migration chain it was built from
+differs from the checkout's, so two checkouts with different chains must not run their suites at
+the same moment: the second one's drop cuts the first one's connections.
+
 `finance db init` sets up both databases (`finance` and `finance_test`); `--database NAME`
 (repeatable) limits it to the ones named, so a checkout that only runs the suite can pass
 `--database finance_test` and leave the live ledger alone.

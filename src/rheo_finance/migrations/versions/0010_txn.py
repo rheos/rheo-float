@@ -26,9 +26,10 @@ A basis class is ``rule``, ``model-auto`` or ``owner``: SPEC names the third val
 after the person, and this repo is public and never carries that name, so the stored
 word is ``owner``.
 
-``business_unit`` is plain text with no list of values: the units are the owner's own
-settings, kept outside the repo and checked where a unit is chosen, as for
-``decision.business_unit``.
+``business_unit`` is free text with no list of values. The unit list lives in the
+owner's settings, outside the repo; the later classification stage that copies a
+decision's unit onto a txn will check the unit against that list. Nothing checks it
+yet.
 """
 
 from alembic import op

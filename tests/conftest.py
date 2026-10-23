@@ -108,6 +108,10 @@ def _chain_stamp(name: str) -> str:
     ).strip()
 
 
+class UnsafeTestDatabase(Exception):
+    """A database the test fixtures must never drop or recreate."""
+
+
 def _fresh_test_database(owner: URL, reader: URL) -> None:
     """Recreate the test database when it was migrated from other revision text.
 
@@ -121,8 +125,12 @@ def _fresh_test_database(owner: URL, reader: URL) -> None:
     that name another server are migrated as they stand.
     """
     name = owner.database or ""
-    assert name.endswith("_test") and name != db.LIVE_DATABASE
-    assert db.DATABASE_NAME.fullmatch(name)
+    # Explicit raises, not asserts: ``python -O`` strips asserts, and these guard a
+    # DROP DATABASE.
+    if not name.endswith("_test") or name == db.LIVE_DATABASE:
+        raise UnsafeTestDatabase("only a database whose name ends in _test is dropped")
+    if not db.DATABASE_NAME.fullmatch(name):
+        raise UnsafeTestDatabase("the test database name is not a plain name")
     if not _container_owned(owner, reader):
         return
     expected = CHAIN_STAMP + migration_chain_digest()
@@ -159,7 +167,8 @@ def scratch_database(test_database: DatabaseUnderTest) -> Iterator[DatabaseUnder
     (``db init`` reads ``db.env`` from there).
     """
     name = f"finance_scratch_{secrets.token_hex(4)}_test"
-    assert name != db.LIVE_DATABASE and name != db.TEST_DATABASE
+    if name in (db.LIVE_DATABASE, db.TEST_DATABASE):
+        raise UnsafeTestDatabase("a scratch database never takes a standing name")
 
     def drop() -> None:
         db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')

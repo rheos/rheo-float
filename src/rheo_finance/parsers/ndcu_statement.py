@@ -20,10 +20,14 @@ Wrapped descriptions. The text comes through ``docextract`` compacted (every run
 four or more spaces becomes three), so a wrapped line, a page footer and a header
 all start with the same three spaces and the description column cannot be read from
 the indentation. A wrap is told by its place and shape instead: indented lines right
-after a transaction line, made only of name characters, and followed by the next
-dated line or the page's "- continued -" marker. Any other indented text right after
-a transaction line (a footer, a URL, a number) is a layout this parser has not
-seen, and the statement is ``NotRecognised``: it never joins a description.
+after a transaction line, made only of name characters (letters, spaces, ``&``,
+apostrophes and hyphens: no digit and no dot, so neither a page number nor a web
+address is name-shaped), and followed by the next dated line or the page's
+"- continued -" marker. Any other indented text right after a transaction line (a
+footer, a URL, a number) is a layout this parser has not seen, and the statement is
+``NotRecognised``: it never joins a description. A footer made only of name
+characters is stopped by its place alone: it joins nothing unless the next dated
+line or the marker follows it.
 
 Headings. Every account line needs a heading of its own above it (a continued
 section repeats its heading), and a heading-shaped line (capitals at the start of a
@@ -90,7 +94,7 @@ _STATEMENT_DATE: Final = re.compile(
     r"\s*(?P<label>.+?)\s{2,}(?P<date>[A-Z][a-z]+ \d{1,2}, \d{4})\s*"
 )
 _HEADING: Final = re.compile(r"(?P<heading>[A-Z][A-Z&\- ]*?)\s*(?:\(.*\))?\s*")
-_NAME: Final = re.compile(r"[A-Za-z][A-Za-z&.'\- ]*")
+_NAME: Final = re.compile(r"[A-Za-z][A-Za-z&'\- ]*")
 _ACCOUNT: Final = re.compile(r"Account #\s*(?P<number>\d+)\b.*")
 _TOTAL: Final = re.compile(rf"\$({AMOUNT_TEXT})")
 

@@ -303,6 +303,25 @@ def test_footer_text_after_a_transaction_never_joins_its_description(
     assert setup.lines(doc) == []
 
 
+@pytest.mark.parametrize("footer", ["   Page 1 of 2", "   www.example.test"])
+def test_a_wrap_that_is_not_name_shaped_is_unparsed_even_before_the_marker(
+    setup: Setup, footer: str
+) -> None:
+    """A page number or a web address between a wrapped name and the continued
+    marker is in the right place for a wrap but not its shape: the statement is
+    unparsed rather than the text joining the description."""
+    setup.register(CHEQUING, SHARES)
+    text = fixture(CURRENT_TEXT)
+    wrap = "   PAYER\n   - con t inued -\n"
+    assert text.count(wrap) == 1
+    doc = setup.file(
+        CURRENT, text.replace(wrap, f"   PAYER\n{footer}\n   - con t inued -\n")
+    )
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+    assert setup.lines(doc) == []
+
+
 def test_a_wrapped_name_still_joins_before_the_next_line(setup: Setup) -> None:
     setup.register(CHEQUING, SHARES)
     doc = setup.file(AUGUST_2018, fixture("ndcu_statement_2018.txt"))
@@ -321,6 +340,18 @@ def test_an_unknown_section_heading_is_not_read_as_the_section_before(
     text = fixture(CURRENT_TEXT)
     assert text.count("\nSHARES\n") == 1
     doc = setup.file(CURRENT, text.replace("\nSHARES\n", f"\n{heading}\n"))
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+
+
+def test_an_unknown_heading_under_a_known_one_is_not_recognised(setup: Setup) -> None:
+    """An unknown capitals heading between a known heading and its account line: the
+    account keeps a heading of its own above it, so only the unknown heading itself
+    can make the statement unparsed."""
+    setup.register(CHEQUING, SHARES)
+    text = fixture(CURRENT_TEXT)
+    assert text.count("\nSHARES\n") == 1
+    doc = setup.file(CURRENT, text.replace("\nSHARES\n", "\nSHARES\nTERM DEPOSITS\n"))
 
     assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
 

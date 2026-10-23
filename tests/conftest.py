@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import pytest
@@ -112,17 +112,96 @@ class UnsafeTestDatabase(Exception):
     """A database the test fixtures must never drop or recreate."""
 
 
-def _fresh_test_database(owner: URL, reader: URL) -> None:
-    """Recreate the test database when it was migrated from other revision text.
+class BusyTestDatabase(Exception):
+    """Another checkout's test session kept the test database past the lock wait."""
+
+
+# Advisory lock key: this namespace and ``hashtext(<database name>)``.
+LOCK_NAMESPACE = 0x46494E54
+LOCK_WAIT = "30min"
+
+
+class ChainLock(Protocol):
+    """The lock a test session holds on the test database while it uses it.
+
+    ``share`` holds it alongside other sessions on the same chain; ``own`` holds it
+    alone, waiting until every other session has let go. Each call moves from the
+    mode held to the one asked for."""
+
+    def share(self) -> None: ...
+
+    def own(self) -> None: ...
+
+
+class AdvisoryLock:
+    """A Postgres advisory lock on one test database's name, held on a connection to
+    the server's ``postgres`` database: a lock taken inside the test database would
+    end with its drop. Released when ``close`` runs or the process exits. The
+    connection opens on first use, so a URL that is never locked is never dialled."""
+
+    def __init__(self, server: URL, name: str) -> None:
+        self._engine = create_engine(
+            server.set(database="postgres"),
+            poolclass=NullPool,
+            isolation_level="AUTOCOMMIT",
+        )
+        self._name = name
+        self._conn: Connection | None = None
+        self._held: str | None = None
+
+    def _call(self, function: str) -> None:
+        if self._conn is None:
+            self._conn = self._engine.connect()
+            self._conn.execute(text(f"SET lock_timeout = '{LOCK_WAIT}'"))
+        try:
+            self._conn.execute(
+                text(f"SELECT {function}({LOCK_NAMESPACE}, hashtext(:name))"),
+                {"name": self._name},
+            )
+        except OperationalError as exc:
+            if getattr(exc.orig, "sqlstate", None) == "55P03":
+                raise BusyTestDatabase(
+                    f"another test session held {self._name} for {LOCK_WAIT}: it was"
+                    " built from another migration chain; let that suite finish first"
+                ) from None
+            raise
+
+    def share(self) -> None:
+        self._call("pg_advisory_lock_shared")
+        if self._held == "exclusive":
+            self._call("pg_advisory_unlock")
+        self._held = "shared"
+
+    def own(self) -> None:
+        if self._held == "shared":
+            self._call("pg_advisory_unlock_shared")
+        self._call("pg_advisory_lock")
+        self._held = "exclusive"
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+        self._held = None
+        self._engine.dispose()
+
+
+def _fresh_test_database(owner: URL, reader: URL, lock: ChainLock) -> None:
+    """Recreate the test database when it was migrated from other revision text, and
+    leave ``lock`` held shared for as long as the caller uses the database.
 
     Alembic records only the revision id, so a revision whose text changed before any
     live database ran it (a re-pin on an unmerged branch) leaves ``finance_test`` with
     the old schema under the new id. The database's comment holds the digest of the
     chain that built it; when it differs, the database is dropped, set up as ``db
     init`` does and migrated again. Only a ``*_test`` database in the local container
-    is ever dropped, never the live one. The drop uses FORCE, so a suite running at the
-    same moment from a checkout with another chain loses its connections. Test URLs
-    that name another server are migrated as they stand.
+    is ever dropped, never the live one. Test URLs that name another server are
+    migrated as they stand, unlocked.
+
+    Every session holds ``lock`` shared while it runs. A session that finds a stale
+    stamp asks for it alone, so its drop waits until every other session on that
+    database has finished, then checks the stamp again: a session on the same chain
+    that waited behind another's rebuild finds it fresh and drops nothing.
     """
     name = owner.database or ""
     # Explicit raises, not asserts: ``python -O`` strips asserts, and these guard a
@@ -134,25 +213,37 @@ def _fresh_test_database(owner: URL, reader: URL) -> None:
     if not _container_owned(owner, reader):
         return
     expected = CHAIN_STAMP + migration_chain_digest()
+    lock.share()
     if _chain_stamp(name) == expected:
         return
-    db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')
-    db.init(databases=(name,))
-    db.migrate(owner)
-    db.psql(f"COMMENT ON DATABASE \"{name}\" IS '{expected}';")
+    lock.own()
+    if _chain_stamp(name) != expected:
+        db.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE);')
+        db.init(databases=(name,))
+        db.migrate(owner)
+        db.psql(f"COMMENT ON DATABASE \"{name}\" IS '{expected}';")
+    lock.share()
 
 
 @pytest.fixture(scope="session")
-def test_database() -> DatabaseUnderTest:
+def test_database() -> Iterator[DatabaseUnderTest]:
     """Migrate ``finance_test`` to head once for the whole session, recreating it
-    first when it was built from other revision text."""
+    first when it was built from other revision text. The session holds the
+    database's advisory lock shared until it ends, so no other checkout drops the
+    database under it."""
     owner, reader = _test_urls()
+    lock = AdvisoryLock(owner, owner.database or "")
     try:
-        _fresh_test_database(owner, reader)
-        head = db.migrate(owner)
-    except db.DbError as exc:
-        pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)
-    return DatabaseUnderTest(owner_url=owner, reader_url=reader, head=head)
+        try:
+            _fresh_test_database(owner, reader, lock)
+            head = db.migrate(owner)
+        except BusyTestDatabase as exc:
+            pytest.fail(str(exc), pytrace=False)
+        except (db.DbError, OperationalError) as exc:
+            pytest.fail(f"{TEST_REMEDY} ({exc})", pytrace=False)
+        yield DatabaseUnderTest(owner_url=owner, reader_url=reader, head=head)
+    finally:
+        lock.close()
 
 
 @pytest.fixture(scope="module")

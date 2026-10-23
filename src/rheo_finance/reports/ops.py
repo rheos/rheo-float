@@ -11,7 +11,11 @@ text)``. The numbering is SPEC's and stays fixed; lines 5, 6, 8 and 11 to 14 arr
 with later prompts, so a gap in the numbers is expected.
 
 1. as of, and the database state: ``database current`` when ``report_status``'s schema
-   revision is the code's head, else what it is at and the fix;
+   revision is the code's head. A revision the code knows is behind: run ``finance db
+   migrate``. One it does not know is ahead (a worktree migrated the shared database
+   first): update the code. A database behind migration 0014 has no ``report_status``;
+   the reader cannot read the version table, so status then prints line 1 alone, with
+   the code's head and the fix, rather than failing;
 2. the last import per top-level archive directory, on one line, as local dates;
 3. unparsed and rejected documents (and those that need manual entry, when any);
 4. missing account-months;
@@ -36,13 +40,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Annotated, Final
 
+from psycopg import errors as pg_errors
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import ProgrammingError
 
 from rheo_finance.clock import local_date
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
-from rheo_finance.db import head_revision
+from rheo_finance.db import code_revisions, head_revision
 from rheo_finance.documents.filer import DOWNLOADS_KEY, monitor_files_waiting
 from rheo_finance.operations import OperationSpec, register
 from rheo_finance.render import as_of
@@ -105,9 +111,22 @@ def _database(ctx: FinanceContext, facts: dict[str, list[Fact]]) -> str:
     if at == [head]:
         return f"{stamp}, database current"
     revision = ", ".join(at) or "no revision"
+    if not set(at) <= code_revisions():
+        return (
+            f"{stamp}, database schema at {revision}, newer than this code"
+            f" (at {head}): update the code"
+        )
     return (
         f"{stamp}, database schema at {revision}, code at {head}:"
         " run finance db migrate"
+    )
+
+
+def _no_report_views(ctx: FinanceContext) -> str:
+    stamp = as_of(ctx.clock, ctx.settings.timezone)
+    return (
+        f"{stamp}, database schema behind the code (at {head_revision()}), no report"
+        " views yet: run finance db migrate"
     )
 
 
@@ -196,7 +215,13 @@ def _intake(ctx: FinanceContext) -> str | None:
 
 
 def status(ctx: FinanceContext, uow: UnitOfWork, _data: StatusIn) -> StatusOut:
-    facts = _facts(uow)
+    try:
+        with uow.savepoint():
+            facts = _facts(uow)
+    except ProgrammingError as exc:
+        if not isinstance(exc.orig, pg_errors.UndefinedTable):
+            raise
+        return StatusOut(lines=[StatusLine(line_no=1, text=_no_report_views(ctx))])
     lines: list[tuple[int, str | None]] = [
         (1, _database(ctx, facts)),
         (2, _imports(ctx, facts)),

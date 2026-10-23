@@ -21,6 +21,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+from sqlalchemy import Connection, text
+
 from rheo_finance import migrations
 from rheo_finance.reports.views import VIEW_SELECTS as REPORT_VIEW_SELECTS
 from rheo_finance.sinks.views import VIEW_SELECTS as SINK_VIEW_SELECTS
@@ -140,3 +142,28 @@ def test_every_revision_file_is_pinned_and_unchanged() -> None:
         "a revision file changed; a database that ran it will not see the edit."
         " Add a new revision instead, or re-pin only if it was never applied."
     )
+
+
+# ``alembic_version_finance.version_num`` is varchar(32), and ``report_status`` selects
+# it, so widening the column would mean dropping and recreating that view first.
+VERSION_NUM_LENGTH = 32
+
+
+def test_every_revision_id_fits_the_version_column() -> None:
+    chain = _chain()
+    assert chain, "the control: the chain has revisions"
+    too_long = [
+        module.revision for module in chain if len(module.revision) > VERSION_NUM_LENGTH
+    ]
+    assert too_long == [], "shorten the revision id to 32 characters or fewer"
+
+
+def test_the_version_column_is_32_characters(owner_conn: Connection) -> None:
+    length = owner_conn.scalar(
+        text(
+            "SELECT character_maximum_length FROM information_schema.columns"
+            " WHERE table_schema = 'finance' AND table_name = 'alembic_version_finance'"
+            " AND column_name = 'version_num'"
+        )
+    )
+    assert length == VERSION_NUM_LENGTH

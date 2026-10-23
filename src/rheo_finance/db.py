@@ -475,6 +475,14 @@ def head_revision() -> str:
     return head
 
 
+def code_revisions() -> frozenset[str]:
+    """Every revision id in the code's migration chain."""
+    from alembic.script import ScriptDirectory
+
+    chain = ScriptDirectory.from_config(alembic_config()).walk_revisions()
+    return frozenset(each.revision for each in chain)
+
+
 def migrate(url: URL | None = None) -> str:
     """Upgrade to head under the owner role (``url``, default the live owner DSN)."""
     from alembic import command

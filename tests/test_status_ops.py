@@ -6,10 +6,11 @@ fixture ledger committed to a throwaway database (``scratch_database``: the read
 cannot see rows inside another connection's rolled-back transaction), and over the
 empty ``finance_test``. The fixture ledger is built by the real archive walk and derive
 from synthetic files: one parsed chequing export, one rejected copy naming an unknown
-account, one unparsed file, one file whose name carries a registered identifier
-(skipped), one file outside every mapped directory (skipped for another reason), an
-account with no data, one source discrepancy, and monitor files in Downloads, one old
-enough to be waiting. Every value is synthetic.
+account, one unparsed file, one image (needs manual entry), one file whose name carries
+a registered identifier (skipped), one file outside every mapped directory (skipped for
+another reason), an account with no data, one cash line on the built-in paid-outside
+account, one source discrepancy, and monitor files in Downloads, one old enough to be
+waiting. Every value is synthetic.
 """
 
 from __future__ import annotations
@@ -22,7 +23,19 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import create_engine, func, insert, select, text
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    MetaData,
+    Table,
+    Text,
+    create_engine,
+    func,
+    insert,
+    select,
+    text,
+)
 from sqlalchemy.pool import NullPool
 
 from conftest import DatabaseUnderTest
@@ -37,7 +50,13 @@ from rheo_finance import catalogue, operations
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import FinanceContext, FinancePaths
 from rheo_finance.contracts import Role
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
+from rheo_finance.db import head_revision
+from rheo_finance.manual.accounts import (
+    ACCOUNTS_FILE,
+    IDENTIFIERS_FILE,
+    INTERNAL_ACCOUNT,
+)
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.operations import dispatch
 from rheo_finance.reports import ops as report_ops
 from rheo_finance.reports.ops import (
@@ -54,6 +73,7 @@ from rheo_finance.storage.schema import (
     coverage,
     document_line,
     source_discrepancy,
+    txn,
 )
 
 MakeContext = Callable[[Role], FinanceContext]
@@ -64,6 +84,8 @@ SKIPPED_NAME = f"acct-{STATEMENT_IDENTIFIER}.csv"
 UNMAPPED_NAME = "unmapped-folder/loose.csv"
 # The chequing account opens four months before the fixture's only month of lines.
 OPENED = "2025-10-01"
+CASH_TEXT = "petty cash envelope"
+HEAD = head_revision()
 
 
 @dataclass(frozen=True)
@@ -76,6 +98,9 @@ class FixtureLedger:
     # skipped files' names.
     secrets: tuple[str, ...]
     missing_months: int
+    # The cash line's txns on the built-in account, and that account's coverage months.
+    paid_outside_txns: int
+    paid_outside_months: int
     coverage_rows: frozenset[tuple[str, dt.date, str, str | None]]
 
 
@@ -111,6 +136,8 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                 CSV_FIXTURE.replace(CSV_IDENTIFIER, UNKNOWN_IDENTIFIER),
             )
             ledger.file("vancity/notes.csv", "NOT AN EXPORT\n")
+            ledger.file("vancity/photo.jpg", "SYNTHETIC IMAGE\n")
+            ledger.cash(f"{INTERNAL_ACCOUNT.slug},2026-01-10,-12.00,CAD,{CASH_TEXT},")
             ledger.file(f"vancity/{SKIPPED_NAME}", "SKIPPED BY NAME\n")
             ledger.file(UNMAPPED_NAME, "NOT IN A MAPPED DIRECTORY\n")
             ledger.derive()
@@ -153,6 +180,17 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                     coverage.join(account, coverage.c.account_id == account.c.id)
                 )
             ).all()
+            internal = account_id(INTERNAL_ACCOUNT.slug)
+            paid_outside_txns = conn.scalar(
+                select(func.count())
+                .select_from(txn)
+                .where(txn.c.account_id == internal)
+            )
+            paid_outside_months = conn.scalar(
+                select(func.count())
+                .select_from(coverage)
+                .where(coverage.c.account_id == internal)
+            )
             transaction.commit()
     finally:
         engine.dispose()
@@ -188,9 +226,12 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
             "acct-",
             "loose.csv",
             "unmapped-folder",
+            "envelope",
             *words,
         ),  # fmt: skip
         missing_months=int(missing or 0),
+        paid_outside_txns=int(paid_outside_txns or 0),
+        paid_outside_months=int(paid_outside_months or 0),
         coverage_rows=frozenset(
             (slug, month, state, None if reason is None else reason.replace("_", " "))
             for slug, month, state, reason in rows
@@ -264,7 +305,7 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
     assert lines[1].startswith("as of 2026-02-20 ")
     assert lines[1].endswith(", database current")
     assert lines[2] == "last import: vancity 2026-02-20"
-    assert lines[3] == "documents: 1 unparsed, 1 rejected"
+    assert lines[3] == "documents: 1 unparsed, 1 rejected, 1 needs manual entry"
     assert fixture_ledger.missing_months > 0
     assert lines[4] == (
         f"missing account-months: {fixture_ledger.missing_months} across 1 account"
@@ -386,11 +427,13 @@ def test_document_list_under_the_reader_never_shows_a_skipped_file(
         "vancity/export.csv",
         "vancity/notes.csv",
         "vancity/other.csv",
+        "vancity/photo.jpg",
     ]
     assert {d.path: d.status for d in out.documents} == {
         "vancity/export.csv": "parsed",
         "vancity/notes.csv": "unparsed",
         "vancity/other.csv": "rejected",
+        "vancity/photo.jpg": "needs_manual_entry",
     }
     assert leaked(fixture_ledger, out.model_dump_json()) == []
 
@@ -419,3 +462,75 @@ def test_no_report_view_row_carries_an_identifier_description_or_skipped_path(
     finally:
         engine.dispose()
     assert seen > 0
+
+
+# --- the built-in paid-outside account ------------------------------------------------
+
+
+def test_a_cash_line_on_the_built_in_account_adds_no_coverage_month(
+    fixture_ledger: FixtureLedger, sinks_off: None
+) -> None:
+    assert fixture_ledger.paid_outside_txns == 1, "the control: the cash line is a txn"
+    assert fixture_ledger.paid_outside_months == 0
+    assert INTERNAL_ACCOUNT.slug not in {
+        m.account for m in coverage_out(fixture_ledger).months
+    }
+    lines = status_lines(fixture_ledger)
+    assert lines[4].endswith(" across 1 account")
+    assert INTERNAL_ACCOUNT.label not in lines[9]
+
+
+# --- line 1: the database state -------------------------------------------------------
+
+
+def test_line_1_says_migrate_when_the_database_is_behind_the_code(
+    fixture_ledger: FixtureLedger, sinks_off: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    at = status_lines(fixture_ledger)
+    assert at[1].endswith(", database current"), "the control"
+    monkeypatch.setattr(report_ops, "head_revision", lambda: "0099_later")
+    monkeypatch.setattr(
+        report_ops, "code_revisions", lambda: frozenset({HEAD, "0099_later"})
+    )
+
+    assert status_lines(fixture_ledger)[1].endswith(
+        f", database schema at {HEAD}, code at 0099_later: run finance db migrate"
+    )
+
+
+def test_line_1_says_update_the_code_when_the_database_is_ahead_of_it(
+    fixture_ledger: FixtureLedger, sinks_off: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(report_ops, "head_revision", lambda: "0013_parse_inputs")
+    monkeypatch.setattr(
+        report_ops, "code_revisions", lambda: frozenset({"0013_parse_inputs"})
+    )
+
+    assert status_lines(fixture_ledger)[1].endswith(
+        f", database schema at {HEAD}, newer than this code (at 0013_parse_inputs):"
+        " update the code"
+    )
+
+
+def test_a_database_with_no_report_views_prints_line_1_alone(
+    fixture_ledger: FixtureLedger, sinks_off: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The view a database behind migration 0014 lacks, under a name no revision makes.
+    absent = Table(
+        "report_status_absent",
+        MetaData(schema="finance"),
+        Column("fact", Text),
+        Column("subject", Text),
+        Column("count", BigInteger),
+        Column("at", DateTime(timezone=True)),
+    )
+    monkeypatch.setattr(report_ops, "report_status", absent)
+
+    lines = status_lines(fixture_ledger)
+
+    assert list(lines) == [1]
+    assert lines[1].startswith("as of 2026-02-20 ")
+    assert lines[1].endswith(
+        f", database schema behind the code (at {HEAD}), no report views yet:"
+        " run finance db migrate"
+    )

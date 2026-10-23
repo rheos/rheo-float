@@ -19,9 +19,7 @@ from sqlalchemy import Connection, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers import vancity_chequing_csv
 from rheo_finance.parsers.base import BalanceGap, VerifiedSegment
 from rheo_finance.parsers.registry import (
@@ -31,6 +29,8 @@ from rheo_finance.parsers.registry import (
     parse_document,
 )
 from rheo_finance.storage.schema import document, document_line, event, statement_period
+
+from .conftest import ManualAccount, register_accounts
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 JUMP = FIXTURES / "vancity_chequing_jump.csv"
@@ -49,27 +49,13 @@ class Setup:
 
     def register(self, *identifiers: str) -> None:
         """One chequing account holding ``identifiers`` (the fixture's by default)."""
-        manual = self.data / "manual"
-        manual.mkdir(parents=True, exist_ok=True)
-        columns = MANUAL_FILES[ACCOUNTS_FILE]
-        cells = dict.fromkeys(columns, "")
-        cells.update(
-            slug="chequing", label="Chequing", institution="Vancity",
-            kind="chequing", currencies="CAD", cadence="monthly",
-        )  # fmt: skip
-        (manual / ACCOUNTS_FILE).write_text(
-            ",".join(columns) + "\n" + ",".join(cells[c] for c in columns) + "\n",
-            encoding="utf-8",
+        register_accounts(
+            self.uow,
+            self.data,
+            ManualAccount(
+                "chequing", "Vancity", "chequing", identifiers or (IDENTIFIER,)
+            ),
         )
-        rows = [
-            f"chequing,{identifier},number,,"
-            for identifier in identifiers or (IDENTIFIER,)
-        ]
-        (manual / IDENTIFIERS_FILE).write_text(
-            "\n".join([",".join(MANUAL_FILES[IDENTIFIERS_FILE]), *rows]) + "\n",
-            encoding="utf-8",
-        )
-        load_accounts(self.uow, self.data)
 
     def file(self, text: str, name: str = "transactions-2026-02.csv") -> uuid.UUID:
         target = self.archive / "vancity" / name

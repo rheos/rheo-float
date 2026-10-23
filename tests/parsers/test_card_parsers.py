@@ -25,9 +25,7 @@ from sqlalchemy import Connection, Table, func, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.registry import (
     DOCUMENT_REJECTED,
     Parsed,
@@ -43,23 +41,21 @@ from rheo_finance.storage.schema import (
     statement_period,
 )
 
+from .conftest import ManualAccount, register_accounts
+
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 NOW = dt.datetime(2026, 3, 15, 12, 0, tzinfo=dt.UTC)
 # The invented cardholder every fixture prints; no stored row may carry it.
 CARDHOLDER = "sample cardholder"
 
 
-@dataclasses.dataclass(frozen=True)
-class Card:
-    slug: str
-    institution: str
-    identifier: str
-    kind: str = "masked_card"
+def card(slug: str, institution: str, identifier: str) -> ManualAccount:
+    return ManualAccount(slug, institution, "credit_card", (identifier,), "masked_card")
 
 
-VISA = Card("visa", "Vancity", "9999 99** **** 9991")
-MBNA = Card("mbna-card", "MBNA", "9999 99XX XXXX 9992")
-OTHER_VISA = Card("other-visa", "Vancity", "9999 99** **** 9993")
+VISA = card("visa", "Vancity", "9999 99** **** 9991")
+MBNA = card("mbna-card", "MBNA", "9999 99XX XXXX 9992")
+OTHER_VISA = card("other-visa", "Vancity", "9999 99** **** 9993")
 
 
 def fixture(name: str) -> str:
@@ -78,31 +74,8 @@ class Setup:
         self.archive = tmp_path / "archive"
         self.archive.mkdir()
 
-    def register(self, *cards: Card) -> None:
-        manual = self.data / "manual"
-        manual.mkdir(parents=True, exist_ok=True)
-        columns = MANUAL_FILES[ACCOUNTS_FILE]
-        rows = [",".join(columns)]
-        for card in cards:
-            cells = dict.fromkeys(columns, "")
-            cells.update(
-                slug=card.slug,
-                label=card.slug.title(),
-                institution=card.institution,
-                kind="credit_card",
-                currencies="CAD",
-                cadence="monthly",
-            )
-            rows.append(",".join(cells[column] for column in columns))
-        (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
-        identifiers = [",".join(MANUAL_FILES[IDENTIFIERS_FILE])]
-        identifiers += [
-            f"{card.slug},{card.identifier},{card.kind},," for card in cards
-        ]
-        (manual / IDENTIFIERS_FILE).write_text(
-            "\n".join(identifiers) + "\n", encoding="utf-8"
-        )
-        load_accounts(self.uow, self.data)
+    def register(self, *cards: ManualAccount) -> None:
+        register_accounts(self.uow, self.data, *cards)
 
     def file(self, relative: str, text: str) -> uuid.UUID:
         target = self.archive / relative
@@ -599,7 +572,7 @@ def test_an_mbna_statement_for_an_unregistered_card_is_rejected(setup: Setup) ->
 
 def test_a_last_four_resolves_only_at_the_statements_institution(setup: Setup) -> None:
     """Another institution's card ending in the same four digits is no candidate."""
-    same_four_elsewhere = Card("mbna-card", "MBNA", "9999 99XX XXXX 9991")
+    same_four_elsewhere = card("mbna-card", "MBNA", "9999 99XX XXXX 9991")
     setup.register(VISA, same_four_elsewhere)
     doc = setup.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
 
@@ -610,7 +583,7 @@ def test_a_last_four_resolves_only_at_the_statements_institution(setup: Setup) -
 def test_an_identifier_of_a_kind_outside_the_last_four_kinds_matches_nothing(
     setup: Setup,
 ) -> None:
-    setup.register(dataclasses.replace(VISA, kind="file_token"))
+    setup.register(dataclasses.replace(VISA, identifier_kind="file_token"))
     doc = setup.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
 
     assert setup.parse(doc) == Parsed("rejected", "unknown_account")

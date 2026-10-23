@@ -24,11 +24,10 @@ from sqlalchemy import Connection, select
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.issuers import place
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import load_accounts
 from rheo_finance.parsers.registry import parse_document, parsers_for
 from rheo_finance.storage.schema import document, statement_period
+
+from .conftest import ManualAccount, register_accounts
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures" / "synthetic"
@@ -52,31 +51,18 @@ FR8_KINDS = (
 )
 
 
-@dataclasses.dataclass(frozen=True)
-class Account:
-    slug: str
-    institution: str
-    kind: str
-    currencies: str
-    identifier: str
-    identifier_kind: str = "number"
-
-
-VISA = Account(
-    "visa", "Vancity", "credit_card", "CAD", "9999 99** **** 9991", "masked_card"
-)
-MBNA = Account(
-    "mbna-card", "MBNA", "credit_card", "CAD", "9999 99XX XXXX 9992", "masked_card"
-)
-WISE = Account("wise", "Wise", "wallet", "CAD;USD", "P99900001")
+A = ManualAccount
+VISA = A("visa", "Vancity", "credit_card", ("9999 99** **** 9991",), "masked_card")
+MBNA = A("mbna-card", "MBNA", "credit_card", ("9999 99XX XXXX 9992",), "masked_card")
+WISE = A("wise", "Wise", "wallet", ("P99900001",), currencies="CAD;USD")
 CU = "Nelson & District Credit Union"
-CU_CHEQUING = Account("cu-chequing", CU, "chequing", "CAD", "999000000101")
-CU_SHARES = Account("cu-shares", CU, "savings", "CAD", "999000000102")
-PAYPAL = Account("paypal", "PayPal", "payment_processor", "CAD;USD", "SAMPLE999A9ID")
-CHEQUING = Account(
-    "chequing", "Vancity", "chequing", "CAD", "999000000077-999-99901-99902"
+CU_CHEQUING = A("cu-chequing", CU, "chequing", ("999000000101",))
+CU_SHARES = A("cu-shares", CU, "savings", ("999000000102",))
+PAYPAL = A(
+    "paypal", "PayPal", "payment_processor", ("SAMPLE999A9ID",), currencies="CAD;USD"
 )
-HYDRO = Account("hydro", "FortisBC", "bill_vendor", "CAD", "9990001234")
+CHEQUING = A("chequing", "Vancity", "chequing", ("999000000077-999-99901-99902",))
+HYDRO = A("hydro", "FortisBC", "bill_vendor", ("9990001234",))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -85,7 +71,7 @@ class Source:
     fixture: str
     parser_id: str
     version: str
-    accounts: tuple[Account, ...] = ()
+    accounts: tuple[ManualAccount, ...] = ()
 
 
 SOURCES: dict[str, Source] = {
@@ -144,29 +130,6 @@ def issuer_and_format(source: Source) -> tuple[str, str]:
     return placed.issuer, placed.format
 
 
-def register(conn: Connection, data: Path, accounts: tuple[Account, ...]) -> None:
-    manual = data / "manual"
-    manual.mkdir(parents=True, exist_ok=True)
-    columns = MANUAL_FILES[ACCOUNTS_FILE]
-    rows = [",".join(columns)]
-    for each in accounts:
-        cells = dict.fromkeys(columns, "")
-        cells.update(
-            slug=each.slug, label=each.slug.title(), institution=each.institution,
-            kind=each.kind, currencies=each.currencies, cadence="monthly",
-        )  # fmt: skip
-        rows.append(",".join(cells[column] for column in columns))
-    (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
-    identifiers = [",".join(MANUAL_FILES[IDENTIFIERS_FILE])]
-    identifiers += [
-        f"{each.slug},{each.identifier},{each.identifier_kind},," for each in accounts
-    ]
-    (manual / IDENTIFIERS_FILE).write_text(
-        "\n".join(identifiers) + "\n", encoding="utf-8"
-    )
-    load_accounts(UnitOfWork(conn), data)
-
-
 def test_every_fr8_kind_has_a_source() -> None:
     assert tuple(SOURCES) == FR8_KINDS
 
@@ -212,12 +175,12 @@ def test_the_kind_parses_its_fixture(
     source = SOURCES[kind]
     data, archive = tmp_path / "data", tmp_path / "archive"
     archive.mkdir()
-    register(owner_conn, data, source.accounts)
+    uow = UnitOfWork(owner_conn)
+    register_accounts(uow, data, *source.accounts)
     raw = (FIXTURES / source.fixture).read_bytes()
     target = archive / source.path
     target.parent.mkdir(parents=True)
     target.write_bytes(raw)
-    uow = UnitOfWork(owner_conn)
     file_archive(uow, archive, data, NOW)
     doc = document_id(hashlib.sha256(raw).hexdigest())
 

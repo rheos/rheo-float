@@ -27,35 +27,25 @@ from sqlalchemy import Connection, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import NotRecognised
 from rheo_finance.parsers.registry import Parsed, parse_document, parsers_for
 from rheo_finance.storage.schema import document, document_line, statement_period
+
+from .conftest import ManualAccount, register_accounts
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 NOW = dt.datetime(2026, 5, 2, 12, 0, tzinfo=dt.UTC)
 D = dt.date
 
 
-@dataclasses.dataclass(frozen=True)
-class Account:
-    slug: str
-    institution: str
-    kind: str
-    currencies: str
-    identifier: str
-
-
-CHEQUING = Account(
-    "cu-chequing", "Nelson & District Credit Union", "chequing", "CAD", "999000000101"
+CU = "Nelson & District Credit Union"
+CHEQUING = ManualAccount("cu-chequing", CU, "chequing", ("999000000101",))
+SHARES = ManualAccount("cu-shares", CU, "savings", ("999000000102",))
+WISE = ManualAccount("wise", "Wise", "wallet", ("P99900001",), currencies="CAD;USD")
+PAYPAL = ManualAccount(
+    "paypal", "PayPal", "payment_processor", ("SAMPLE999A9ID",), currencies="CAD;USD"
 )
-SHARES = Account(
-    "cu-shares", "Nelson & District Credit Union", "savings", "CAD", "999000000102"
-)
-WISE = Account("wise", "Wise", "wallet", "CAD;USD", "P99900001")
-PAYPAL = Account("paypal", "PayPal", "payment_processor", "CAD;USD", "SAMPLE999A9ID")
 
 
 def fixture(name: str) -> str:
@@ -74,25 +64,8 @@ class Setup:
         self.archive = tmp_path / "archive"
         self.archive.mkdir()
 
-    def register(self, *accounts: Account) -> None:
-        manual = self.data / "manual"
-        manual.mkdir(parents=True, exist_ok=True)
-        columns = MANUAL_FILES[ACCOUNTS_FILE]
-        rows = [",".join(columns)]
-        for each in accounts:
-            cells = dict.fromkeys(columns, "")
-            cells.update(
-                slug=each.slug, label=each.slug.title(), institution=each.institution,
-                kind=each.kind, currencies=each.currencies, cadence="monthly",
-            )  # fmt: skip
-            rows.append(",".join(cells[column] for column in columns))
-        (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
-        identifiers = [",".join(MANUAL_FILES[IDENTIFIERS_FILE])]
-        identifiers += [f"{each.slug},{each.identifier},number,," for each in accounts]
-        (manual / IDENTIFIERS_FILE).write_text(
-            "\n".join(identifiers) + "\n", encoding="utf-8"
-        )
-        load_accounts(self.uow, self.data)
+    def register(self, *accounts: ManualAccount) -> None:
+        register_accounts(self.uow, self.data, *accounts)
 
     def file(self, relative: str, text: str) -> uuid.UUID:
         target = self.archive / relative
@@ -553,11 +526,11 @@ def test_paypal_one_cent_off_the_closing_rejects_the_statement(setup: Setup) -> 
 
 def test_an_account_id_is_matched_on_its_letters_too(setup: Setup) -> None:
     """An ID with the same digits and other letters is another account."""
-    setup.register(dataclasses.replace(PAYPAL, identifier="OTHERS999B9XX"))
+    setup.register(dataclasses.replace(PAYPAL, identifiers=("OTHERS999B9XX",)))
     doc = setup.file(PAYPAL_STATEMENT, fixture("paypal_activity.txt"))
     assert setup.parse(doc) == Parsed("rejected", "unknown_account")
 
-    setup.register(dataclasses.replace(PAYPAL, identifier="sample-999a-9id"))
+    setup.register(dataclasses.replace(PAYPAL, identifiers=("sample-999a-9id",)))
     assert setup.parse(doc).status == "parsed"
 
 

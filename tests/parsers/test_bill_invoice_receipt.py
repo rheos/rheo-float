@@ -24,9 +24,7 @@ from sqlalchemy import Connection, func, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.registry import Parsed, parse_document, parsers_for
 from rheo_finance.storage.schema import (
     document,
@@ -34,6 +32,8 @@ from rheo_finance.storage.schema import (
     rejected_period,
     statement_period,
 )
+
+from .conftest import ManualAccount, register_accounts
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 NOW = dt.datetime(2026, 3, 20, 12, 0, tzinfo=dt.UTC)
@@ -58,24 +58,11 @@ class Setup:
         self.archive.mkdir()
 
     def register_fortis(self, identifier: str = FORTIS_NUMBER) -> None:
-        manual = self.data / "manual"
-        manual.mkdir(parents=True, exist_ok=True)
-        columns = MANUAL_FILES[ACCOUNTS_FILE]
-        cells = dict.fromkeys(columns, "")
-        cells.update(
-            slug="hydro", label="Hydro", institution="FortisBC", kind="bill_vendor",
-            currencies="CAD", cadence="monthly",
-        )  # fmt: skip
-        (manual / ACCOUNTS_FILE).write_text(
-            ",".join(columns) + "\n" + ",".join(cells[c] for c in columns) + "\n",
-            encoding="utf-8",
+        register_accounts(
+            self.uow,
+            self.data,
+            ManualAccount("hydro", "FortisBC", "bill_vendor", (identifier,)),
         )
-        (manual / IDENTIFIERS_FILE).write_text(
-            ",".join(MANUAL_FILES[IDENTIFIERS_FILE])
-            + f"\nhydro,{identifier},number,,\n",
-            encoding="utf-8",
-        )
-        load_accounts(self.uow, self.data)
 
     def file(self, relative: str, data: bytes | str) -> uuid.UUID:
         raw = data.encode("utf-8") if isinstance(data, str) else data

@@ -23,9 +23,6 @@ from sqlalchemy import Connection, func, select, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import WITHHELD_PATH, document_id, file_archive
 from rheo_finance.events import record_event
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import load_accounts
 from rheo_finance.parsers import registry
 from rheo_finance.parsers.base import (
     AccountLookup,
@@ -48,28 +45,15 @@ from rheo_finance.parsers.registry import (
 )
 from rheo_finance.storage.schema import document, document_line, event, statement_period
 
+from .conftest import ManualAccount, register_accounts
+
 NOW = dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)
 PACKAGE = Path(registry.__file__).resolve().parent
 
 
-def write_card_registry(data_dir: Path) -> None:
-    manual = data_dir / "manual"
-    manual.mkdir(parents=True, exist_ok=True)
-    columns = MANUAL_FILES[ACCOUNTS_FILE]
-    cells = dict.fromkeys(columns, "")
-    cells.update(
-        slug="card", label="Card", institution="Card Bank", kind="credit_card",
-        currencies="CAD", cadence="monthly",
-    )  # fmt: skip
-    (manual / ACCOUNTS_FILE).write_text(
-        ",".join(columns) + "\n" + ",".join(cells[c] for c in columns) + "\n",
-        encoding="utf-8",
-    )
-    (manual / IDENTIFIERS_FILE).write_text(
-        ",".join(MANUAL_FILES[IDENTIFIERS_FILE]) + "\ncard,9999 99** **** 4321,"
-        "masked_card,,\n",
-        encoding="utf-8",
-    )
+CARD = ManualAccount(
+    "card", "Card Bank", "credit_card", ("9999 99** **** 4321",), "masked_card"
+)
 
 
 def fixture_parser(text: str, accounts: AccountLookup) -> ParseResult:
@@ -122,8 +106,7 @@ class Archive:
         self.data = tmp_path / "data"
         self.root = tmp_path / "archive"
         self.root.mkdir()
-        write_card_registry(self.data)
-        load_accounts(self.uow, self.data)
+        register_accounts(self.uow, self.data, CARD)
 
     def file(self, relative: str, data: bytes) -> uuid.UUID:
         target = self.root / relative

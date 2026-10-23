@@ -20,9 +20,7 @@ from sqlalchemy import Connection, Table, func, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
-from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
-from rheo_finance.manual.headers import MANUAL_FILES
-from rheo_finance.manual.stage2 import account_id, load_accounts
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers import vancity_statement
 from rheo_finance.parsers.base import OverdrawnSpell
 from rheo_finance.parsers.registry import (
@@ -40,6 +38,8 @@ from rheo_finance.storage.schema import (
     statement_period,
 )
 
+from .conftest import ManualAccount, register_accounts
+
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 STATEMENT_2020 = FIXTURES / "vancity_statement_2020.txt"
 STATEMENT_2026 = FIXTURES / "vancity_statement_2026.txt"
@@ -56,30 +56,6 @@ ACCOUNTS = {
 }
 
 
-def write_registry(data_dir: Path, slugs: tuple[str, ...] = tuple(ACCOUNTS)) -> None:
-    manual = data_dir / "manual"
-    manual.mkdir(parents=True, exist_ok=True)
-    columns = MANUAL_FILES[ACCOUNTS_FILE]
-    rows = [",".join(columns)]
-    for slug in slugs:
-        cells = dict.fromkeys(columns, "")
-        cells.update(
-            slug=slug,
-            label=ACCOUNTS[slug][0],
-            institution="vancity",  # compared without case
-            kind="chequing",
-            currencies="CAD",
-            cadence="monthly",
-        )
-        rows.append(",".join(cells[column] for column in columns))
-    (manual / ACCOUNTS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
-    identifiers = [",".join(MANUAL_FILES[IDENTIFIERS_FILE])]
-    identifiers += [f"{slug},{ACCOUNTS[slug][1]},number,," for slug in slugs]
-    (manual / IDENTIFIERS_FILE).write_text(
-        "\n".join(identifiers) + "\n", encoding="utf-8"
-    )
-
-
 def read_as_text(path: Path) -> str:
     """The fixtures are already layout text: what pdftotext would print."""
     return path.read_text(encoding="utf-8")
@@ -94,8 +70,20 @@ class Setup:
         self.archive.mkdir()
 
     def register(self, slugs: tuple[str, ...] = tuple(ACCOUNTS)) -> None:
-        write_registry(self.data, slugs)
-        load_accounts(self.uow, self.data)
+        register_accounts(
+            self.uow,
+            self.data,
+            *(
+                ManualAccount(
+                    slug,
+                    "vancity",  # compared without case
+                    "chequing",
+                    (ACCOUNTS[slug][1],),
+                    label=ACCOUNTS[slug][0],
+                )
+                for slug in slugs
+            ),
+        )
 
     def file(self, name: str, text: str) -> uuid.UUID:
         target = self.archive / "vancity" / name

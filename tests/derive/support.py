@@ -2,6 +2,11 @@
 
 Every value is synthetic: the account identifiers are the fixtures' fake numbers, and a
 "PDF" is layout text read back by a stub extractor (``read_as_text``).
+
+The card fixtures (``card_*``) use a small synthetic layout read by ``parse_card``, a
+test-only parser registered under a test-only issuer directory (``CARD_ISSUER``) by the
+``card_parsers`` fixture. They carry the overlap pattern of a card archive, not any
+issuer's layout.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import datetime as dt
 import hashlib
 import uuid
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import Connection, select
@@ -22,6 +28,15 @@ from rheo_finance.documents.registry import document_id, file_archive
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.cash_lines import TRANSACTIONS_FILE
 from rheo_finance.manual.headers import MANUAL_FILES
+from rheo_finance.parsers.base import (
+    AccountLookup,
+    NotRecognised,
+    ParsedLine,
+    ParsedPeriod,
+    ParseResult,
+    Rejected,
+)
+from rheo_finance.parsers.registry import Parser
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage.schema import txn
 
@@ -32,6 +47,86 @@ STATEMENT_IDENTIFIER = "999000000022"
 D = dt.date
 
 MakeContext = Callable[[Role], FinanceContext]
+
+CARD_ISSUER = "synthetic-card"
+CARD_INSTITUTION = "Sample Card"
+CARD_IDENTIFIER = "999000000033"
+CARD_STATEMENT = "SYNTHETIC CARD STATEMENT"
+CARD_TRANSACTIONS = "SYNTHETIC CARD TRANSACTIONS"
+
+
+def card_fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def parse_card(text: str, accounts: AccountLookup) -> ParseResult:
+    """The synthetic card layout: a header (statement or transactions), ``ACCOUNT``,
+    for a statement ``PERIOD``, ``OPENING`` and ``CLOSING``, then one ``LINE`` per
+    transaction as posting date, transaction date (``-`` for none), signed amount and
+    description. A transactions document's period runs from its first line's date to
+    its last's, with control ``none``."""
+    rows = [row.strip() for row in text.splitlines() if row.strip()]
+    if not rows or rows[0] not in (CARD_STATEMENT, CARD_TRANSACTIONS):
+        raise NotRecognised
+    statement = rows[0] == CARD_STATEMENT
+    fields: dict[str, str] = {}
+    found: list[tuple[dt.date, dt.date | None, Decimal, str]] = []
+    for row in rows[1:]:
+        head, _, rest = row.partition(" ")
+        if head == "LINE":
+            posting, txn_date, amount, description = rest.split(" ", 3)
+            found.append(
+                (
+                    dt.date.fromisoformat(posting),
+                    None if txn_date == "-" else dt.date.fromisoformat(txn_date),
+                    Decimal(amount),
+                    description,
+                )
+            )
+        else:
+            fields[head] = rest
+    if statement:
+        first, last = (dt.date.fromisoformat(d) for d in fields["PERIOD"].split())
+    else:
+        first = min(line[0] for line in found)
+        last = max(line[0] for line in found)
+    matched = accounts.by_identifier(CARD_INSTITUTION, fields["ACCOUNT"], first, last)
+    if len(matched) != 1:
+        raise Rejected("unknown_account", (first, last))
+    account = matched[0]
+    period = ParsedPeriod(
+        account=account,
+        currency="CAD",
+        period_start=first,
+        period_end=last,
+        control_kind="summary" if statement else "none",
+        opening=Decimal(fields["OPENING"]) if statement else None,
+        closing=Decimal(fields["CLOSING"]) if statement else None,
+    )
+    return ParseResult(
+        periods=(period,),
+        lines=tuple(
+            ParsedLine(
+                line_kind="transaction",
+                account=account,
+                posting_date=posting,
+                txn_date=txn_date,
+                amount=amount,
+                currency="CAD",
+                description_raw=description,
+            )
+            for posting, txn_date, amount, description in found
+        ),
+        control_kind=period.control_kind,
+    )
+
+
+# One parser per format the card fixtures are filed as: a PDF (statement or transaction
+# download), a CSV, and a text file standing for any other format.
+CARD_PARSERS = tuple(
+    Parser(f"synthetic_card_{fmt}", CARD_ISSUER, fmt, "1", parse_card)
+    for fmt in ("pdf", "csv", "txt")
+)
 
 
 def read_as_text(path: Path) -> str:
@@ -89,6 +184,10 @@ class Ledger:
         """The one account the CSV and statement fixtures name, under Vancity."""
         self.accounts((slug, "Vancity", "chequing", CSV_IDENTIFIER))
         self.add_identifier(slug, STATEMENT_IDENTIFIER)
+
+    def card(self, slug: str = "card") -> None:
+        """The one account the card fixtures name."""
+        self.accounts((slug, CARD_INSTITUTION, "credit_card", CARD_IDENTIFIER))
 
     def add_identifier(self, slug: str, identifier: str) -> None:
         path = self.data / "manual" / IDENTIFIERS_FILE

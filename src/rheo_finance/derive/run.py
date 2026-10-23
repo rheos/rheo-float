@@ -5,7 +5,8 @@ that fails leaves every table as it found it, whatever the caller does next.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   ``txn`` tables, the source discrepancies, the parse cache and the events. State
+   coverage matrix, the ``txn`` tables, the source discrepancies, the parse cache and
+   the events. State
    tables (decisions and their snapshots) are never touched, and neither are the
    registry tables the file operation owns (``document``, ``archive_skip``).
 2. Stage 2, the manual files: accounts and identifiers first. The parsers match
@@ -17,10 +18,12 @@ Order of work, set by what each step reads:
    repeated copies of one document are ``superseded`` (``precedence.supersede``).
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
    source discrepancies (``stage3``, ``precedence``, ``overlap``).
-5. Check the deferred constraints now, inside the run, so a violation fails the derive
+5. Stage 5, recognition dates (``stage5``), then stage 6, the coverage matrix
+   (``coverage``), which reads the periods, the lines and ``document_periods.csv``.
+6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
-6. Stage 16, the sink specs (``sinks.store.write_sink_specs``), last.
+7. Stage 16, the sink specs (``sinks.store.write_sink_specs``), last.
 
 A stage is a plain import at its step; a feature package that is not built yet has no
 call site (Key decision 14).
@@ -37,13 +40,17 @@ from typing import Final
 from sqlalchemy import delete, text
 
 from rheo_finance.context import FinanceContext, UnitOfWork
-from rheo_finance.derive import stage1, stage2, stage3
+from rheo_finance.derive import coverage, stage1, stage2, stage3, stage5
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.sinks.store import write_sink_specs
 from rheo_finance.storage.schema import (
+    coverage as coverage_table,
+)
+from rheo_finance.storage.schema import (
     document_line,
     event,
+    rejected_period,
     source_discrepancy,
     statement_period,
     txn,
@@ -53,7 +60,8 @@ from rheo_finance.storage.schema import (
 OVERLAP_DAYS_KEY: Final = "finance.import.overlap_day_tolerance"
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
-    txn_source, txn, source_discrepancy, document_line, statement_period, event,
+    coverage_table, txn_source, txn, source_discrepancy, document_line,
+    statement_period, rejected_period, event,
 )  # fmt: skip
 # Rewritten whole by a loader or a stage.
 REWRITTEN: Final = frozenset(
@@ -74,6 +82,8 @@ class Derived:
 
     documents: Counter[str]
     lines: stage3.Lines
+    # Account-months by coverage state.
+    months: Counter[coverage.State]
 
 
 def run(
@@ -109,7 +119,11 @@ def run(
             overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY),
         )
 
+        stage5.recognize(uow)
+        today = ctx.clock.now_utc().astimezone(ctx.settings.timezone).date()
+        months = coverage.build_coverage(uow, manual.document_periods.periods, today)
+
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
         write_sink_specs(uow)
-    return Derived(documents=documents, lines=lines)
+    return Derived(documents=documents, lines=lines, months=months)

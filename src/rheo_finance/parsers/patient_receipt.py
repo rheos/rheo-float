@@ -21,6 +21,12 @@ type>`` and ``counterparty`` (restricted) the clinic normalized as descriptions 
 (``text.normalize_description``). The patient's name and address, the payment
 descriptions and the treatment lines are stored nowhere.
 
+A payment's description prints the payment's own number (``Payment #<number>``). The
+line stores ``payment_ref_digest`` (restricted), the first 16 hex digits of a sha256
+over it, never the number: stage 3 keys a receipt line by it, so two genuine receipts
+that print the same date, amount and type stay two, while a re-saved copy of one
+receipt gives the same keys. A payment whose description prints no number has none.
+
 The check: the payments sum to ``Total Payments``, else the receipt is rejected
 (``checks_failed``) with zero lines.
 """
@@ -28,7 +34,9 @@ The check: the payments sum to ``Total Payments``, else the receipt is rejected
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
@@ -53,6 +61,8 @@ _HEADER: Final = "DatePaymentTypeDescriptionPaymentAmount"
 _DAY: Final = re.compile(r"\d\d-[A-Z][a-z]{2}-\d\d")
 _MONEY: Final = re.compile(rf"(?P<minus>-)?\$(?P<amount>{AMOUNT_TEXT})")
 _TOTAL: Final = re.compile(rf"\s*Total Payments\s{{2,}}\$(?P<amount>{AMOUNT_TEXT})\s*")
+# A payment's own number in its description: ``Payment #<number>``.
+_REFERENCE: Final = re.compile(r"#\s*(?P<ref>[A-Za-z0-9]+)")
 
 
 def _squeezed(line: str) -> str:
@@ -74,24 +84,40 @@ def _print_date(lines: list[str]) -> dt.date:
     return written_date(found.pop(), "%d-%b-%Y")
 
 
-def _payment(line: str) -> tuple[dt.date, str, Decimal]:
+@dataclass(frozen=True)
+class _Payment:
+    day: dt.date
+    kind: str
+    value: Decimal
+    ref_digest: str | None
+
+
+def payment_ref_digest(reference: str) -> str:
+    """The stored stand-in for a payment's own number: 16 hex digits of a sha256."""
+    data = f"receipt-payment:{reference}".encode()
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _payment(line: str) -> _Payment:
     cells = re.split(r"\s{2,}", line.strip())
     money = _MONEY.fullmatch(cells[-1])
     if len(cells) < 3 or _DAY.fullmatch(cells[0]) is None or money is None:
         raise NotRecognised("a line this receipt layout does not print")
     value = amount(money["amount"])
-    return (
-        written_date(cells[0], "%d-%b-%y"),
-        cells[1],
-        -value if money["minus"] else value,
+    reference = _REFERENCE.search(" ".join(cells[2:-1]))
+    return _Payment(
+        day=written_date(cells[0], "%d-%b-%y"),
+        kind=cells[1],
+        value=-value if money["minus"] else value,
+        ref_digest=payment_ref_digest(reference["ref"]) if reference else None,
     )
 
 
-def _payments(lines: list[str]) -> tuple[list[tuple[dt.date, str, Decimal]], Decimal]:
+def _payments(lines: list[str]) -> tuple[list[_Payment], Decimal]:
     headers = [index for index, line in enumerate(lines) if _squeezed(line) == _HEADER]
     if len(headers) != 1:
         raise NotRecognised("a patient receipt without one payment table")
-    payments: list[tuple[dt.date, str, Decimal]] = []
+    payments: list[_Payment] = []
     for line in lines[headers[0] + 1 :]:
         if not line.strip():
             continue
@@ -109,7 +135,7 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
     payee = normalize_description(_first_line(lines))
     _print_date(lines)
     payments, total = _payments(lines)
-    if sum((value for _, _, value in payments), Decimal(0)) != total:
+    if sum((each.value for each in payments), Decimal(0)) != total:
         raise Rejected("checks_failed")
     return ParseResult(
         periods=(),
@@ -117,13 +143,14 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
             ParsedLine(
                 "receipt",
                 account=None,
-                posting_date=day,
-                amount=-value,
+                posting_date=each.day,
+                amount=-each.value,
                 currency=CURRENCY,
-                description_raw=f"Patient receipt: {kind}",
+                description_raw=f"Patient receipt: {each.kind}",
                 counterparty=payee,
+                payment_ref_digest=each.ref_digest,
             )
-            for day, kind, value in payments
+            for each in payments
         ),
         control_kind="none",
     )
@@ -141,7 +168,8 @@ PARSER: Final = register_parser(
         parser_id="receipts.patient_receipt",
         issuer=ISSUER,
         format="pdf",
-        version="1",
+        # 2: each line carries its payment's reference digest.
+        version="2",
         parse=parse,
         filing_date=filing_date,
     )

@@ -73,6 +73,9 @@ PINNED = {
     "0014_report_views.py": (
         "edc083c85e2fd329baa3b7daa2ec45495052bd0fa2330e86129baa2656992995"
     ),
+    "0015_receipt_ref_digest.py": (
+        "45a2d6547d37f13f7e71ad5d8e7b4ffafa53b927c41beb80f5a4fa60441a07ee"
+    ),
 }
 
 

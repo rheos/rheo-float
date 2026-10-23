@@ -119,7 +119,7 @@ SOURCES: dict[str, Source] = {
     ),
     "Receipts": Source(
         "receipts/sample-clinic/2026-03-16.pdf", "patient_receipt.txt",
-        "receipts.patient_receipt", "1",
+        "receipts.patient_receipt", "2",
     ),
 }  # fmt: skip
 

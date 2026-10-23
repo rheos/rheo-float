@@ -386,6 +386,8 @@ document_line = Table(
     Column("trading_fee", Numeric),
     Column("funding_fee", Numeric),
     Column("line_key_id", Uuid),
+    # A receipt payment's own reference as a digest (0015); null on other lines.
+    Column("payment_ref_digest", Text),
 )
 # SPEC Data Models marks asset_identifier internal; it is restricted here because its
 # name is an identifier's, and the tier guard restricts every such column.
@@ -402,7 +404,7 @@ _tiers(
         "transfer_hint": P, "reversal_hint": P, "conversion_hint": P,
         "etransfer_hint": P, "hint_account_slug": P, "trade_ref": P,
         "instrument": Tier.INTERNAL, "result": R, "trading_fee": R,
-        "funding_fee": R, "line_key_id": P,
+        "funding_fee": R, "line_key_id": P, "payment_ref_digest": R,
     },
 )  # fmt: skip
 

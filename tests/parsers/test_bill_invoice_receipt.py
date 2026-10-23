@@ -323,7 +323,7 @@ def test_a_receipt_gives_one_receipt_line_per_payment(setup: Setup) -> None:
     assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=2)
     row = setup.document(doc)
     assert (row.parser_id, row.parser_version, row.kind) == (
-        "receipts.patient_receipt", "1", "receipt",
+        "receipts.patient_receipt", "2", "receipt",
     )  # fmt: skip
     shape = [
         (
@@ -337,6 +337,21 @@ def test_a_receipt_gives_one_receipt_line_per_payment(setup: Setup) -> None:
          "Patient receipt: Cash", "sample dental clinic"),
         ("receipt", None, D(2026, 3, 15), Decimal("-45.00"), "CAD",
          "Patient receipt: Debit", "sample dental clinic"),
+    ]  # fmt: skip
+    # Each payment's own number is stored as a digest only, one per payment.
+    digests = [line.payment_ref_digest for line in setup.lines(doc)]
+    assert all(len(each) == 16 for each in digests)
+    assert len(set(digests)) == 2
+
+
+def test_a_payment_with_no_number_has_no_reference_digest(setup: Setup) -> None:
+    doc = setup.file(
+        RECEIPT, changed(RECEIPT_TEXT, "Pmt. Payment #999123 - ", "Pmt. Payment - ")
+    )
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=2)
+    assert [line.payment_ref_digest is None for line in setup.lines(doc)] == [
+        True, False,
     ]  # fmt: skip
 
 

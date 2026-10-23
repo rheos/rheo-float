@@ -257,6 +257,8 @@ class ParsedLine:
     result: Decimal | None = None
     trading_fee: Decimal | None = None
     funding_fee: Decimal | None = None
+    # A receipt payment's own reference, as a digest: never the reference itself.
+    payment_ref_digest: str | None = None
 
 
 @dataclass(frozen=True)

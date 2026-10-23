@@ -17,11 +17,16 @@ is what FR-47 forbids.
 - ``reference_bill(text)`` and ``money(value)`` pass ``docextract.reference.parse`` and
   ``to_money`` through for the Virgin bill parser; text docextract cannot read as a
   bill raises ``NotRecognised``.
+- ``docextract_version()`` names the installed ``doc-extraction-api``: its version and,
+  for a git install, the commit. A PDF's parse depends on it (the text extraction and
+  the rules), so ``derive.stage1.parse_inputs`` and the input fingerprint hash it.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import importlib.metadata
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -35,6 +40,23 @@ from docextract.vancity import VancityParseError
 from docextract.vancity import parse as _vancity_parse
 
 from rheo_finance.parsers.base import NoTextLayer, NotRecognised
+
+DISTRIBUTION = "doc-extraction-api"
+
+
+def docextract_version() -> str:
+    """The installed ``doc-extraction-api``: ``<version>`` or ``<version>+<commit>``.
+    The package is pinned to a commit whose version string need not move, so the
+    commit from its install record joins the version when there is one."""
+    found = importlib.metadata.distribution(DISTRIBUTION)
+    record = found.read_text("direct_url.json")
+    commit = None
+    if record is not None:
+        vcs = json.loads(record).get("vcs_info")
+        if isinstance(vcs, dict):
+            commit = vcs.get("commit_id")
+    version = found.version
+    return f"{version}+{commit}" if isinstance(commit, str) else version
 
 
 def pdf_text(path: Path) -> str:

@@ -7,8 +7,10 @@ registry.
 
 A parse is kept rather than redone when none of those three moved. ``parse_inputs``
 hashes the last two for one document: its issuer and format, the id and version of
-every parser registered for them, and the account registry (``account`` joined to
-its identifiers, as the parsers see it). Each parse stores that hash on the document.
+every parser registered for them, for a PDF the installed ``doc-extraction-api``
+(``docextract_adapter.docextract_version``: it extracts the text and holds the rules),
+and the account registry (``account`` joined to its identifiers, as the parsers see
+it). Each parse stores that hash on the document.
 Without ``reparse`` (``finance.ledger.derive``), a document is parsed again only when
 it was never parsed, its stored hash differs from the current one, its file is not at
 its path with its own sha256 (the file left the archive, was withheld or now holds
@@ -42,6 +44,7 @@ from sqlalchemy import select, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive.precedence import supersede
 from rheo_finance.documents.registry import WITHHELD_PATH
+from rheo_finance.parsers import docextract_adapter
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import parse_document, parsers_for
 from rheo_finance.storage.schema import account, account_identifier, document
@@ -77,10 +80,15 @@ def registry_digest(uow: UnitOfWork) -> str:
     return hashlib.sha256(json.dumps(body).encode("utf-8")).hexdigest()
 
 
-def parse_inputs(issuer: str, fmt: str, registry: str) -> str:
-    """sha256 of what one document's parse depends on besides its bytes."""
+PDF: Final = "pdf"
+
+
+def parse_inputs(issuer: str, fmt: str, registry: str, docextract: str) -> str:
+    """sha256 of what one document's parse depends on besides its bytes.
+    ``docextract`` is the installed ``doc-extraction-api``; only a PDF reads it."""
     parsers = [[each.parser_id, each.version] for each in parsers_for(issuer, fmt)]
-    body = json.dumps([issuer, fmt, parsers, registry])
+    extractor = docextract if fmt == PDF else None
+    body = json.dumps([issuer, fmt, parsers, registry, extractor])
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
@@ -105,6 +113,7 @@ def parse_all(
     """Parse every registered document that needs it (every one with ``reparse``),
     then supersede repeated copies."""
     registry = registry_digest(uow)
+    docextract = docextract_adapter.docextract_version()
     uow.execute(
         update(document)
         .where(document.c.status == "superseded")
@@ -125,7 +134,7 @@ def parse_all(
         ).order_by(document.c.id)
     ).all()
     for row in rows:
-        inputs = parse_inputs(row.issuer, row.format, registry)
+        inputs = parse_inputs(row.issuer, row.format, registry, docextract)
         if (
             not reparse
             and row.status != "filed"

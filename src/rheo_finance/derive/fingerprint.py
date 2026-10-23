@@ -8,7 +8,8 @@ Its parts:
 - ``manual``: the sha256 of each manual file (``absent`` for a missing one);
 - ``decisions``: the newest decision's id and the count;
 - ``settings``: ``settings.settings_hash``;
-- ``parsers``: every registered parser's id, issuer, format and version;
+- ``parsers``: every registered parser's id, issuer, format and version, and the
+  installed ``doc-extraction-api`` (``docextract_adapter.docextract_version``);
 - ``features``: the feature packages in the tree (Key decision 14);
 - ``local_date``: today in ``finance.locale.timezone``. Stage 6 reads today, and later
   stage 14's overdue figures and stage 16's overdue-statement event do too, so a run
@@ -41,6 +42,7 @@ from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.documents.registry import ARCHIVE_KEY
 from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
+from rheo_finance.parsers import docextract_adapter
 from rheo_finance.parsers.registry import load_parsers
 from rheo_finance.settings import settings_hash
 from rheo_finance.storage.schema import decision
@@ -101,12 +103,11 @@ def _decisions(uow: UnitOfWork) -> str:
 
 
 def _parsers() -> str:
-    return _sha(
-        sorted(
-            [each.parser_id, each.issuer, each.format, each.version]
-            for each in load_parsers().values()
-        )
+    registered = sorted(
+        [each.parser_id, each.issuer, each.format, each.version]
+        for each in load_parsers().values()
     )
+    return _sha([registered, docextract_adapter.docextract_version()])
 
 
 def _features() -> str:

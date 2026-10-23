@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import hashlib
+import os
 import socket
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any, NoReturn
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import Connection, DateTime, func, select, update
+from sqlalchemy import Connection, DateTime, func, select, text, update
 
 from derive.support import (
     CARD_IDENTIFIER,
@@ -36,7 +37,7 @@ from derive.support import (
     read_as_text,
 )
 from guards.source_tree import PACKAGE, imports, modules, names_module
-from rheo_finance import catalogue
+from rheo_finance import catalogue, features
 from rheo_finance.clock import FakeClock
 from rheo_finance.contracts import Role, SafetyClass
 from rheo_finance.derive import run as derive_run
@@ -55,6 +56,7 @@ from rheo_finance.storage.schema import (
     decision,
     decision_target,
     document,
+    event,
     sink_spec,
     txn,
     txn_source,
@@ -244,6 +246,26 @@ def test_derive_parses_only_new_or_changed_documents(
     assert digest(ledger) == derived
 
 
+def test_a_new_docextract_version_reparses_the_kept_pdfs_and_moves_the_fingerprint(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed(ledger)
+    derive(ledger)
+    before = taken(ledger)
+    pdfs = ledger.conn.scalar(
+        select(func.count()).select_from(document).where(document.c.format == "pdf")
+    )
+    total = sum(SEEDED.values())
+    assert 0 < int(pdfs or 0) < total
+
+    monkeypatch.setattr(docextract_adapter, "docextract_version", lambda: "9.9.9")
+    out = derive(ledger)
+
+    assert (out.parsed_now, out.kept) == (pdfs, total - int(pdfs or 0))
+    assert statuses(out) == SEEDED
+    assert taken(ledger) != before
+
+
 def test_an_account_that_leaves_the_registry_reparses_its_documents(
     ledger: Ledger,
 ) -> None:
@@ -343,12 +365,33 @@ def test_the_digest_reads_rows_and_leaves_out_written_at_times(ledger: Ledger) -
     ledger.conn.execute(update(document).values(imported_at=later))
     ledger.conn.execute(update(sink_spec).values(computed_at=later))
     assert digest(ledger) == before
+    ledger.conn.execute(update(document).values(parse_inputs="9" * 64))
+    assert digest(ledger) == before
 
     one = ledger.conn.scalar(select(txn.c.id).order_by(txn.c.id).limit(1))
     ledger.conn.execute(
         update(txn).where(txn.c.id == one).values(description_norm="edited")
     )
     assert digest(ledger) != before
+
+
+def test_the_digest_reads_a_fractional_json_number_in_event_data(
+    ledger: Ledger,
+) -> None:
+    # A JSON number with a fraction comes back from jsonb as a float.
+    seed(ledger)
+    rebuild(ledger)
+    one = ledger.conn.scalar(select(event.c.id).limit(1))
+    assert one is not None
+
+    def with_number(value: str) -> str:
+        ledger.conn.execute(
+            text("UPDATE finance.event SET data = CAST(:data AS jsonb) WHERE id = :id"),
+            {"data": f'{{"n": {value}}}', "id": one},
+        )
+        return digest(ledger)
+
+    assert with_number("1.5") != with_number("2.5")
 
 
 def test_every_derived_table_is_digested_and_no_state_table_is() -> None:
@@ -549,6 +592,15 @@ def test_the_fingerprint_moves_with_each_input_and_only_then(
 
     ledger.file("synthetic-card/2025-03-01-more.csv", "NOT A CARD DOCUMENT EITHER\n")
     moved()
+    # An existing file's mtime alone, then its size alone.
+    path = ledger.archive / "synthetic-card/2025-03-01-more.csv"
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    moved()
+    mtime = path.stat().st_mtime_ns
+    path.write_text("NOT A CARD DOCUMENT EITHER, LONGER\n", encoding="utf-8")
+    os.utime(path, ns=(stat.st_atime_ns, mtime))
+    moved()
     ledger.add_identifier("card", "999000000066")
     moved()
     ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
@@ -570,6 +622,12 @@ def test_the_fingerprint_moves_with_each_input_and_only_then(
         csv_parser.parser_id,
         dataclasses.replace(csv_parser, version="3"),
     )
+    moved()
+    # A new feature package.
+    package = ledger.data.parent / "more-features" / "sample_feature"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(features, "__path__", [*features.__path__, str(package.parent)])
     moved()
 
 

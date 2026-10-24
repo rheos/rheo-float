@@ -260,6 +260,97 @@ def test_a_2016_line_asks_the_legacy_noon_series_up_to_the_day_before_fx_begins(
     ]
 
 
+def test_an_empty_legacy_reply_records_no_coverage_and_is_asked_again(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+) -> None:
+    legacy = LEGACY_NOON_SERIES["USD"]
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines(
+            "USD",
+            "2016-12-28 -10.00 - - SAMPLE SHOP 99953",
+            "2017-01-02 -10.00 - - SAMPLE SHOP 99954",
+        ),
+    )
+    fx_ledger.derive()
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+    valet_stub.reply(f"/valet/observations/{legacy}/json", body=valet_reply(legacy, []))
+
+    out = fetch(fx_ledger)
+
+    assert (out.requests, out.stored, out.failed) == (1, 0, 0)
+    # Closed or not, a reply with no observation covers nothing: a later line must
+    # never convert at an older rate across days the fetch did not see.
+    assert coverage(fx_ledger) == []
+    fx_ledger.derive()
+    assert set(fx_ledger.conn.scalars(select(txn.c.conversion_state))) == {
+        "unconverted"
+    }
+    assert fetch(fx_ledger).requests == 1
+    assert len(valet_stub.requests) == 2
+
+
+def test_a_short_legacy_reply_covers_only_the_days_it_showed(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+) -> None:
+    # Two legacy lines half a year apart; the reply holds one observation on the
+    # first line's day and nothing after it.
+    legacy = LEGACY_NOON_SERIES["USD"]
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines(
+            "USD",
+            "2016-06-15 -10.00 - - SAMPLE SHOP 99959",
+            "2016-12-28 -10.00 - - SAMPLE SHOP 99960",
+        ),
+    )
+    fx_ledger.derive()
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+    valet_stub.reply(
+        f"/valet/observations/{legacy}/json",
+        body=valet_reply(legacy, [("2016-06-15", "1.2900")]),
+    )
+
+    fetch(fx_ledger)
+
+    assert requested(valet_stub) == [
+        (
+            f"/valet/observations/{legacy}/json",
+            {"start_date": "2016-06-08", "end_date": "2017-01-02"},
+        )
+    ]
+    # The series is closed, but its latest observation is half a year before the
+    # requested end: coverage stops at the observation, not at the end.
+    assert coverage(fx_ledger) == [
+        (legacy, dt.date(2016, 6, 8), dt.date(2016, 6, 15)),
+    ]
+    fx_ledger.derive()
+    states = fx_ledger.conn.execute(
+        select(txn.c.description_norm, txn.c.conversion_state)
+    )
+    assert dict(tuple(row) for row in states) == {
+        "sample shop 99959": "converted",
+        "sample shop 99960": "unconverted",
+    }
+    # The December line is planned again, from LOOKBACK_DAYS before it.
+    items = {item.key: dict(item.fields) for item in preview(fx_ledger).items}
+    assert items == {
+        legacy: {
+            "currency": "USD",
+            "start_date": "2016-12-21",
+            "end_date": "2017-01-02",
+        }
+    }
+
+
 def test_from_and_to_bound_every_series_of_the_set(
     usd_ledger: Ledger,
     valet_stub: StubServer,

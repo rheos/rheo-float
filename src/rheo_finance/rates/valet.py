@@ -29,9 +29,12 @@ sink is off. Otherwise it sends one GET per planned series through ``http.Client
 reply covered as a ``rate_coverage`` row: from the requested start to the latest
 observation returned, so days not yet published stay uncovered. A closed series (the
 legacy one, whose window ends before ``FX_SERIES_START``) publishes nothing more for its
-range, so its coverage runs to the requested end. A failed request, a reply it cannot
-read, or a redirect to another host fails that series alone and records no coverage;
-the others are stored.
+range, so its coverage extends to the requested end, but only when its latest
+observation lies within ``LOOKBACK_DAYS`` of that end: the days between are the
+weekend and holidays after its last business day. A short or empty reply covers no
+more than it showed, whatever the series, so no later line converts across days the
+fetch never saw. A failed request, a reply it cannot read, or a redirect to another
+host fails that series alone and records no coverage; the others are stored.
 """
 
 from __future__ import annotations
@@ -398,11 +401,16 @@ def _cover(
     latest: dt.date | None,
     at: dt.datetime,
 ) -> None:
-    """Record the range a reply covered: to ``end`` for a closed series, else to the
-    latest observation it returned (none returned: nothing is recorded)."""
-    last = end if each.closed else latest
-    if last is None:
+    """Record the range a reply covered: from the requested start to the latest
+    observation it returned. A closed series extends to the requested ``end`` only
+    when that observation lies within ``LOOKBACK_DAYS`` of it, so the last legacy
+    days before the FX series starts still convert. No observation returned: nothing
+    is recorded, for a closed series too."""
+    if latest is None:
         return
+    last = latest
+    if each.closed and (end - latest).days <= LOOKBACK_DAYS:
+        last = end
     uow.execute(
         insert(rate_coverage)
         .values(

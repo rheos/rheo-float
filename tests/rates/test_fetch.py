@@ -335,6 +335,27 @@ def test_a_late_line_in_a_gap_between_fetches_is_planned_then_converted(
     assert tuple(row) == (Decimal("1.3150"), dt.date(2025, 12, 3), "converted")
 
 
+def test_a_line_with_an_issuer_stated_cad_amount_needs_no_rate(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+) -> None:
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines("USD", "2025-12-10 -10.00 -13.70 - SAMPLE STATED SHOP 99958"),
+    )
+    fx_ledger.derive()
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+
+    assert preview(fx_ledger).items == []
+    out = fetch(fx_ledger)
+
+    assert (out.planned, out.requests) == (0, 0)
+    assert valet_stub.requests == []
+
+
 # --- failures -------------------------------------------------------------------------
 
 

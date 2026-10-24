@@ -16,8 +16,9 @@ the old set goes stale until the owner approves again.
 **The plan.** ``plan`` asks only for what a line lacks: for each series, the dates of
 the lines that ``rates.RateBook.on_or_before`` cannot convert (a date in no covered
 range, or after the latest observation fetched), from ``LOOKBACK_DAYS`` before the
-earliest of them up to the fetch day (the legacy series: up to its last day). ``--from``
-and ``--to`` replace either bound and request every series of the set. ``finance sink
+earliest of them up to the fetch day (the legacy series: up to its last day). A line
+whose issuer states its CAD amount needs no rate and is left out. ``--from`` and
+``--to`` replace either bound and request every series of the set. ``finance sink
 preview rates`` lists the planned series and their start dates; the end is the fetch
 day, so it is shown and not digested.
 
@@ -44,7 +45,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from rheo_finance.clock import local_today
@@ -65,7 +66,13 @@ from rheo_finance.rates import (
 from rheo_finance.sinks.gate import is_enabled
 from rheo_finance.sinks.preview import PREVIEW_BUILDERS, PreviewItem, SinkPreview
 from rheo_finance.sinks.spec import SINK_SPECS, RequestTemplate, SinkSpec, current_spec
-from rheo_finance.storage.schema import rate, rate_coverage, txn
+from rheo_finance.storage.schema import (
+    document_line,
+    rate,
+    rate_coverage,
+    txn,
+    txn_source,
+)
 from rheo_finance.tier import Tier
 
 P = Tier.PUBLIC
@@ -166,11 +173,25 @@ def _windows(currency: str) -> list[_Window]:
 
 
 def _line_dates(uow: UnitOfWork, currency: str) -> list[dt.date]:
+    """The dates of the ``currency`` lines that need a Bank of Canada rate: every fiat
+    txn but those whose primary line states its CAD amount (stage 4 uses that)."""
     day = func.coalesce(txn.c.txn_date, txn.c.posting_date)
     return list(
         uow.scalars(
             select(day)
-            .where(txn.c.movement_kind == "fiat", txn.c.currency == currency)
+            .select_from(txn)
+            .outerjoin(
+                txn_source,
+                and_(txn_source.c.txn_id == txn.c.id, txn_source.c.role == "primary"),
+            )
+            .outerjoin(
+                document_line, document_line.c.id == txn_source.c.document_line_id
+            )
+            .where(
+                txn.c.movement_kind == "fiat",
+                txn.c.currency == currency,
+                document_line.c.stated_cad.is_(None),
+            )
             .distinct()
         )
     )

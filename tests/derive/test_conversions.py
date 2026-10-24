@@ -27,9 +27,10 @@ from rheo_finance.manual.stage2 import account_id
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.storage.schema import pair_edge, txn
 
-from .support import FIXTURES, Ledger
+from .support import CSV_IDENTIFIER, FIXTURES, Ledger
 from .test_conversion import cover, store_rates
-from .test_resolution import Account, register, table
+from .test_resolution import CHEQUING, PAYPAL_PULL, Account, register, table
+from .test_reversals import export
 
 D = dt.date
 WISE_ID = "P99900001"
@@ -520,6 +521,54 @@ def test_a_printed_conversion_fee_is_never_paired_away_by_a_small_transfer_like_
     assert ledger.conn.scalars(select(pair_edge.c.kind)).all() == ["conversion"]
     assert left(DAY, "1.00", "CAD", "unresolved") in legs(ledger)
     assert counted(ledger, txn.c.amount < 0).sum == Decimal("-1.09")
+
+
+def test_a_bank_funded_currency_purchase_pairs_the_pull_and_the_conversion_apart(
+    ledger: Ledger,
+) -> None:
+    # The bank pulls 200.00 CAD into PayPal, PayPal converts it to 154.40 USD (197.63
+    # CAD at 1.2800) and pays a USD merchant. The in-leg sits inside the transfer
+    # tolerance of the pull too, but a line with a conversion edge is no end of an own
+    # transfer: the pull pairs with the deposit, the legs with each other, and nothing
+    # is ambiguous. Spending is the payment and the derived spread, 200.00 in all.
+    register(ledger, CHEQUING, PAYPAL)
+    usd_rate(ledger, "1.2800")
+    ledger.file(
+        "vancity/export.csv",
+        export((CSV_IDENTIFIER, DAY, PAYPAL_PULL, Decimal("-200.00"))),
+    )
+    ledger.file(
+        "paypal/activity-2025-07-31.csv",
+        paypal_csv((DAY, "Bank Deposit to PP Account", "CAD", "200.00"),
+                   (DAY, CONVERSION, "CAD", "-200.00"),
+                   (DAY, CONVERSION, "USD", "154.40"),
+                   (DAY, "Express Checkout Payment", "USD", "-154.40")),
+    )  # fmt: skip
+
+    ledger.derive()
+
+    states = ledger.conn.execute(
+        select(txn.c.account_id, txn.c.amount, txn.c.currency, txn.c.transfer_state,
+               txn.c.pair_kind)
+        .where(txn.c.origin == "document_line")
+    ).all()  # fmt: skip
+    cheq, paypal = account_id("chequing"), account_id("paypal")
+    assert sorted(tuple(row) for row in states) == sorted(
+        [
+            (cheq, Decimal("-200.00"), "CAD", "paired", "own_transfer"),
+            (paypal, Decimal("200.00"), "CAD", "paired", "own_transfer"),
+            (paypal, Decimal("-200.00"), "CAD", "paired", "conversion"),
+            (paypal, Decimal("154.40"), "USD", "paired", "conversion"),
+            (paypal, Decimal("-154.40"), "USD", None, None),
+        ]
+    )
+    kinds = ledger.conn.execute(select(pair_edge.c.kind, pair_edge.c.applied)).all()
+    assert sorted(tuple(row) for row in kinds) == [
+        ("conversion", True),
+        ("own_transfer", True),
+    ]
+    assert fee_lines(ledger, DAY) == [("derived_fee", Decimal("-2.37"), "CAD")]
+    assert counted(ledger, txn.c.amount < 0).sum == Decimal("-200.00")
 
 
 # --- no stored rate -------------------------------------------------------------------

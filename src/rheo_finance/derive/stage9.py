@@ -41,6 +41,10 @@ apart, when:
 - a fee line (``fee_type`` set) is neither end: it never starts a pairing (above), and
   it is never the other end either, so a printed fee is never paired away by a small
   transfer-like line of about its size and always counts once as spending;
+- a line with a ``conversion`` candidate edge (below), applied or not, is neither
+  end: its wording and its one account settle it as a conversion leg, so the in-leg
+  of a payment-service currency purchase is never offered to the bank pull that
+  funded the purchase, and the pull pairs with the deposit alone;
 - the two legs net to zero within the tolerance: the larger of
   ``finance.transfers.fee_tolerance_abs`` (CAD) and ``fee_tolerance_pct`` percent of
   the larger leg's CAD value (stage 4). A pair outside it gets no edge.
@@ -318,7 +322,11 @@ def _candidate_edges(
     lines: list[_Line],
     named: Mapping[uuid.UUID, frozenset[uuid.UUID]],
     tolerance: Tolerance,
+    converting: frozenset[uuid.UUID],
 ) -> set[_Edge]:
+    """Every ``own_transfer`` candidate (module docstring); ``converting`` holds the
+    lines with a ``conversion`` candidate edge, which are neither end."""
+    lines = [line for line in lines if line.id not in converting]
     by_day = sorted(lines, key=lambda line: (line.day, line.id))
     days = [line.day for line in by_day]
     window = dt.timedelta(days=tolerance.window_days)
@@ -447,10 +455,15 @@ def pair_transfers(
     lines = _lines(uow, hint_rows)
     resolved = _resolver(uow)
     named = {line.id: _accounts(line.hint, resolved) for line in lines}
+    conversions = sorted(
+        _conversions(uow, lines, spread),
+        key=lambda c: (c.out.day, c.out.id, c.into.id),
+    )
+    converting = frozenset(leg.id for c in conversions for leg in (c.out, c.into))
     edges = [
         edge
         for group in pairing.groups(
-            _candidate_edges(lines, named, tolerance),
+            _candidate_edges(lines, named, tolerance, converting),
             lambda e: (e.debit.id, e.credit.id),
         )
         for edge in _thinned(group)
@@ -473,10 +486,6 @@ def pair_transfers(
                 for edge in edges
             ],
         )
-    conversions = sorted(
-        _conversions(uow, lines, spread),
-        key=lambda c: (c.out.day, c.out.id, c.into.id),
-    )
     if conversions:
         uow.execute(
             insert(pair_edge),

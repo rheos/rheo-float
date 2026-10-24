@@ -42,8 +42,9 @@ DAY = D(2025, 7, 8)
 # One Wise statement row: (id, day, amount with fee, currency, description, from, to,
 # fee, to amount).
 WiseRow = tuple[str, dt.date, str, str, str, str, str, str, str]
-# One PayPal activity row: (day, type, currency, gross).
-PaypalRow = tuple[dt.date, str, str, str]
+# One PayPal activity row: (day, type, currency, gross), or with its printed fee
+# (negative) after the gross.
+PaypalRow = tuple[dt.date, str, str, str] | tuple[dt.date, str, str, str, str]
 Leg = tuple[dt.date, Decimal, str, str | None, str | None]
 
 
@@ -80,17 +81,20 @@ def converted(
 
 
 def paypal_csv(*rows: PaypalRow) -> str:
-    """A PayPal activity CSV of ``rows``, oldest first, no fees, each currency's
-    balance running from 500.00."""
+    """A PayPal activity CSV of ``rows``, oldest first, a fee only where a row gives
+    one, each currency's balance running from 500.00."""
     balances: dict[str, Decimal] = {}
     found = []
-    for n, (day, kind, code, gross) in enumerate(rows):
-        balances[code] = balances.get(code, Decimal("500.00")) + Decimal(gross)
+    for n, row in enumerate(rows):
+        day, kind, code, gross = row[:4]
+        fee = row[4] if len(row) == 5 else "0.00"
+        net = f"{Decimal(gross) + Decimal(fee):.2f}"
+        balances[code] = balances.get(code, Decimal("500.00")) + Decimal(net)
         found.append(
             {
                 "Date": day.strftime("%d/%m/%Y"), "Time": f"08:00:{n:02d}",
                 "TimeZone": "PDT", "Type": kind, "Status": "Completed",
-                "Currency": code, "Gross": gross, "Fee": "0.00", "Net": gross,
+                "Currency": code, "Gross": gross, "Fee": fee, "Net": net,
                 "Balance": f"{balances[code]:.2f}",
                 "Balance Impact": "Credit" if not gross.startswith("-") else "Debit",
             }
@@ -299,13 +303,97 @@ def test_a_paypal_spread_of_three_and_a_half_percent_pairs_on_a_built_export(
     assert fee_account == account_id("paypal")
 
 
+# --- a printed fee line belongs to at most one conversion -----------------------------
+
+
+def fee_owners(ledger: Ledger) -> list[tuple[Decimal, Decimal | None]]:
+    """Each conversion edge's out-leg amount and the amount of the fee line it names."""
+    out, fee = txn.alias("out"), txn.alias("fee")
+    rows = ledger.conn.execute(
+        select(out.c.amount, fee.c.amount)
+        .select_from(pair_edge)
+        .join(out, out.c.id == pair_edge.c.a_txn_id)
+        .outerjoin(fee, fee.c.id == pair_edge.c.fee_txn_id)
+        .where(pair_edge.c.kind == "conversion")
+    )
+    return sorted((row[0], row[1]) for row in rows)
+
+
+def test_two_conversions_with_their_own_wording_each_keep_their_printed_fee(
+    ledger: Ledger,
+) -> None:
+    # The statement's wording names each conversion's amounts, so each fee line is
+    # one conversion's.
+    register(ledger, WISE)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(
+            *converted("BALANCE-999000208", DAY, "300.00", "USD", "405.00", "CAD",
+                       "0.80"),
+            *converted("BALANCE-999000209", DAY, "100.00", "USD", "135.00", "CAD",
+                       "0.40"),
+        ),
+    )  # fmt: skip
+
+    ledger.derive()
+
+    assert fee_owners(ledger) == [
+        (Decimal("-300.00"), Decimal("-0.80")),
+        (Decimal("-100.00"), Decimal("-0.40")),
+    ]
+    assert fee_lines(ledger, DAY) == [
+        ("document_line", Decimal("-0.80"), "USD"),
+        ("document_line", Decimal("-0.40"), "USD"),
+    ]
+
+
+@pytest.mark.parametrize("swapped", [False, True], ids=["in-order", "swapped"])
+@pytest.mark.parametrize("second_fee", ["-0.50", None], ids=["both", "one"])
+def test_same_wording_conversions_on_one_day_leave_the_printed_fees_no_ones(
+    ledger: Ledger, second_fee: str | None, swapped: bool
+) -> None:
+    # Two conversions print the same wording on one day, so a fee line cannot be told
+    # to be either one's: no edge names one, and neither books a derived fee (each
+    # has a positive spread, 7.00 and 3.50), since a printed fee is the only fee line
+    # of its date. Whatever the order of the rows, the result is the same.
+    register(ledger, PAYPAL)
+    usd_rate(ledger, "1.2500")
+    second: PaypalRow = (
+        (DAY, CONVERSION, "CAD", "-100.00")
+        if second_fee is None
+        else (DAY, CONVERSION, "CAD", "-100.00", second_fee)
+    )
+    first: list[PaypalRow] = [
+        (DAY, CONVERSION, "CAD", "-200.00", "-1.00"),
+        (DAY, CONVERSION, "USD", "154.40"),
+    ]
+    later: list[PaypalRow] = [second, (DAY, CONVERSION, "USD", "77.20")]
+    rows = later + first if swapped else first + later
+    ledger.file("paypal/activity-2025-07-31.csv", paypal_csv(*rows))  # fmt: skip
+
+    ledger.derive()
+
+    assert fee_owners(ledger) == [
+        (Decimal("-200.00"), None),
+        (Decimal("-100.00"), None),
+    ]
+    assert [applied for _, _, applied, _ in edges(ledger)] == [True, True]
+    printed = [("document_line", Decimal("-1.00"), "CAD")]
+    if second_fee is not None:
+        printed.insert(0, ("document_line", Decimal(second_fee), "CAD"))
+    assert fee_lines(ledger, DAY) == sorted(printed)
+
+
 # --- ambiguity, the window and other accounts -----------------------------------------
 
 
 def test_two_candidate_in_legs_leave_every_leg_ambiguous(ledger: Ledger) -> None:
     register(ledger, WISE)
     usd_rate(ledger, "1.3600")
-    out, first = converted("BALANCE-999000202", DAY, "300.00", "USD", "405.00", "CAD")
+    out, first = converted(
+        "BALANCE-999000202", DAY, "300.00", "USD", "405.00", "CAD", "0.80"
+    )
     # A second in-leg the next day, from another conversion whose out-leg is not here.
     _, second = converted(
         "BALANCE-999000203", DAY + dt.timedelta(days=1), "300.00", "USD", "405.00",
@@ -321,7 +409,9 @@ def test_two_candidate_in_legs_leave_every_leg_ambiguous(ledger: Ledger) -> None
         left(DAY + dt.timedelta(days=1), "405.00", "CAD", "ambiguous"),
     ]
     assert [applied for _, _, applied, _ in edges(ledger)] == [False, False]
-    assert fee_lines(ledger, DAY) == []
+    # Both candidates are the one out-leg's, so both name its printed fee line.
+    assert fee_owners(ledger) == [(Decimal("-300.00"), Decimal("-0.80"))] * 2
+    assert fee_lines(ledger, DAY) == [("document_line", Decimal("-0.80"), "USD")]
 
 
 @pytest.mark.parametrize(("gap", "edge"), [(1, True), (2, False)], ids=["1", "2"])

@@ -42,7 +42,13 @@ transfer whose legs balance after it makes no derived fee.
 
 **Conversion fees** (FR-15(c)). An applied ``conversion`` makes exactly one fee line
 on its date. When stage 9 named the issuer's printed fee line (``fee_txn_id``), that
-line is the one and the spread is booked nowhere. Otherwise a positive spread becomes
+line is the one and the spread is booked nowhere. A printed fee line belongs to at
+most one conversion: when the conversion edges of two or more out-legs name the same
+one (two conversions with the same wording on one account and day, so the line cannot
+be told to be either one's), no edge keeps it, and none of those conversions books a
+derived fee either, since a printed fee is the only fee line of its date. The rule
+reads the whole stored edge set, so it does not depend on order. Otherwise a positive
+spread becomes
 one ``derived_fee`` txn of ``-spread_cad`` CAD on the conversion's account, dated and
 recognized as the out-leg, ``fee_type`` ``conversion_fee``, named by the edge's
 ``fee_txn_id``. A spread of zero or below is a zero fee: no line, never income. A
@@ -53,7 +59,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
@@ -264,6 +270,13 @@ def resolve(uow: UnitOfWork) -> None:
                 for edge_id, fee in fees.items()
             ],
         )
+    # A printed fee line that conversion edges of two or more out-legs name is no one's
+    # (module docstring); each of them already booked no derived fee for it.
+    naming: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    for edge in edges:
+        if edge.kind == CONVERSION and edge.printed_fee is not None:
+            naming[edge.printed_fee].add(edge.ends[0])
+    shared = [fee for fee, outs in naming.items() if len(outs) > 1]
     if applied:
         uow.execute(
             update(pair_edge)
@@ -280,6 +293,12 @@ def resolve(uow: UnitOfWork) -> None:
                 }
                 for edge in applied
             ],
+        )
+    if shared:
+        uow.execute(
+            update(pair_edge)
+            .where(pair_edge.c.kind == CONVERSION, pair_edge.c.fee_txn_id.in_(shared))
+            .values(fee_txn_id=None)
         )
     if states:
         uow.execute(

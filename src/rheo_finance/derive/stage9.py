@@ -81,9 +81,10 @@ out-leg's posting date. Lines on two accounts are never a conversion: the
   no spread, and stage 11 books no fee for it until a rate exists.
 - The issuer's printed fee is a fee line on the account, posted on a leg's date,
   whose wording is a leg's wording plus `` (fee)``, as the parsers print it. Stage 9
-  names it as the edge's ``fee_txn_id``, so stage 11 books no second fee line for that
-  conversion. (Two conversions with the same wording on one day both name the earliest
-  such fee line.)
+  names it (the earliest, when several match) as the edge's ``fee_txn_id``, so stage
+  11 books no second fee line for that conversion. Two conversions with the same
+  wording on one account and day can name the same line; stage 11 then lets neither
+  keep it.
 """
 
 from __future__ import annotations

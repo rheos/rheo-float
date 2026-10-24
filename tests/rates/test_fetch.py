@@ -302,6 +302,37 @@ def test_a_failed_series_stores_nothing_and_does_not_stop_the_others(
     assert list(fx_ledger.conn.scalars(select(rate.c.base))) == ["EUR"]
 
 
+def test_a_redirect_to_another_host_fails_that_series_alone(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    make_stub_server: Callable[[], StubServer],
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+) -> None:
+    other = make_stub_server()
+    fx_ledger.file("synthetic-fx/usd.txt", fx_lines("USD", USD_LINE))
+    fx_ledger.file("synthetic-fx/eur.txt", fx_lines("EUR", EUR_LINE))
+    fx_ledger.derive()
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+    valet_stub.redirect(
+        "/valet/observations/FXUSDCAD/json",
+        other.url("/valet/observations/FXUSDCAD/json"),
+    )
+    valet_stub.reply(
+        "/valet/observations/FXEURCAD/json",
+        body=valet_reply("FXEURCAD", [("2025-12-11", "1.6000")]),
+    )
+
+    out = fetch(fx_ledger)
+
+    assert (out.requests, out.stored, out.failed) == (2, 1, 1)
+    failed = next(each for each in out.series if each.outcome == "failed")
+    assert (failed.series, failed.reason) == ("FXUSDCAD", "the host was refused")
+    assert list(fx_ledger.conn.scalars(select(rate.c.base))) == ["EUR"]
+    assert other.requests == []
+
+
 # --- the command ----------------------------------------------------------------------
 
 

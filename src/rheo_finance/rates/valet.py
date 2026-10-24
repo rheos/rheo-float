@@ -22,7 +22,8 @@ start dates; the end is the fetch day, so it is shown and not digested.
 sink is off. Otherwise it sends one GET per planned series through ``http.Client``
 (sink ``rates``, the one template on its allowlist) and inserts each observation as a
 ``rate`` row (source ``boc``), keeping a row already stored. A failed request or a
-reply it cannot read fails that series alone; the others are stored.
+reply it cannot read, or a redirect to another host, fails that series alone; the
+others are stored.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ from sqlalchemy.dialects.postgresql import insert
 from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
-from rheo_finance.http import Client, RequestFailed
+from rheo_finance.http import Client, HostRefused, RequestFailed
 from rheo_finance.operations import OperationSpec, register
 from rheo_finance.rates import QUOTE_CAD, RATE_GAP_DAYS, SOURCE_BOC, stored
 from rheo_finance.sinks.gate import is_enabled
@@ -378,6 +379,9 @@ def _fetch_one(
         response = client.request("GET", _url(each.series, each.start, end))
     except RequestFailed:
         return failed.model_copy(update={"reason": "the request failed"})
+    except HostRefused:
+        # A redirect to another host (nothing is sent there) fails this series alone.
+        return failed.model_copy(update={"reason": "the host was refused"})
     if response.status != 200:
         return failed.model_copy(update={"reason": f"http status {response.status}"})
     try:

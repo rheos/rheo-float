@@ -333,6 +333,54 @@ def test_a_transfer_hints_row_names_the_owners_account_by_slug(
     assert sorted(like for _, _, like, _ in marks(own)) == [False, False, True]
 
 
+def test_a_start_whose_hinted_account_has_no_candidate_searches_every_account(
+    own: Ledger,
+) -> None:
+    # The row names ``second``; the only deposit is on ``third``. The hint is a
+    # preference, so the search falls back to every own account.
+    own.manual(TRANSFER_HINTS_FILE, "sample savings sweep,out,second")
+    swept, arrived = D(2025, 6, 2), D(2025, 6, 3)
+    file_bank(
+        own,
+        *on(CSV_IDENTIFIER, (swept, "SAMPLE SAVINGS SWEEP 99976", Decimal("-300.00"))),
+        *on(THIRD, (arrived, "DEPOSIT SAMPLE SWEEP 99978", Decimal("300.00"))),
+    )
+
+    own.derive()
+
+    assert edges(own) == [
+        (swept, Decimal("-300.00"), arrived, Decimal("300.00"), False)
+    ]
+    hinted = own.conn.scalar(select(txn.c.hint_account_id).where(txn.c.amount < 0))
+    assert hinted == account_id("second")
+
+
+@pytest.mark.parametrize("debit_hinted", [False, True], ids=["plain", "hinted"])
+def test_a_card_paid_from_a_second_banks_chequing_gets_its_edge(
+    own: Ledger, debit_hinted: bool
+) -> None:
+    # The card's payment wording names the bank of the card's issuer, whose chequing
+    # account holds lines (so the hint resolves) but no candidate. The payment came
+    # from a chequing account at a second bank: the card's hint falls back to every
+    # account, and the debit's own hint (when it has one) is no filter on the card.
+    if debit_hinted:
+        own.manual(TRANSFER_HINTS_FILE, "sample card payment,out,visa")
+    paid, arrived = D(2025, 6, 3), D(2025, 6, 4)
+    file_bank(own, *on(CSV_IDENTIFIER, (D(2025, 6, 1), "SAMPLE CAFE 99970",
+                                        Decimal("-4.00"))))  # fmt: skip
+    own.file(
+        "synthetic-fx/payment.txt",
+        fx_lines("CAD", "2025-06-03 -200.00 - - SAMPLE CARD PAYMENT 99971"),
+    )
+    file_card(own, (arrived, PAYMENT_RECEIVED, Decimal("200.00")))
+
+    own.derive()
+
+    assert edges(own) == [(paid, Decimal("-200.00"), arrived, Decimal("200.00"), False)]
+    card_hint = own.conn.scalar(select(txn.c.hint_account_id).where(txn.c.amount > 0))
+    assert card_hint == account_id("chequing")
+
+
 # --- what is never a candidate --------------------------------------------------------
 
 

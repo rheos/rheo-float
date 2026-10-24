@@ -24,11 +24,15 @@ parser's hint wins over a row on the same source line, as in ``classify``, and t
 first source line (the primary first) that names a counterpart gives the txn's.
 ``hint_account_id`` is set when the hint resolves to exactly one account.
 
-**Candidates.** An edge joins a transfer-like line to a line of the opposite sign on
-another account, posted at most ``finance.transfers.window_days`` apart, when:
+**Candidates.** An edge joins a transfer-like line (the start) to a line of the
+opposite sign on another account, posted at most ``finance.transfers.window_days``
+apart, when:
 
-- every hint that resolved, on either end, names the other end's account (a hint that
-  resolves to no account restricts nothing, and the search covers every own account);
+- the start's hint, when it resolved, is a preference (the search looks on that
+  account first): the start's candidates are the lines on the hinted account or
+  accounts when any qualifies there, else the lines on every own account. The other
+  end's hint is no filter: it acts only when that line is itself a start, so a card
+  whose payment wording names one bank still pairs with a payment from another;
 - on a card account (kind ``credit_card``, whose parsers mark the payment credits with
   a payment hint) the card-side line is itself transfer-like, so a purchase refund of
   the same amount is never offered as the other leg of a chequing debit;
@@ -267,10 +271,12 @@ def _candidate_edges(
     days = [line.day for line in by_day]
     window = dt.timedelta(days=tolerance.window_days)
 
-    def offered(line: _Line, to: _Line) -> bool:
-        accounts = named[line.id]
-        return (not accounts or to.account_id in accounts) and (
-            not line.card or line.transfer_like
+    def fits(start: _Line, other: _Line) -> bool:
+        return (
+            other.account_id != start.account_id
+            and (other.amount > 0) != (start.amount > 0)
+            and (not other.card or other.transfer_like)
+            and within(start, other, tolerance)
         )
 
     edges: set[_Edge] = set()
@@ -279,15 +285,9 @@ def _candidate_edges(
             continue
         first = bisect.bisect_left(days, start.day - window)
         last = bisect.bisect_right(days, start.day + window)
-        for other in by_day[first:last]:
-            if (
-                other.account_id == start.account_id
-                or (other.amount > 0) == (start.amount > 0)
-                or not offered(start, other)
-                or not offered(other, start)
-                or not within(start, other, tolerance)
-            ):
-                continue
+        found = [other for other in by_day[first:last] if fits(start, other)]
+        hinted = [other for other in found if other.account_id in named[start.id]]
+        for other in hinted or found:
             debit, credit = (start, other) if start.amount < 0 else (other, start)
             edges.add(_Edge(debit, credit))
     return edges

@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 from sqlalchemy import ColumnElement, event, func, select
 
-from rheo_finance.derive import stage8
+from rheo_finance.derive import pairing, stage8
 from rheo_finance.ledger.totals import cad_total
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
@@ -686,7 +686,9 @@ def named_reads(source: str) -> list[str]:
 
 
 def test_stage_8_source_names_no_counterparty_payee_party_or_alias() -> None:
+    # Stage 8 and the line read it shares with stage 9.
     assert named_reads(inspect.getsource(stage8)) == []
+    assert named_reads(inspect.getsource(pairing)) == []
     # The control: a planted read is found, by attribute, string and import.
     planted = (
         '"""Mentions counterparty only here."""\n'

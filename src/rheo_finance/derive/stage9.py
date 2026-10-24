@@ -64,14 +64,15 @@ import dataclasses
 import datetime as dt
 import uuid
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from sqlalchemy import and_, bindparam, insert, select, update
+from sqlalchemy import bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.derive import pairing
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.reference.patterns import row_hints
 from rheo_finance.storage.ids import derived_id
@@ -81,15 +82,12 @@ from rheo_finance.storage.schema import (
     document_line,
     pair_edge,
     txn,
-    txn_source,
 )
 
 WINDOW_KEY: Final = "finance.transfers.window_days"
 ABS_KEY: Final = "finance.transfers.fee_tolerance_abs"
 PCT_KEY: Final = "finance.transfers.fee_tolerance_pct"
 KIND: Final = "own_transfer"
-# The source roles whose line is the txn itself; an evidence source is not.
-LINE_ROLES: Final = ("primary", "additional")
 CARD: Final = "credit_card"
 # The transfer kind of a ``transfer_hints.csv`` row: its counterpart is an account slug.
 MANUAL_PREFIX: Final = "manual_"
@@ -129,38 +127,24 @@ class _Reading:
 
 
 def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]:
+    cards = set(uow.scalars(select(account.c.id).where(account.c.kind == CARD)))
     rows = uow.execute(
-        select(
-            txn.c.id,
+        pairing.source_lines(
             txn.c.account_id,
-            account.c.kind,
             txn.c.currency,
             txn.c.amount,
             txn.c.cad_amount,
             txn.c.posting_date,
-            txn.c.description_norm.label("txn_wording"),
-            txn_source.c.document_line_id,
             document_line.c.transfer_hint,
             document_line.c.conversion_hint,
             document_line.c.hint_account_slug,
-            document_line.c.description_norm.label("line_wording"),
-        )
-        .select_from(txn)
-        .join(account, account.c.id == txn.c.account_id)
-        .outerjoin(
-            txn_source,
-            and_(txn_source.c.txn_id == txn.c.id, txn_source.c.role.in_(LINE_ROLES)),
-        )
-        .outerjoin(document_line, document_line.c.id == txn_source.c.document_line_id)
-        .where(
+        ).where(
             txn.c.movement_kind == "fiat",
             txn.c.amount != 0,
             txn.c.exclusion.is_(None),
             txn.c.party_id.is_(None),
             txn.c.pair_kind.is_distinct_from("reversal"),
         )
-        # The primary source first, so its counterpart wins.
-        .order_by(txn.c.id, txn_source.c.role.desc())
     )
     found: dict[uuid.UUID, _Reading] = {}
     for row in rows:
@@ -170,7 +154,7 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
                 _Line(
                     id=row.id,
                     account_id=row.account_id,
-                    card=row.kind == CARD,
+                    card=row.account_id in cards,
                     currency=row.currency,
                     amount=row.amount,
                     cad=row.cad_amount,
@@ -179,16 +163,10 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
                     hint=None,
                 )
             )
-        if row.document_line_id is None:
-            wording, parser_transfer, parser_conversion, parser_slug = (
-                row.txn_wording, False, False, None,
-            )  # fmt: skip
-        else:
-            wording = row.line_wording
-            parser_transfer = bool(row.transfer_hint)
-            parser_conversion = bool(row.conversion_hint)
-            parser_slug = row.hint_account_slug
-        rows_say = row_hints(wording or "", hint_rows)
+        # A source with no document line has no parser hints (all null).
+        parser_transfer = bool(row.transfer_hint)
+        parser_conversion = bool(row.conversion_hint)
+        rows_say = row_hints(pairing.wording(row), hint_rows)
         reading.transfer_like = reading.transfer_like or any(
             (
                 parser_transfer,
@@ -197,10 +175,12 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
                 rows_say.conversion_hint,
             )
         )
+        # The primary source is read first (``pairing.source_lines``), so its
+        # counterpart wins.
         if reading.hint is None:
             if parser_transfer:
-                if parser_slug is not None:
-                    reading.hint = (PATTERN, parser_slug)
+                if row.hint_account_slug is not None:
+                    reading.hint = (PATTERN, row.hint_account_slug)
             elif rows_say.transfer_hint is not None and rows_say.hint_account_slug:
                 reading.hint = (rows_say.transfer_hint, rows_say.hint_account_slug)
     return [
@@ -293,25 +273,6 @@ def _candidate_edges(
     return edges
 
 
-def _groups(edges: Iterable[_Edge]) -> list[list[_Edge]]:
-    """The edges split into the groups of lines they connect."""
-    parent: dict[uuid.UUID, uuid.UUID] = {}
-
-    def root(node: uuid.UUID) -> uuid.UUID:
-        while parent.setdefault(node, node) != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
-
-    edges = list(edges)
-    for edge in edges:
-        parent[root(edge.debit.id)] = root(edge.credit.id)
-    grouped: dict[uuid.UUID, list[_Edge]] = defaultdict(list)
-    for edge in edges:
-        grouped[root(edge.debit.id)].append(edge)
-    return list(grouped.values())
-
-
 def _thinned(group: list[_Edge]) -> list[_Edge]:
     """The equal-card-payments tie-break (module docstring), or the group as it is."""
     debits = sorted({e.debit for e in group}, key=lambda line: line.day)
@@ -344,7 +305,10 @@ def pair_transfers(
     named = {line.id: _accounts(line.hint, resolved) for line in lines}
     edges = [
         edge
-        for group in _groups(_candidate_edges(lines, named, tolerance))
+        for group in pairing.groups(
+            _candidate_edges(lines, named, tolerance),
+            lambda e: (e.debit.id, e.credit.id),
+        )
         for edge in _thinned(group)
     ]
     edges.sort(key=lambda edge: (edge.debit.day, edge.debit.id, edge.credit.id))

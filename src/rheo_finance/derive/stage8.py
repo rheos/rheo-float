@@ -46,18 +46,17 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from sqlalchemy import and_, bindparam, insert, select, update
+from sqlalchemy import bindparam, insert, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.derive import pairing
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.reference.patterns import reversal_row_matches
 from rheo_finance.storage.ids import derived_id
-from rheo_finance.storage.schema import document_line, pair_edge, txn, txn_source
+from rheo_finance.storage.schema import document_line, pair_edge, txn
 
 WINDOW_KEY: Final = "finance.reversals.window_days"
 KIND: Final = "reversal"
-# The source roles whose line is the txn itself; an evidence source (a receipt) is not.
-LINE_ROLES: Final = ("primary", "additional")
 
 
 @dataclass(frozen=True)
@@ -81,39 +80,23 @@ class _Edge:
 
 
 def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]:
-    """Every nonzero txn, a reversal when any of its line sources (``LINE_ROLES``)
-    carries the parser's ``reversal_hint`` or wording a ``reversal`` row matches. A
-    source with no document line (a manual cash line) has the txn's own wording."""
+    """Every nonzero txn, a reversal when any of its line sources
+    (``pairing.LINE_ROLES``) carries the parser's ``reversal_hint`` or wording a
+    ``reversal`` row matches."""
     rows = uow.execute(
-        select(
-            txn.c.id,
+        pairing.source_lines(
             txn.c.account_id,
             txn.c.currency,
             txn.c.amount,
             txn.c.posting_date,
-            txn.c.description_norm.label("txn_wording"),
-            txn_source.c.document_line_id,
             document_line.c.reversal_hint,
-            document_line.c.description_norm.label("line_wording"),
-        )
-        .select_from(txn)
-        .outerjoin(
-            txn_source,
-            and_(txn_source.c.txn_id == txn.c.id, txn_source.c.role.in_(LINE_ROLES)),
-        )
-        .outerjoin(document_line, document_line.c.id == txn_source.c.document_line_id)
-        .where(txn.c.amount != 0)
-        # A fixed read order, the primary source first; the fold below is an "any",
-        # so the result does not depend on it either way.
-        .order_by(txn.c.id, txn_source.c.role.desc())
+        ).where(txn.c.amount != 0)
     )
     found: dict[uuid.UUID, _Line] = {}
     for row in rows:
-        if row.document_line_id is None:
-            hinted, wording = False, row.txn_wording
-        else:
-            hinted, wording = bool(row.reversal_hint), row.line_wording
-        reversal = hinted or reversal_row_matches(wording or "", hint_rows)
+        reversal = bool(row.reversal_hint) or reversal_row_matches(
+            pairing.wording(row), hint_rows
+        )
         before = found.get(row.id)
         found[row.id] = _Line(
             id=row.id,
@@ -121,6 +104,7 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             currency=row.currency,
             amount=row.amount,
             day=row.posting_date,
+            # An "any" over the line sources, so the read order cannot change it.
             reversal=reversal or (before is not None and before.reversal),
         )
     return list(found.values())
@@ -145,24 +129,6 @@ def _candidate_edges(lines: list[_Line], window_days: int) -> list[_Edge]:
     return edges
 
 
-def _groups(edges: list[_Edge]) -> list[list[_Edge]]:
-    """The edges split into the groups of lines they connect."""
-    parent: dict[uuid.UUID, uuid.UUID] = {}
-
-    def root(node: uuid.UUID) -> uuid.UUID:
-        while parent.setdefault(node, node) != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
-
-    for edge in edges:
-        parent[root(edge.reversal.id)] = root(edge.original.id)
-    grouped: dict[uuid.UUID, list[_Edge]] = defaultdict(list)
-    for edge in edges:
-        grouped[root(edge.reversal.id)].append(edge)
-    return list(grouped.values())
-
-
 def pair_reversals(
     uow: UnitOfWork, *, window_days: int, hint_rows: Sequence[TransferHintRow]
 ) -> None:
@@ -173,7 +139,7 @@ def pair_reversals(
         line.id: ("unresolved", None) for line in lines if line.reversal
     }
     applied: set[_Edge] = set()
-    for group in _groups(edges):
+    for group in pairing.groups(edges, lambda e: (e.reversal.id, e.original.id)):
         if len(group) == 1 and not group[0].same_day:
             applied.add(group[0])
             states[group[0].reversal.id] = ("paired", KIND)

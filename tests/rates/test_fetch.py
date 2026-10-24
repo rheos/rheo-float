@@ -24,7 +24,7 @@ from derive.support import Ledger, fx_lines
 from rheo_finance import catalogue, composition, operations
 from rheo_finance.cli.main import main
 from rheo_finance.contracts import Role
-from rheo_finance.rates import LEGACY_NOON_SERIES, valet
+from rheo_finance.rates import LEGACY_NOON_SERIES, LOOKBACK_DAYS, valet
 from rheo_finance.rates.valet import FetchOut
 from rheo_finance.sinks.gate import is_enabled
 from rheo_finance.sinks.ops import Preview
@@ -385,6 +385,67 @@ def test_an_open_series_covers_only_to_its_latest_observation(
     ]
     fx_ledger.derive()
     assert fx_ledger.conn.scalar(select(txn.c.conversion_state)) == "unconverted"
+
+
+@pytest.mark.parametrize(
+    ("gap", "covered_to", "state"),
+    [
+        # The latest observation exactly LOOKBACK_DAYS before the requested end: the
+        # coverage extends to the end and the end's line converts.
+        (LOOKBACK_DAYS, dt.date(2017, 1, 2), "converted"),
+        # One day more: the coverage stops at the observation.
+        (LOOKBACK_DAYS + 1, None, "unconverted"),
+    ],
+)
+def test_a_closed_series_extends_across_at_most_lookback_days(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+    gap: int,
+    covered_to: dt.date | None,
+    state: str,
+) -> None:
+    legacy = LEGACY_NOON_SERIES["USD"]
+    end = dt.date(2017, 1, 2)
+    latest = end - dt.timedelta(days=gap)
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines(
+            "USD",
+            "2016-12-20 -10.00 - - SAMPLE SHOP 99962",
+            "2017-01-02 -10.00 - - SAMPLE SHOP 99963",
+        ),
+    )
+    fx_ledger.derive()
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+    valet_stub.reply(
+        f"/valet/observations/{legacy}/json",
+        body=valet_reply(
+            legacy, [("2016-12-20", "1.3300"), (latest.isoformat(), "1.3400")]
+        ),
+    )
+
+    fetch(fx_ledger)
+
+    assert requested(valet_stub) == [
+        (
+            f"/valet/observations/{legacy}/json",
+            {"start_date": "2016-12-13", "end_date": end.isoformat()},
+        )
+    ]
+    assert coverage(fx_ledger) == [
+        (legacy, dt.date(2016, 12, 13), covered_to or latest),
+    ]
+    fx_ledger.derive()
+    states = fx_ledger.conn.execute(
+        select(txn.c.description_norm, txn.c.conversion_state)
+    )
+    assert dict(tuple(row) for row in states) == {
+        "sample shop 99962": "converted",
+        "sample shop 99963": state,
+    }
 
 
 def test_from_and_to_bound_every_series_of_the_set(

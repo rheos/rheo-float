@@ -43,6 +43,7 @@ from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive import pairing
 from rheo_finance.manual.own_addresses import normalize_address
+from rheo_finance.parsers.base import CRYPTO_FEE
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import (
     account,
@@ -56,7 +57,6 @@ from rheo_finance.storage.schema import (
 PLACEHOLDER: Final = "placeholder"
 SPAM: Final = "spam"
 FIAT: Final = "fiat"
-FEE: Final = "crypto_fee"
 TRANSFER: Final = "crypto_transfer"
 SWAP: Final = "crypto_swap_leg"
 UNCLASSIFIED: Final = "crypto_unclassified"
@@ -156,7 +156,7 @@ def _movement_kinds(
             ),
         )
         .outerjoin(document_line, document_line.c.id == txn_source.c.document_line_id)
-        .where(txn.c.movement_kind.not_in((FIAT, FEE)))
+        .where(txn.c.movement_kind.not_in((FIAT, CRYPTO_FEE)))
     ).all()
     signs: dict[tuple[uuid.UUID, str], set[bool]] = defaultdict(set)
     hinted: set[uuid.UUID] = set()

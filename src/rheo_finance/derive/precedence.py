@@ -38,6 +38,7 @@ from typing import Final, Literal
 from sqlalchemy import select, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.parsers.base import CRYPTO_LINE_KINDS
 from rheo_finance.storage.schema import document, document_line, statement_period
 from rheo_finance.text import normalize_description
 
@@ -55,7 +56,7 @@ BASIS: Final[Mapping[int, Basis]] = {
 Period = tuple[str, dt.date, dt.date]
 # The line kinds that become txns by the line rules of stage 3, so give a document a
 # standing on their account even where it states no period there.
-LINE_KINDS: Final = ("transaction", "crypto_movement", "crypto_fee")
+LINE_KINDS: Final = ("transaction", *CRYPTO_LINE_KINDS)
 
 
 @dataclass(frozen=True)

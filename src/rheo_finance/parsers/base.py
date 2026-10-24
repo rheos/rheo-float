@@ -29,6 +29,11 @@ from rheo_finance.manual.accounts import (
 )
 
 ControlKind = Literal["summary", "running_balance", "bill_identity", "none"]
+# The two crypto line kinds, named once here for every module that emits or reads
+# them: a crypto parser, stage 3's keys and ranking, stage 7 and the summary check.
+CRYPTO_MOVEMENT: Final = "crypto_movement"
+CRYPTO_FEE: Final = "crypto_fee"
+CRYPTO_LINE_KINDS: Final = (CRYPTO_MOVEMENT, CRYPTO_FEE)
 LineKind = Literal[
     "transaction", "payment_notice", "invoice", "receipt", "crypto_movement",
     "crypto_fee", "holding", "notice_fact", "trading_result",

@@ -67,6 +67,7 @@ from sqlalchemy import Row, bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive.precedence import Standing, standings
+from rheo_finance.parsers.base import CRYPTO_FEE, CRYPTO_LINE_KINDS, CRYPTO_MOVEMENT
 from rheo_finance.reference.assets import asset_code
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
@@ -79,9 +80,6 @@ from rheo_finance.storage.schema import (
 )
 from rheo_finance.text import normalize_description
 
-MOVEMENT: Final = "crypto_movement"
-FEE: Final = "crypto_fee"
-LINE_KINDS: Final = (MOVEMENT, FEE)
 QUANTITY_MISMATCH: Final = "quantity_mismatch"
 # The first part of each key shape, so the two shapes never share a key.
 TXID_KEY: Final = "crypto_txid"
@@ -125,7 +123,7 @@ def key_base(
         direction = FEE_DIRECTION if fee else ("in" if quantity > 0 else "out")
         return (TXID_KEY, slug, code, txid, direction)
     return (TIME_KEY, slug, at, identifier, quantity, source_type,
-            FEE if fee else MOVEMENT)  # fmt: skip
+            CRYPTO_FEE if fee else CRYPTO_MOVEMENT)  # fmt: skip
 
 
 def _utc_second(value: dt.datetime) -> dt.datetime:
@@ -167,7 +165,10 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
         )
         .join(document, document.c.id == document_line.c.document_id)
         .outerjoin(account, account.c.id == document_line.c.account_id)
-        .where(document.c.status == "parsed", document_line.c.line_kind.in_(LINE_KINDS))
+        .where(
+            document.c.status == "parsed",
+            document_line.c.line_kind.in_(CRYPTO_LINE_KINDS),
+        )
         .order_by(document.c.sha256, document_line.c.line_no)
     ).all()
     occurrences: Counter[tuple[uuid.UUID, tuple[object, ...]]] = Counter()
@@ -191,7 +192,7 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
             code=code,
             identifier=row.asset_identifier,
             txid=row.txid,
-            fee=row.line_kind == FEE,
+            fee=row.line_kind == CRYPTO_FEE,
             quantity=row.amount,
             at=at,
             source_type=row.source_type,
@@ -231,7 +232,9 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
                 "origin": "document_line",
                 "basis": standing.basis,
                 "provisional": False,
-                "movement_kind": FEE if row.line_kind == FEE else UNCLASSIFIED,
+                "movement_kind": (
+                    CRYPTO_FEE if row.line_kind == CRYPTO_FEE else UNCLASSIFIED
+                ),
                 "fee_type": row.fee_type,
                 "trade_ref": row.trade_ref,
             }

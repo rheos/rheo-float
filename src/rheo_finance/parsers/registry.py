@@ -55,6 +55,7 @@ from rheo_finance.documents.issuers import ISSUER_DIRS
 from rheo_finance.documents.registry import WITHHELD_PATH, DocumentStatus
 from rheo_finance.events import record_event
 from rheo_finance.parsers.base import (
+    CRYPTO_LINE_KINDS,
     AccountLookup,
     ManualReason,
     NoTextLayer,
@@ -219,7 +220,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
 # Line kinds a document states as evidence of a payment, with no account of their own.
 EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt"})
 # Crypto movement and fee lines carry a quantity of an asset, not money in a currency.
-QUANTITY_KINDS: Final = frozenset({"crypto_movement", "crypto_fee"})
+QUANTITY_KINDS: Final = frozenset(CRYPTO_LINE_KINDS)
 
 
 def summary_ties_out(result: ParseResult) -> bool:

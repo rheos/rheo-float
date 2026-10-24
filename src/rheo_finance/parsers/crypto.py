@@ -21,10 +21,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from rheo_finance.parsers.base import ParsedLine, RegisteredAccount
+from rheo_finance.parsers.base import (
+    CRYPTO_FEE,
+    CRYPTO_MOVEMENT,
+    ParsedLine,
+    RegisteredAccount,
+)
 
-MOVEMENT: Final = "crypto_movement"
-FEE: Final = "crypto_fee"
 # The ``fee_type`` of a withdrawal's fee line.
 WITHDRAWAL_FEE: Final = "withdrawal_fee"
 
@@ -70,7 +73,7 @@ def withdrawal_lines(withdrawal: Withdrawal) -> tuple[ParsedLine, ...]:
         if net <= 0:
             raise ValueError("a gross withdrawal is larger than its fee")
     movement = ParsedLine(
-        line_kind=MOVEMENT,
+        line_kind=CRYPTO_MOVEMENT,
         account=w.account,
         occurred_at=w.occurred_at,
         amount=-net,
@@ -86,7 +89,7 @@ def withdrawal_lines(withdrawal: Withdrawal) -> tuple[ParsedLine, ...]:
         return (movement,)
     fee = dataclasses.replace(
         movement,
-        line_kind=FEE,
+        line_kind=CRYPTO_FEE,
         amount=-w.fee,
         asset_identifier=fee_asset,
         fee_type=WITHDRAWAL_FEE,

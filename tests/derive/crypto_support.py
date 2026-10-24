@@ -36,6 +36,8 @@ from decimal import Decimal
 from typing import Final
 
 from rheo_finance.parsers.base import (
+    CRYPTO_FEE,
+    CRYPTO_MOVEMENT,
     AccountLookup,
     NotRecognised,
     ParsedLine,
@@ -43,7 +45,7 @@ from rheo_finance.parsers.base import (
     RegisteredAccount,
     Rejected,
 )
-from rheo_finance.parsers.crypto import FEE, MOVEMENT, Withdrawal, withdrawal_lines
+from rheo_finance.parsers.crypto import Withdrawal, withdrawal_lines
 from rheo_finance.parsers.registry import Parser
 
 CRYPTO_ISSUER: Final = "synthetic-crypto"
@@ -73,7 +75,7 @@ def _when(text: str) -> dt.datetime:
 def _line(kind: str, account: RegisteredAccount, f: dict[str, str]) -> ParsedLine:
     qty = Decimal(f["qty"])
     return ParsedLine(
-        line_kind=MOVEMENT if kind == "MOVE" else FEE,
+        line_kind=CRYPTO_MOVEMENT if kind == "MOVE" else CRYPTO_FEE,
         account=account,
         occurred_at=_when(f["at"]),
         amount=qty if kind == "MOVE" else -qty,

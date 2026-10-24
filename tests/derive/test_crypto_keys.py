@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import typing
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
@@ -30,6 +31,7 @@ from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.own_addresses import OWN_ADDRESSES_FILE
 from rheo_finance.operations import dispatch
 from rheo_finance.parsers import registry
+from rheo_finance.parsers.base import CRYPTO_LINE_KINDS, LineKind
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage.refs import format_ref
 from rheo_finance.storage.schema import (
@@ -579,3 +581,9 @@ def test_the_crypto_fixture_parser_is_registered_only_inside_a_test() -> None:
         )
     ]
     assert named == []
+
+
+def test_the_crypto_line_kinds_are_line_kinds() -> None:
+    # Named once in parsers.base; the line kind type must hold both.
+    assert set(CRYPTO_LINE_KINDS) <= set(typing.get_args(LineKind))
+    assert len(set(CRYPTO_LINE_KINDS)) == 2

@@ -34,7 +34,9 @@ Order of work, set by what each step reads:
    recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
    which reads the periods, the lines and ``document_periods.csv``; then stage 8, the
    reversals in both directions (``stage8``), which reads the lines' reversal wording
-   and the ``reversal`` rows of ``transfer_hints.csv``.
+   and the ``reversal`` rows of ``transfer_hints.csv``; then stage 9, the fiat own
+   transfer candidate edges (``stage9``), which reads the lines' transfer wording, the
+   other rows of that file, the CAD values and the lines stage 8 paired.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -64,6 +66,7 @@ from rheo_finance.derive import (
     stage4,
     stage5,
     stage8,
+    stage9,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -187,6 +190,15 @@ def run(
         stage8.pair_reversals(
             uow,
             window_days=ctx.settings.get_int(stage8.WINDOW_KEY),
+            hint_rows=manual.transfer_hints.rows,
+        )
+        stage9.pair_transfers(
+            uow,
+            tolerance=stage9.Tolerance(
+                window_days=ctx.settings.get_int(stage9.WINDOW_KEY),
+                abs_cad=ctx.settings.get_decimal(stage9.ABS_KEY),
+                pct=ctx.settings.get_decimal(stage9.PCT_KEY),
+            ),
             hint_rows=manual.transfer_hints.rows,
         )
 

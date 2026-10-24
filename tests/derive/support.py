@@ -141,18 +141,22 @@ FX_LINES = "SYNTHETIC FX LINES"
 
 
 def parse_fx(text: str, accounts: AccountLookup) -> ParseResult:
-    """``FX_LINES``, ``CURRENCY <code>``, then ``LINE <posting date> <signed amount>
+    """``FX_LINES``, ``CURRENCY <code>``, an optional ``ACCOUNT <identifier>``
+    (``FX_IDENTIFIER`` when absent), then ``LINE <posting date> <signed amount>
     <stated CAD or -> <original currency or -> <description>``. The period runs from
     the earliest line to the latest, control ``none``."""
     rows = [row.strip() for row in text.splitlines() if row.strip()]
     if not rows or rows[0] != FX_LINES:
         raise NotRecognised
     currency = "CAD"
+    identifier = FX_IDENTIFIER
     found: list[tuple[dt.date, Decimal, Decimal | None, str | None, str]] = []
     for row in rows[1:]:
         head, _, rest = row.partition(" ")
         if head == "CURRENCY":
             currency = rest
+        elif head == "ACCOUNT":
+            identifier = rest
         elif head == "LINE":
             posting, amount, stated, original, description = rest.split(" ", 4)
             found.append(
@@ -165,7 +169,7 @@ def parse_fx(text: str, accounts: AccountLookup) -> ParseResult:
                 )
             )
     first, last = min(line[0] for line in found), max(line[0] for line in found)
-    matched = accounts.by_identifier(FX_INSTITUTION, FX_IDENTIFIER, first, last)
+    matched = accounts.by_identifier(FX_INSTITUTION, identifier, first, last)
     if len(matched) != 1:
         raise Rejected("unknown_account", (first, last))
     account = matched[0]
@@ -199,10 +203,13 @@ def parse_fx(text: str, accounts: AccountLookup) -> ParseResult:
 FX_PARSER = Parser("synthetic_fx_txt", FX_ISSUER, "txt", "1", parse_fx)
 
 
-def fx_lines(currency: str, *lines: str) -> str:
-    """An ``FX_LINES`` document; each line is ``"<date> <amount> <stated|-> <original|->
-    <description>"``."""
-    return "\n".join([FX_LINES, f"CURRENCY {currency}", *(f"LINE {x}" for x in lines)])
+def fx_lines(currency: str, *lines: str, account: str = FX_IDENTIFIER) -> str:
+    """An ``FX_LINES`` document of the account ``account`` identifies; each line is
+    ``"<date> <amount> <stated|-> <original|-> <description>"``."""
+    return "\n".join(
+        [FX_LINES, f"CURRENCY {currency}", f"ACCOUNT {account}",
+         *(f"LINE {x}" for x in lines)]
+    )  # fmt: skip
 
 
 def read_as_text(path: Path) -> str:

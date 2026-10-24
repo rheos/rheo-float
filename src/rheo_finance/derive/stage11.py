@@ -84,6 +84,7 @@ from rheo_finance.contracts import Tiered
 from rheo_finance.derive import crypto_edges
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.events import record_event
+from rheo_finance.parsers.base import CRYPTO_TRANSFER, FIAT
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.refs import FINANCE_SYSTEM, format_ref
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
@@ -103,7 +104,6 @@ FEE_KIND: Final = "own_transfer"
 CONVERSION: Final = "conversion"
 CONVERSION_FEE_TYPE: Final = "conversion_fee"
 CONVERSION_FEE_WORDING: Final = "derived conversion fee"
-FIAT: Final = "fiat"
 CAD: Final = "CAD"
 FEE_ORIGIN: Final = "derived_fee"
 FEE_TYPE: Final = "fee"
@@ -111,7 +111,6 @@ FEE_WORDING: Final = "derived fee"
 # A derived fee's source reference: the prefix, then the edge's id.
 FEE_REF: Final = "derived_fee:"
 LABEL: Final = "label"
-CRYPTO_TRANSFER: Final = "crypto_transfer"
 
 # --- events ---------------------------------------------------------------------------
 

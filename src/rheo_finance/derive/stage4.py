@@ -28,6 +28,7 @@ from typing import Final
 from sqlalchemy import and_, bindparam, func, select, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.rates import QUOTE_CAD, SOURCE_BOC, RateBook, rate_book
 from rheo_finance.storage.schema import document_line, txn, txn_source
 
@@ -84,7 +85,7 @@ def convert(uow: UnitOfWork) -> None:
             values.append(
                 _converted(row.id, cents(amount), "native", None, None, "native")
             )
-        elif row.movement_kind != "fiat":
+        elif row.movement_kind != FIAT:
             values.append(_converted(row.id, None, None, None, None, "unconverted"))
         elif row.stated_cad is not None:
             stated: Decimal = row.stated_cad

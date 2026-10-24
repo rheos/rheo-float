@@ -34,6 +34,13 @@ ControlKind = Literal["summary", "running_balance", "bill_identity", "none"]
 CRYPTO_MOVEMENT: Final = "crypto_movement"
 CRYPTO_FEE: Final = "crypto_fee"
 CRYPTO_LINE_KINDS: Final = (CRYPTO_MOVEMENT, CRYPTO_FEE)
+# The ``txn.movement_kind`` values the derive stages write and read, named once here
+# beside the line kinds: a fiat line, a crypto fee line (``CRYPTO_FEE``), and the
+# three kinds stage 7 gives a crypto movement line (unclassified until it runs).
+FIAT: Final = "fiat"
+CRYPTO_TRANSFER: Final = "crypto_transfer"
+CRYPTO_UNCLASSIFIED: Final = "crypto_unclassified"
+CRYPTO_SWAP_LEG: Final = "crypto_swap_leg"
 LineKind = Literal[
     "transaction", "payment_notice", "invoice", "receipt", "crypto_movement",
     "crypto_fee", "holding", "notice_fact", "trading_result",

@@ -55,13 +55,13 @@ from sqlalchemy import bindparam, insert, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
 from rheo_finance.manual.transfer_hints import TransferHintRow
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.reference.patterns import reversal_row_matches
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import document_line, pair_edge, txn
 
 WINDOW_KEY: Final = "finance.reversals.window_days"
 KIND: Final = "reversal"
-FIAT: Final = "fiat"
 
 
 @dataclass(frozen=True)

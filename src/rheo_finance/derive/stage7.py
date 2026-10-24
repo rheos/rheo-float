@@ -43,7 +43,13 @@ from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive import pairing
 from rheo_finance.manual.own_addresses import normalize_address
-from rheo_finance.parsers.base import CRYPTO_FEE
+from rheo_finance.parsers.base import (
+    CRYPTO_FEE,
+    CRYPTO_SWAP_LEG,
+    CRYPTO_TRANSFER,
+    CRYPTO_UNCLASSIFIED,
+    FIAT,
+)
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import (
     account,
@@ -56,10 +62,6 @@ from rheo_finance.storage.schema import (
 
 PLACEHOLDER: Final = "placeholder"
 SPAM: Final = "spam"
-FIAT: Final = "fiat"
-TRANSFER: Final = "crypto_transfer"
-SWAP: Final = "crypto_swap_leg"
-UNCLASSIFIED: Final = "crypto_unclassified"
 
 
 def _included(uow: UnitOfWork) -> set[uuid.UUID]:
@@ -171,13 +173,13 @@ def _movement_kinds(
     kinds: dict[uuid.UUID, tuple[str, bool]] = {}
     for line_id, (account_id, trade_ref, counterpart) in lines.items():
         if trade_ref is not None and len(signs[account_id, trade_ref]) == 2:
-            kinds[line_id] = (SWAP, False)
+            kinds[line_id] = (CRYPTO_SWAP_LEG, False)
         elif line_id in hinted or (
             counterpart is not None and normalize_address(counterpart) in own
         ):
-            kinds[line_id] = (TRANSFER, line_id not in excluded)
+            kinds[line_id] = (CRYPTO_TRANSFER, line_id not in excluded)
         else:
-            kinds[line_id] = (UNCLASSIFIED, False)
+            kinds[line_id] = (CRYPTO_UNCLASSIFIED, False)
     return kinds
 
 

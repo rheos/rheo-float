@@ -56,6 +56,7 @@ from sqlalchemy import and_, insert, select
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
 from rheo_finance.manual.own_addresses import normalize_address
+from rheo_finance.parsers.base import CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED, FIAT
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     crypto_label,
@@ -69,9 +70,6 @@ from rheo_finance.storage.schema import (
 WINDOW_KEY: Final = "finance.crypto.transfer_window_hours"
 FEE_PCT_KEY: Final = "finance.crypto.fee_tolerance_pct"
 EPSILON_KEY: Final = "finance.crypto.qty_epsilon"
-TRANSFER: Final = "crypto_transfer"
-UNCLASSIFIED: Final = "crypto_unclassified"
-FIAT: Final = "fiat"
 KIND: Final = "own_transfer"
 ONE_SIDED: Final = "own_one_sided"
 HUNDRED: Final = Decimal(100)
@@ -144,7 +142,7 @@ def _lines(uow: UnitOfWork) -> list[_Line]:
             txn.c.movement_kind,
             document_line.c.fee_stated,
         ).where(
-            txn.c.movement_kind.in_((TRANSFER, UNCLASSIFIED)),
+            txn.c.movement_kind.in_((CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED)),
             txn.c.amount != 0,
             txn.c.occurred_at.is_not(None),
             txn.c.exclusion.is_(None),
@@ -201,7 +199,7 @@ def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance) -> None:
             deposits.setdefault(line.code, []).append(line)
     edges: list[dict[str, object]] = []
     for out in lines:
-        if out.amount > 0 or out.kind != TRANSFER:
+        if out.amount > 0 or out.kind != CRYPTO_TRANSFER:
             continue
         destination = (
             None

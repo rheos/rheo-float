@@ -73,7 +73,12 @@ from sqlalchemy import Row, bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive.precedence import Standing, standings
-from rheo_finance.parsers.base import CRYPTO_FEE, CRYPTO_LINE_KINDS, CRYPTO_MOVEMENT
+from rheo_finance.parsers.base import (
+    CRYPTO_FEE,
+    CRYPTO_LINE_KINDS,
+    CRYPTO_MOVEMENT,
+    CRYPTO_UNCLASSIFIED,
+)
 from rheo_finance.reference.assets import asset_code
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
@@ -91,7 +96,6 @@ QUANTITY_MISMATCH: Final = "quantity_mismatch"
 TXID_KEY: Final = "crypto_txid"
 TIME_KEY: Final = "crypto_time"
 FEE_DIRECTION: Final = "fee"
-UNCLASSIFIED: Final = "crypto_unclassified"
 
 
 @dataclass(frozen=True)
@@ -242,7 +246,7 @@ def build_crypto_lines(
                 "basis": standing.basis,
                 "provisional": False,
                 "movement_kind": (
-                    CRYPTO_FEE if row.line_kind == CRYPTO_FEE else UNCLASSIFIED
+                    CRYPTO_FEE if row.line_kind == CRYPTO_FEE else CRYPTO_UNCLASSIFIED
                 ),
                 "fee_type": row.fee_type,
                 "trade_ref": row.trade_ref,

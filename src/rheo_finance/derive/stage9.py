@@ -114,6 +114,7 @@ from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.transfer_hints import TransferHintRow
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.rates import QUOTE_CAD, RateBook, rate_book
 from rheo_finance.reference.patterns import row_hints
 from rheo_finance.storage.ids import derived_id
@@ -202,7 +203,7 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             document_line.c.conversion_hint,
             document_line.c.hint_account_slug,
         ).where(
-            txn.c.movement_kind == "fiat",
+            txn.c.movement_kind == FIAT,
             txn.c.amount != 0,
             txn.c.exclusion.is_(None),
             txn.c.party_id.is_(None),

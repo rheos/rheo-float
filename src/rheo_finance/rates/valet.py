@@ -58,6 +58,7 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.http import Client, HostRefused, RequestFailed
 from rheo_finance.operations import OperationSpec, register
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.rates import (
     FX_SERIES_START,
     LEGACY_NOON_SERIES,
@@ -121,7 +122,7 @@ def currencies(uow: UnitOfWork) -> list[str]:
     """The fiat currencies other than CAD in ``txn``, sorted."""
     found = uow.scalars(
         select(txn.c.currency)
-        .where(txn.c.movement_kind == "fiat", txn.c.currency != QUOTE_CAD)
+        .where(txn.c.movement_kind == FIAT, txn.c.currency != QUOTE_CAD)
         .distinct()
     )
     return sorted(each for each in found if _CURRENCY.fullmatch(each))
@@ -193,7 +194,7 @@ def _line_dates(uow: UnitOfWork, currency: str) -> list[dt.date]:
                 document_line, document_line.c.id == txn_source.c.document_line_id
             )
             .where(
-                txn.c.movement_kind == "fiat",
+                txn.c.movement_kind == FIAT,
                 txn.c.currency == currency,
                 document_line.c.stated_cad.is_(None),
             )

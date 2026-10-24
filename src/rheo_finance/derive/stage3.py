@@ -46,6 +46,7 @@ from rheo_finance.derive.precedence import standings
 from rheo_finance.manual.cash_lines import TRANSACTIONS_FILE, CashLines
 from rheo_finance.manual.loader import RowError
 from rheo_finance.manual.stage2 import account_id, error_id
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
@@ -199,7 +200,7 @@ def _document_lines(uow: UnitOfWork, overlap_days: int) -> Lines:
                 "origin": "document_line",
                 "basis": commit.basis,
                 "provisional": commit.provisional,
-                "movement_kind": "fiat",
+                "movement_kind": FIAT,
                 "fee_type": row.fee_type,
                 "trade_ref": row.trade_ref,
             }
@@ -284,7 +285,7 @@ def _manual_lines(
                 "description_norm": norm,
                 "origin": "manual",
                 "basis": "manual",
-                "movement_kind": "fiat",
+                "movement_kind": FIAT,
             }
         )
         sources.append(

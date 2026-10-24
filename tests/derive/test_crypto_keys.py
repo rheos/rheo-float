@@ -301,6 +301,29 @@ def test_a_primary_printing_its_fee_on_its_own_line_keeps_the_fee_txn(
     assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == []
 
 
+def test_an_unnetted_primary_never_folds_a_fee_in_another_asset(
+    crypto_ledger: Ledger,
+) -> None:
+    # The export prints a token withdrawal as one figure with no fee; the email
+    # prints the same TXID with its network fee in another asset. The token figure
+    # cannot hold an ETH fee, so the fee stays its own txn.
+    ledger = crypto_ledger
+    head = f"WITHDRAW at={NOON} asset=USDT qty=50 txid=999tx0ac88 to={FOREIGN}"
+    file(ledger, "export.csv", EXCHANGE, head)
+    file(ledger, "email.txt", EXCHANGE, f"{head} fee=0.001 feeasset=ETH")
+
+    ledger.derive()
+
+    assert {
+        (row["currency"], Decimal(str(row["amount"]))): sources(ledger, row["id"])
+        for row in rows(ledger)
+    } == {
+        ("USDT", Decimal("-50")): ["additional", "primary"],
+        ("ETH", Decimal("-0.001")): ["primary"],
+    }
+    assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == []
+
+
 @pytest.mark.parametrize(
     ("export", "email", "movement"),
     [

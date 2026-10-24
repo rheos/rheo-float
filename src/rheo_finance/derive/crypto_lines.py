@@ -40,8 +40,9 @@ provisional.
 **An unnetted primary.** When the line that ranks first among a TXID's outgoing
 movement lines prints one figure with no fee (``fee_stated`` false, and its document
 prints no fee line for the TXID), a lower-ranked document's separate fee line for that
-TXID makes no txn of its own: it is one more additional source of the withdrawal's
-txn, with no discrepancy of its own. The primary's figure includes the fee, and the
+TXID in the same asset makes no txn of its own: it is one more additional source of
+the withdrawal's txn, with no discrepancy of its own. A fee in another asset cannot be
+inside the figure, so it keys as above. The primary's figure includes the fee, and the
 lower-ranked movement line's net figure is already a ``quantity_mismatch``, so the fee
 is never counted twice. When the primary prints a net figure and a fee, the fee keys
 as above.
@@ -311,13 +312,15 @@ def _fold_unnetted_fees(
 ]:
     """The key groups with every unnetted-fee line taken out, and those lines by the
     key of the withdrawal they fold into (module docstring, "An unnetted primary")."""
-    # The line ranking first among a TXID's outgoing movement lines, and its key.
-    primary: dict[tuple[object, object], tuple[_Keyed, tuple[object, ...]]] = {}
+    # The line ranking first among a TXID's outgoing movement lines of one asset, and
+    # its key, by (account, asset code, TXID): an unnetted figure can hold a fee in
+    # its own asset only.
+    primary: dict[tuple[object, ...], tuple[_Keyed, tuple[object, ...]]] = {}
     for natural, lines in by_key.items():
         if natural[0] != TXID_KEY or natural[4] != "out":
             continue
         for each in lines:
-            txid = (natural[1], natural[3])
+            txid = (natural[1], natural[2], natural[3])
             held = primary.get(txid)
             if held is None or (place(each), each.row.line_no) < (
                 place(held[0]),
@@ -329,7 +332,7 @@ def _fold_unnetted_fees(
     for natural, lines in by_key.items():
         kept = lines
         if natural[0] == TXID_KEY and natural[4] == FEE_DIRECTION:
-            held = primary.get((natural[1], natural[3]))
+            held = primary.get((natural[1], natural[2], natural[3]))
             # Unnetted: no fee stated, and no fee line from the primary's document (or
             # one ranking with it), as a source that prints the fee on its own line.
             if (

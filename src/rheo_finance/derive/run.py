@@ -42,6 +42,7 @@ Order of work, set by what each step reads:
    the stored rates and the lines stage 8 paired, and the crypto own-wallet transfer
    edges (``crypto_edges``), which read the crypto kinds stage 7 set, the own
    addresses and the crypto labels; then stage 11, resolution (``stage11``): the
+   owner's ``pair`` and ``unpair`` decisions apply first, then the
    mutually unique edges apply, every transfer-like line gets its state, a labelled
    crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
    transfer's net or conversion's spread becomes a derived fee line.

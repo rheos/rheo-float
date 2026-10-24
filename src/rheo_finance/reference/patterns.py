@@ -239,17 +239,48 @@ def classify(
     fee = _applies(patterns.fee, text, account_kind, issuer)
     etransfer = _applies(patterns.etransfer, text, account_kind, issuer)
 
-    by_sign: ReversalDirection | None = (
-        None if credit is None else "out" if credit else "in"
-    )
-    transfer_hint = transfer.kind if transfer else None
-    counterpart = transfer.counterpart if transfer else None
-    reversal_hint: ReversalDirection | None = None
+    rows = row_hints(text, hint_rows, credit=credit)
+    reversal_hint: ReversalDirection | None = rows.reversal_hint
     if reversal is not None:
-        reversal_hint = by_sign if reversal.direction == "sign" else reversal.direction
-    conversion_hint = conversion is not None
+        reversal_hint = (
+            _by_sign(credit) if reversal.direction == "sign" else reversal.direction
+        )
+
+    return Hints(
+        transfer_hint=transfer.kind if transfer else rows.transfer_hint,
+        reversal_hint=reversal_hint,
+        conversion_hint=conversion is not None or rows.conversion_hint,
+        etransfer_hint=etransfer.wording if etransfer else None,
+        etransfer_name_position=(
+            None if etransfer is None or etransfer.name == "none" else etransfer.name
+        ),
+        hint_account_slug=transfer.counterpart if transfer else rows.hint_account_slug,
+        fee_type=fee.fee_type if fee else None,
+    )
+
+
+def _by_sign(credit: bool | None) -> ReversalDirection | None:
+    return None if credit is None else "out" if credit else "in"
+
+
+def row_hints(
+    description_norm: str,
+    hint_rows: Sequence[TransferHintRow],
+    *,
+    credit: bool | None = None,
+) -> Hints:
+    """The hints ``transfer_hints.csv`` rows alone give one line's wording, as
+    ``classify`` applies them after its built-in patterns: the first matching ``out``
+    or ``in`` row sets ``transfer_hint`` (``manual_out`` or ``manual_in``) and its
+    counterpart account slug, a ``conversion`` row sets ``conversion_hint``, and a
+    ``reversal`` row sets ``reversal_hint`` from ``credit``. Parsers never pass the
+    owner's rows, so derive stage 9 asks this for every line beside its parser hints."""
+    transfer_hint: str | None = None
+    counterpart: str | None = None
+    conversion_hint = False
+    reversal_hint: ReversalDirection | None = None
     for row in hint_rows:
-        if not _has(text, row.pattern):
+        if not _has(description_norm, row.pattern):
             continue
         if row.direction in ("out", "in"):
             if transfer_hint is None:
@@ -258,18 +289,24 @@ def classify(
         elif row.direction == "conversion":
             conversion_hint = True
         elif reversal_hint is None:
-            reversal_hint = by_sign
-
+            reversal_hint = _by_sign(credit)
     return Hints(
         transfer_hint=transfer_hint,
         reversal_hint=reversal_hint,
         conversion_hint=conversion_hint,
-        etransfer_hint=etransfer.wording if etransfer else None,
-        etransfer_name_position=(
-            None if etransfer is None or etransfer.name == "none" else etransfer.name
-        ),
         hint_account_slug=counterpart,
-        fee_type=fee.fee_type if fee else None,
+    )
+
+
+def reversal_row_matches(
+    description_norm: str, hint_rows: Sequence[TransferHintRow]
+) -> bool:
+    """Whether a ``reversal`` row of ``transfer_hints.csv`` matches a line's wording,
+    as ``classify`` matches its rows. Parsers never pass the owner's rows, so derive
+    stage 8 asks this for every line beside the parser's ``reversal_hint``."""
+    return any(
+        row.direction == "reversal" and _has(description_norm, row.pattern)
+        for row in hint_rows
     )
 
 

@@ -12,6 +12,7 @@ import datetime as dt
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import Connection, Table, delete, func, insert, select, update
@@ -282,8 +283,9 @@ def test_a_transaction_line_missing_a_field_is_counted_not_a_txn(
     )
 
     lines = build_lines(
-        ledger.uow, CashLines((), ()), {}, overlap_days=3, receipt_days=3,
-        invoice_days=30,
+        ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
+        overlap_days=3, receipt_days=3, invoice_days=30,
+        qty_epsilon=Decimal("1E-9"),
     )  # fmt: skip
 
     assert (lines.from_documents, lines.incomplete_lines) == (3, 3)
@@ -321,9 +323,11 @@ def test_a_derive_that_fails_leaves_every_table_as_it_was(
         _cash: CashLines,
         _currencies: dict[str, set[str]],
         *,
+        zone: ZoneInfo,
         overlap_days: int,
         receipt_days: int,
         invoice_days: int,
+        qty_epsilon: Decimal,
     ) -> Lines:
         raise RuntimeError("stage 3 failed")
 
@@ -344,8 +348,9 @@ def test_a_line_of_a_document_that_is_not_parsed_is_not_a_txn(ledger: Ledger) ->
     ledger.conn.execute(delete(txn))
 
     lines = build_lines(
-        ledger.uow, CashLines((), ()), {}, overlap_days=3, receipt_days=3,
-        invoice_days=30,
+        ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
+        overlap_days=3, receipt_days=3, invoice_days=30,
+        qty_epsilon=Decimal("1E-9"),
     )  # fmt: skip
 
     assert lines.txns == 0
@@ -363,13 +368,16 @@ def test_a_violated_constraint_fails_the_derive_itself(
         cash: CashLines,
         currencies: dict[str, set[str]],
         *,
+        zone: ZoneInfo,
         overlap_days: int,
         receipt_days: int,
         invoice_days: int,
+        qty_epsilon: Decimal,
     ) -> Lines:
         lines = real(
-            uow, cash, currencies, overlap_days=overlap_days,
+            uow, cash, currencies, zone=zone, overlap_days=overlap_days,
             receipt_days=receipt_days, invoice_days=invoice_days,
+            qty_epsilon=qty_epsilon,
         )  # fmt: skip
         ledger.conn.execute(
             insert(txn).values(

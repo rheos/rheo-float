@@ -123,6 +123,42 @@ _tiers(
     },
 )  # fmt: skip
 
+# --- stored exchange rates and fetch coverage (state, inputs of stage 4; 0016) -------
+
+rate = Table(
+    "rate",
+    metadata,
+    Column("rate_date", Date, primary_key=True),
+    Column("base", Text, primary_key=True),
+    Column("quote", Text, primary_key=True),
+    Column("rate", Numeric, nullable=False),
+    Column("source", Text, primary_key=True),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+# A published market rate is not personal, but the tier guard restricts every numeric
+# column outside its reviewed exceptions, as it does ``txn.rate``.
+_tiers(
+    rate,
+    {"rate_date": P, "base": P, "quote": P, "rate": R, "source": P, "fetched_at": P},
+)
+
+rate_coverage = Table(
+    "rate_coverage",
+    metadata,
+    Column("series", Text, primary_key=True),
+    Column("source", Text, primary_key=True),
+    Column("covered_from", Date, primary_key=True),
+    Column("covered_to", Date, primary_key=True),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+_tiers(
+    rate_coverage,
+    {
+        "series": P, "source": P, "covered_from": P, "covered_to": P,
+        "fetched_at": P,
+    },
+)  # fmt: skip
+
 # --- sink specs (derived, stage 16; migration 0003) -----------------------------------
 
 sink_spec = Table(
@@ -315,6 +351,32 @@ _tiers(archive_skip, {"directory": P, "reason": P, "count": P})
 
 def _account_fk() -> ForeignKey:
     return ForeignKey("finance.account.id", deferrable=True, initially="DEFERRED")
+
+
+# --- the owner's own wallet addresses (stage 2; migration 0018) -----------------------
+# One row per address in its compared form (``manual.own_addresses``). Restricted,
+# like every address.
+
+own_address = Table(
+    "own_address",
+    metadata,
+    Column("address", Text, primary_key=True),
+    Column("account_id", Uuid, _account_fk(), nullable=False),
+)
+_tiers(own_address, {"address": R, "account_id": R})
+
+# --- the owner's crypto labels (stage 2; migration 0019) -----------------------------
+# One row per labelled line, keyed by the line key its ``finance.txn:<uuid>`` names
+# (``manual.crypto_labels``).
+
+crypto_label = Table(
+    "crypto_label",
+    metadata,
+    Column("line_key_id", Uuid, primary_key=True),
+    Column("label", Text, nullable=False),
+    Column("note", Text),
+)
+_tiers(crypto_label, {"line_key_id": P, "label": P, "note": R})
 
 
 statement_period = Table(
@@ -514,6 +576,33 @@ _tiers(
     txn_source,
     {"txn_id": P, "document_line_id": P, "manual_ref": P, "line_key_id": P, "role": P},
 )
+
+# --- the pairing graph (derived, stage 8 on; migration 0017) --------------------------
+
+pair_edge = Table(
+    "pair_edge",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("a_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("loan_key", Text),
+    Column("b_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("b_part_id", Uuid),
+    Column("b_account_id", Uuid, _account_fk()),
+    Column("group_id", Uuid),
+    Column("applied", Boolean, nullable=False, server_default="false"),
+    Column("basis_ref", Text),
+    Column("fee_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("spread_cad", Numeric(20, 2)),
+)
+_tiers(
+    pair_edge,
+    {
+        "id": P, "kind": P, "a_txn_id": P, "loan_key": P, "b_txn_id": P,
+        "b_part_id": P, "b_account_id": P, "group_id": P, "applied": P,
+        "basis_ref": P, "fee_txn_id": P, "spread_cad": R,
+    },
+)  # fmt: skip
 
 # --- source discrepancies (derived, stage 3; migration 0011) --------------------------
 # Keys and codes only: the line's amount and description stay on ``document_line``.

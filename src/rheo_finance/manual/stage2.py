@@ -13,7 +13,11 @@ Each loader rewrites the ``manual_entry_error`` rows of its own files and no oth
   (``manual.filed_years``);
 - ``load_transfer_hints``: ``transfer_hints.csv``, checked against the loaded
   registry and held in memory for ``reference.patterns.classify`` and stage 9
-  (``manual.transfer_hints``); its patterns are restricted and never stored.
+  (``manual.transfer_hints``); its patterns are restricted and never stored;
+- ``load_own_addresses``: ``own_addresses.csv``, checked against the loaded registry,
+  into ``own_address`` (``manual.own_addresses``), keyed by the address itself;
+- ``load_crypto_labels``: ``crypto_labels.csv`` into ``crypto_label``
+  (``manual.crypto_labels``), keyed by the line key each row's line ref names.
 
 Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
 no date of their own). An account is keyed by its slug. An identifier is keyed by its
@@ -46,6 +50,12 @@ from rheo_finance.manual.cash_lines import (
     CashLines,
     build_cash_lines,
 )
+from rheo_finance.manual.crypto_labels import (
+    CRYPTO_LABELS_FILE,
+    CryptoLabelRow,
+    CryptoLabels,
+    build_crypto_labels,
+)
 from rheo_finance.manual.document_periods import (
     DOCUMENT_PERIODS_FILE,
     DocumentPeriodRow,
@@ -60,6 +70,12 @@ from rheo_finance.manual.filed_years import (
 )
 from rheo_finance.manual.headers import MANUAL_DIR_NAME
 from rheo_finance.manual.loader import RowError, load_csv
+from rheo_finance.manual.own_addresses import (
+    OWN_ADDRESSES_FILE,
+    OwnAddresses,
+    OwnAddressRow,
+    build_own_addresses,
+)
 from rheo_finance.manual.transfer_hints import (
     TRANSFER_HINTS_FILE,
     TransferHintRow,
@@ -70,8 +86,10 @@ from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
     account_identifier,
+    crypto_label,
     filed_year,
     manual_entry_error,
+    own_address,
 )
 
 REGISTRY_DATE: Final = dt.date(2000, 1, 1)
@@ -179,6 +197,46 @@ def load_transfer_hints(
     )
     _rewrite_errors(uow, (TRANSFER_HINTS_FILE,), hints.errors)
     return hints
+
+
+def load_own_addresses(
+    uow: UnitOfWork, data_dir: Path, registry: Registry
+) -> OwnAddresses:
+    """Rewrite ``own_address`` from the ``own_addresses.csv`` rows whose account is in
+    ``registry``."""
+    found = build_own_addresses(
+        load_csv(data_dir / MANUAL_DIR_NAME / OWN_ADDRESSES_FILE, OwnAddressRow),
+        {row.slug for row in registry.accounts},
+    )
+    uow.execute(delete(own_address))
+    if found.rows:
+        uow.execute(
+            insert(own_address),
+            [
+                {"address": row.address, "account_id": account_id(row.account)}
+                for row in found.rows
+            ],
+        )
+    _rewrite_errors(uow, (OWN_ADDRESSES_FILE,), found.errors)
+    return found
+
+
+def load_crypto_labels(uow: UnitOfWork, data_dir: Path) -> CryptoLabels:
+    """Rewrite ``crypto_label`` from ``crypto_labels.csv``."""
+    found = build_crypto_labels(
+        load_csv(data_dir / MANUAL_DIR_NAME / CRYPTO_LABELS_FILE, CryptoLabelRow)
+    )
+    uow.execute(delete(crypto_label))
+    if found.rows:
+        uow.execute(
+            insert(crypto_label),
+            [
+                {"line_key_id": row.line_ref, "label": row.label, "note": row.note}
+                for row in found.rows
+            ],
+        )
+    _rewrite_errors(uow, (CRYPTO_LABELS_FILE,), found.errors)
+    return found
 
 
 def filed_year_id(year: int) -> uuid.UUID:

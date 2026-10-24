@@ -16,7 +16,8 @@ The layout, one item per line:
   and ``asset`` and ``qty`` (signed, as printed: ``1E-7`` stays ``1E-7``) are
   required; ``txid``, ``to``, ``from``, ``type`` (source type), ``cad`` (stated CAD
   worth), ``trade`` (trade ref), ``fake=1``, ``hint=1`` (the source marks it a
-  transfer) and ``feestated=1`` are optional;
+  transfer), ``rev=1`` (the source marks it a reversal) and ``feestated=1`` are
+  optional;
 - ``FEE key=value ...``: one ``crypto_fee`` line, ``qty`` the positive fee;
 - ``WITHDRAW key=value ...``: a withdrawal through ``parsers.crypto.withdrawal_lines``,
   ``qty`` the positive printed figure, with optional ``fee``, ``gross=1`` (the figure
@@ -85,6 +86,7 @@ def _line(kind: str, account: RegisteredAccount, f: dict[str, str]) -> ParsedLin
         trade_ref=f.get("trade"),
         is_fake=f.get("fake") == "1",
         transfer_hint=f.get("hint") == "1",
+        reversal_hint=f.get("rev") == "1",
         fee_stated=kind == "FEE" or f.get("feestated") == "1",
         fee_type="withdrawal_fee" if kind == "FEE" else None,
     )

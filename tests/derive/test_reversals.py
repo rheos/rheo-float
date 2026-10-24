@@ -30,15 +30,18 @@ from sqlalchemy import ColumnElement, event, func, select
 
 from rheo_finance.derive import pairing, stage8
 from rheo_finance.ledger.totals import cad_total
+from rheo_finance.manual.accounts import ACCOUNTS_FILE
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
 
+from .crypto_support import CRYPTO_ISSUER, WALLET_ID, crypto_document
 from .support import (
     CARD_IDENTIFIER,
     CARD_STATEMENT,
     CARD_TRANSACTIONS,
     CSV_IDENTIFIER,
     FIXTURES,
+    FX_INSTITUTION,
     Ledger,
     fx_lines,
 )
@@ -422,6 +425,66 @@ def test_a_reversal_line_is_never_the_original_of_another(chequing: Ledger) -> N
     assert edges(chequing) == [
         (cancelled, Decimal("875.00"), sent, Decimal("-875.00"), True),
     ]
+
+
+@pytest.mark.parametrize("placeholder", [False, True])
+def test_an_excluded_line_with_reversal_wording_is_never_a_reversal(
+    fx_ledger: Ledger, placeholder: bool
+) -> None:
+    # Two lines that pair as a reversal on an ordinary account; on a placeholder
+    # account both are excluded, so neither is a reversal nor the original of one.
+    flag = "true" if placeholder else ""
+    fx_ledger.manual(
+        ACCOUNTS_FILE,
+        f"fx,Fx,{FX_INSTITUTION},crypto_wallet,CAD,monthly,,,,,,,{flag},,",
+    )
+    fx_ledger.manual(TRANSFER_HINTS_FILE, "sample bank adjustment,reversal,")
+    fx_ledger.file(
+        "synthetic-fx/lines.txt",
+        fx_lines(
+            "CAD",
+            "2025-08-04 -50.00 - - SAMPLE SHOP 99941",
+            "2025-08-07 50.00 - - SAMPLE BANK ADJUSTMENT 99973",
+        ),
+    )
+
+    fx_ledger.derive()
+
+    exclusion = "placeholder" if placeholder else None
+    assert set(fx_ledger.conn.scalars(select(txn.c.exclusion))) == {exclusion}
+    state = (None, None) if placeholder else ("paired", "reversal")
+    assert states(fx_ledger) == [
+        (D(2025, 8, 4), Decimal("-50.00"), *state),
+        (D(2025, 8, 7), Decimal("50.00"), *state),
+    ]
+    assert len(edges(fx_ledger)) == (0 if placeholder else 1)
+
+
+def test_a_crypto_line_with_reversal_wording_is_never_a_reversal(
+    crypto_ledger: Ledger,
+) -> None:
+    # A received quantity, then the same quantity sent from the same wallet by a
+    # source that marks it a reversal: crypto lines are no reversal and no original.
+    crypto_ledger.file(
+        f"{CRYPTO_ISSUER}/wallet.txt",
+        crypto_document(
+            f"ACCOUNT {WALLET_ID}",
+            "MOVE at=2025-05-05T12:00:00+00:00 asset=bitcoin qty=0.5 type=Received",
+            "MOVE at=2025-05-12T12:00:00+00:00 asset=bitcoin qty=-0.5 type=Sent rev=1",
+        ),
+    )
+    crypto_ledger.derive()
+
+    # The control: both lines are crypto lines of one account and asset.
+    assert sorted(crypto_ledger.conn.scalars(select(txn.c.movement_kind))) == [
+        "crypto_unclassified",
+        "crypto_unclassified",
+    ]
+    assert sorted(states(crypto_ledger)) == [
+        (D(2025, 5, 5), Decimal("0.5"), None, None),
+        (D(2025, 5, 12), Decimal("-0.5"), None, None),
+    ]
+    assert edges(crypto_ledger) == []
 
 
 @pytest.mark.parametrize("with_row", [True, False])

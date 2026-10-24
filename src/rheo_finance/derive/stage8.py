@@ -1,6 +1,10 @@
 """Derivation stage 8: reversals, in both directions (FR-15(a), Key decision 9, edge
 cases 33, 34, 63 and 81).
 
+**Which lines.** Fiat txns (``movement_kind = fiat``) with a nonzero amount and no
+exclusion, as stage 9 reads them: a crypto line or an excluded line is never a
+reversal and never the original of one.
+
 **A reversal line** is a txn one of whose lines (its primary or an additional source,
 never an evidence source such as a receipt) its parser marked ``reversal_hint`` (the
 issuer's wording in ``reference/patterns.json``: "debit reversal", "customer cancel",
@@ -57,6 +61,7 @@ from rheo_finance.storage.schema import document_line, pair_edge, txn
 
 WINDOW_KEY: Final = "finance.reversals.window_days"
 KIND: Final = "reversal"
+FIAT: Final = "fiat"
 
 
 @dataclass(frozen=True)
@@ -80,9 +85,9 @@ class _Edge:
 
 
 def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]:
-    """Every nonzero txn, a reversal when any of its line sources
-    (``pairing.LINE_ROLES``) carries the parser's ``reversal_hint`` or wording a
-    ``reversal`` row matches."""
+    """Every nonzero fiat txn with no exclusion, a reversal when any of its line
+    sources (``pairing.LINE_ROLES``) carries the parser's ``reversal_hint`` or wording
+    a ``reversal`` row matches."""
     rows = uow.execute(
         pairing.source_lines(
             txn.c.account_id,
@@ -90,7 +95,11 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             txn.c.amount,
             txn.c.posting_date,
             document_line.c.reversal_hint,
-        ).where(txn.c.amount != 0)
+        ).where(
+            txn.c.amount != 0,
+            txn.c.movement_kind == FIAT,
+            txn.c.exclusion.is_(None),
+        )
     )
     found: dict[uuid.UUID, _Line] = {}
     for row in rows:

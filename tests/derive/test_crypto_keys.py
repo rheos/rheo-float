@@ -268,6 +268,29 @@ def test_an_unnetted_primary_folds_a_lower_sources_fee_line_into_the_withdrawal(
     assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == [
         "quantity_mismatch"
     ]
+    assert sum(ledger.conn.scalars(select(txn.c.amount))) == Decimal("-1.0")
+
+
+def test_a_net_unnetted_primary_keeps_a_lower_sources_fee_as_its_own_txn(
+    crypto_ledger: Ledger,
+) -> None:
+    # The export (ranking first) prints one figure and no fee, but that figure is
+    # the net one; the email prints the withdrawal gross with its fee. The email's
+    # movement plus its fee is not the export's figure, so the fee is not inside it:
+    # the fee keeps its own txn and the account moves by the full gross amount.
+    ledger = crypto_ledger
+    head = f"WITHDRAW at={NOON} asset=BTC txid=999tx0ee66 to={FOREIGN}"
+    file(ledger, "export.csv", EXCHANGE, f"{head} qty=0.9995")
+    file(ledger, "email.txt", EXCHANGE, f"{head} qty=1.0 fee=0.0005 gross=1")
+
+    ledger.derive()
+
+    assert roles_by_amount(ledger) == {
+        Decimal("-0.9995"): ["additional", "primary"],
+        Decimal("-0.0005"): ["primary"],
+    }
+    assert sum(ledger.conn.scalars(select(txn.c.amount))) == Decimal("-1.0")
+    assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == []
 
 
 def test_a_primary_printing_its_fee_on_its_own_line_keeps_the_fee_txn(

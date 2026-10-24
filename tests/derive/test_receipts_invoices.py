@@ -501,6 +501,7 @@ def rerun_stage3(ledger: Ledger) -> Any:
     return build_lines(
         ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
         overlap_days=3, receipt_days=3, invoice_days=30,
+        qty_epsilon=Decimal("1E-9"),
     )  # fmt: skip
 
 

@@ -324,6 +324,7 @@ def build_lines(
     overlap_days: int,
     receipt_days: int,
     invoice_days: int,
+    qty_epsilon: Decimal,
 ) -> Lines:
     """Write the txns, their sources and the source discrepancies, then link the
     receipts and invoices (``evidence``). ``account_currencies`` maps each loaded
@@ -331,9 +332,10 @@ def build_lines(
     ``finance.locale.timezone``, which a crypto txn's posting date follows;
     ``overlap_days`` is
     ``finance.import.overlap_day_tolerance``, ``receipt_days`` and ``invoice_days``
-    the receipt and invoice matching windows."""
+    the receipt and invoice matching windows, ``qty_epsilon``
+    ``finance.crypto.qty_epsilon``."""
     documents = _document_lines(uow, overlap_days)
-    crypto = crypto_lines.build_crypto_lines(uow, zone)
+    crypto = crypto_lines.build_crypto_lines(uow, zone, qty_epsilon=qty_epsilon)
     manual = _manual_lines(uow, cash, account_currencies)
     linked = evidence.link(uow, receipt_days=receipt_days, invoice_days=invoice_days)
     return Lines(

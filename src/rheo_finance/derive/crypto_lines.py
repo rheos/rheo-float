@@ -37,15 +37,20 @@ also a ``quantity_mismatch`` source discrepancy, which ``status`` counts. A cryp
 account has no tied-out statement, so no window refuses a line and no txn is
 provisional.
 
-**An unnetted primary.** When the line that ranks first among a TXID's outgoing
-movement lines prints one figure with no fee (``fee_stated`` false, and its document
-prints no fee line for the TXID), a lower-ranked document's separate fee line for that
-TXID in the same asset makes no txn of its own: it is one more additional source of
-the withdrawal's txn, with no discrepancy of its own. A fee in another asset cannot be
-inside the figure, so it keys as above. The primary's figure includes the fee, and the
-lower-ranked movement line's net figure is already a ``quantity_mismatch``, so the fee
-is never counted twice. When the primary prints a net figure and a fee, the fee keys
-as above.
+**An unnetted primary.** ``fee_stated`` false says only that a line prints one figure
+and no fee; that figure may be gross or net. When the line that ranks first among a
+TXID's outgoing movement lines has ``fee_stated`` false (and its document prints no
+fee line for the TXID), a lower-ranked document's separate fee line for that TXID in
+the same asset folds into the withdrawal only when the primary's figure equals that
+document's own movement line plus the fee, within ``finance.crypto.qty_epsilon``: the
+primary then printed the gross figure, the fee is inside it, and the lower document's
+net movement line is already a ``quantity_mismatch``. The folded fee line is one more
+additional source of the withdrawal's txn, with no discrepancy of its own, so the fee
+counts once. Otherwise (the primary's figure is the net one, or the figures agree
+with neither reading) the fee line keys as above and is a txn of its own, so the
+account moves by the full amount, and any difference in the movement figures stays a
+``quantity_mismatch``. A fee in another asset cannot be inside the figure, so it keys
+as above. When the primary prints a net figure and a fee, the fee keys as above.
 
 **What the txn carries.** The signed quantity as ``amount``, the asset code as
 ``currency``, the identifier as printed, the TXID and addresses, ``fee_type`` and
@@ -140,9 +145,12 @@ def _rank(found: dict[uuid.UUID, list[Standing]], account_id: uuid.UUID,
     raise LookupError("a crypto line's document has no standing on its account")
 
 
-def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
+def build_crypto_lines(
+    uow: UnitOfWork, zone: ZoneInfo, *, qty_epsilon: Decimal
+) -> CryptoLines:
     """Write the crypto txns, their sources and the quantity discrepancies, and store
-    each keyed line's key and normalized wording on ``document_line``."""
+    each keyed line's key and normalized wording on ``document_line``. ``qty_epsilon``
+    is ``finance.crypto.qty_epsilon`` (module docstring, "An unnetted primary")."""
     rows = uow.execute(
         select(
             document_line.c.id,
@@ -207,7 +215,7 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
     def place(each: _Keyed) -> int:
         return _rank(found, each.row.account_id, each.row.document_id)
 
-    groups, folded = _fold_unnetted_fees(by_key, place)
+    groups, folded = _fold_unnetted_fees(by_key, place, qty_epsilon)
     txns: list[dict[str, object]] = []
     sources: list[dict[str, object]] = []
     discrepancies: list[dict[str, object]] = []
@@ -307,20 +315,24 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
 def _fold_unnetted_fees(
     by_key: dict[tuple[object, ...], list[_Keyed]],
     place: Callable[[_Keyed], int],
+    epsilon: Decimal,
 ) -> tuple[
     dict[tuple[object, ...], list[_Keyed]], dict[tuple[object, ...], list[_Keyed]]
 ]:
-    """The key groups with every unnetted-fee line taken out, and those lines by the
+    """The key groups with every folded fee line taken out, and those lines by the
     key of the withdrawal they fold into (module docstring, "An unnetted primary")."""
     # The line ranking first among a TXID's outgoing movement lines of one asset, and
     # its key, by (account, asset code, TXID): an unnetted figure can hold a fee in
-    # its own asset only.
+    # its own asset only. Beside it, each document's own outgoing movement figure for
+    # the TXID, which a fee line of that document is added to.
     primary: dict[tuple[object, ...], tuple[_Keyed, tuple[object, ...]]] = {}
+    movement: dict[tuple[object, ...], Decimal] = defaultdict(Decimal)
     for natural, lines in by_key.items():
         if natural[0] != TXID_KEY or natural[4] != "out":
             continue
+        txid = (natural[1], natural[2], natural[3])
         for each in lines:
-            txid = (natural[1], natural[2], natural[3])
+            movement[(*txid, each.row.document_id)] += each.row.amount
             held = primary.get(txid)
             if held is None or (place(each), each.row.line_no) < (
                 place(held[0]),
@@ -332,16 +344,37 @@ def _fold_unnetted_fees(
     for natural, lines in by_key.items():
         kept = lines
         if natural[0] == TXID_KEY and natural[4] == FEE_DIRECTION:
-            held = primary.get((natural[1], natural[2], natural[3]))
-            # Unnetted: no fee stated, and no fee line from the primary's document (or
-            # one ranking with it), as a source that prints the fee on its own line.
-            if (
-                held is not None
-                and not held[0].row.fee_stated
-                and all(place(each) > place(held[0]) for each in lines)
-            ):
-                folded[held[1]].extend(lines)
-                kept = []
+            txid = (natural[1], natural[2], natural[3])
+            held = primary.get(txid)
+            if held is not None and not held[0].row.fee_stated:
+                first = held[0]
+                inside = [
+                    each
+                    for each in lines
+                    if _inside_gross(
+                        each, first, movement.get((*txid, each.row.document_id)),
+                        place, epsilon,
+                    )
+                ]  # fmt: skip
+                folded[held[1]].extend(inside)
+                kept = [each for each in lines if all(each is not f for f in inside)]
         if kept:
             groups[natural] = kept
     return groups, folded
+
+
+def _inside_gross(
+    fee: _Keyed,
+    first: _Keyed,
+    moved: Decimal | None,
+    place: Callable[[_Keyed], int],
+    epsilon: Decimal,
+) -> bool:
+    """Whether ``fee`` is inside the unnetted ``first``'s figure: its document ranks
+    below ``first``'s, and that document's own outgoing movement for the TXID
+    (``moved``) plus the fee is ``first``'s figure within ``epsilon``."""
+    return (
+        place(fee) > place(first)
+        and moved is not None
+        and abs(moved + fee.row.amount - first.row.amount) <= epsilon
+    )

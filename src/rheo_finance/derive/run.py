@@ -193,6 +193,7 @@ def run(
             overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY),
             receipt_days=ctx.settings.get_int(RECEIPT_DAYS_KEY),
             invoice_days=ctx.settings.get_int(INVOICE_DAYS_KEY),
+            qty_epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
         )
 
         stage4.convert(uow)

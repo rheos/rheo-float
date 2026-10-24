@@ -14,9 +14,13 @@ from sqlalchemy import insert
 
 from rheo_finance.derive import fingerprint as fp
 from rheo_finance.derive import run as derive_run
-from rheo_finance.storage.schema import rate
+from rheo_finance.storage.schema import rate, rate_coverage
 
 from .support import NOW, Ledger
+
+
+def moved_parts(before: fp.Fingerprint, after: fp.Fingerprint) -> set[str]:
+    return {name for name in before.parts if before.parts[name] != after.parts[name]}
 
 
 def test_every_input_table_feeds_a_fingerprint_part(ledger: Ledger) -> None:
@@ -42,6 +46,25 @@ def test_a_stored_rate_moves_the_rates_part_and_nothing_else(ledger: Ledger) -> 
     )
     after = fp.fingerprint(ledger.uow, ledger.ctx)
 
-    moved = {name for name in before.parts if before.parts[name] != after.parts[name]}
-    assert moved == {"rates"}
+    assert moved_parts(before, after) == {"rates"}
+    assert after.digest != before.digest
+
+
+def test_a_coverage_row_alone_moves_the_rates_part(ledger: Ledger) -> None:
+    # A fetch that returns no new observation still records the range it covered,
+    # and that alone lets stage 4 convert a weekend or holiday line: the next derive
+    # must run again.
+    before = fp.fingerprint(ledger.uow, ledger.ctx)
+    ledger.conn.execute(
+        insert(rate_coverage).values(
+            series="FXUSDCAD",
+            source="boc",
+            covered_from=dt.date(2025, 12, 3),
+            covered_to=dt.date(2025, 12, 10),
+            fetched_at=NOW,
+        )
+    )
+    after = fp.fingerprint(ledger.uow, ledger.ctx)
+
+    assert moved_parts(before, after) == {"rates"}
     assert after.digest != before.digest

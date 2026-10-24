@@ -365,6 +365,19 @@ own_address = Table(
 )
 _tiers(own_address, {"address": R, "account_id": R})
 
+# --- the owner's crypto labels (stage 2; migration 0019) -----------------------------
+# One row per labelled line, keyed by the line key its ``finance.txn:<uuid>`` names
+# (``manual.crypto_labels``).
+
+crypto_label = Table(
+    "crypto_label",
+    metadata,
+    Column("line_key_id", Uuid, primary_key=True),
+    Column("label", Text, nullable=False),
+    Column("note", Text),
+)
+_tiers(crypto_label, {"line_key_id": P, "label": P, "note": R})
+
 
 statement_period = Table(
     "statement_period",

@@ -39,10 +39,12 @@ Order of work, set by what each step reads:
    and the ``reversal`` rows of ``transfer_hints.csv``; then stage 9, the fiat own
    transfer and same-account conversion candidate edges (``stage9``), which reads the
    lines' transfer and conversion wording, the other rows of that file, the CAD values,
-   the stored rates and the lines stage 8 paired; then stage 11, resolution
-   (``stage11``): the mutually unique edges apply, every transfer-like line gets its
-   state, and an applied transfer's net or conversion's spread becomes a derived fee
-   line.
+   the stored rates and the lines stage 8 paired, and the crypto own-wallet transfer
+   edges (``crypto_edges``), which read the crypto kinds stage 7 set, the own
+   addresses and the crypto labels; then stage 11, resolution (``stage11``): the
+   mutually unique edges apply, every transfer-like line gets its state, a labelled
+   crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
+   transfer's net or conversion's spread becomes a derived fee line.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -66,6 +68,7 @@ from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import (
     coverage,
+    crypto_edges,
     stage1,
     stage2,
     stage3,
@@ -111,7 +114,7 @@ STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id")
 REWRITTEN: Final = frozenset(
     {
         "account", "account_identifier", "manual_entry_error", "filed_year",
-        "own_address", "sink_spec",
+        "own_address", "crypto_label", "sink_spec",
     }
 )  # fmt: skip
 # State, never truncated (Key decision 3): the decisions, the stored rates and the
@@ -214,6 +217,14 @@ def run(
                 pct=ctx.settings.get_decimal(stage9.SPREAD_KEY),
             ),
             hint_rows=manual.transfer_hints.rows,
+        )
+        crypto_edges.pair_crypto(
+            uow,
+            tolerance=crypto_edges.Tolerance(
+                window_hours=ctx.settings.get_int(crypto_edges.WINDOW_KEY),
+                fee_pct=ctx.settings.get_decimal(crypto_edges.FEE_PCT_KEY),
+                epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
+            ),
         )
         stage11.resolve(uow)
 

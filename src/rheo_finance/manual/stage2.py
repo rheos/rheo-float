@@ -15,7 +15,9 @@ Each loader rewrites the ``manual_entry_error`` rows of its own files and no oth
   registry and held in memory for ``reference.patterns.classify`` and stage 9
   (``manual.transfer_hints``); its patterns are restricted and never stored;
 - ``load_own_addresses``: ``own_addresses.csv``, checked against the loaded registry,
-  into ``own_address`` (``manual.own_addresses``), keyed by the address itself.
+  into ``own_address`` (``manual.own_addresses``), keyed by the address itself;
+- ``load_crypto_labels``: ``crypto_labels.csv`` into ``crypto_label``
+  (``manual.crypto_labels``), keyed by the line key each row's line ref names.
 
 Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
 no date of their own). An account is keyed by its slug. An identifier is keyed by its
@@ -48,6 +50,12 @@ from rheo_finance.manual.cash_lines import (
     CashLines,
     build_cash_lines,
 )
+from rheo_finance.manual.crypto_labels import (
+    CRYPTO_LABELS_FILE,
+    CryptoLabelRow,
+    CryptoLabels,
+    build_crypto_labels,
+)
 from rheo_finance.manual.document_periods import (
     DOCUMENT_PERIODS_FILE,
     DocumentPeriodRow,
@@ -78,6 +86,7 @@ from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
     account_identifier,
+    crypto_label,
     filed_year,
     manual_entry_error,
     own_address,
@@ -209,6 +218,24 @@ def load_own_addresses(
             ],
         )
     _rewrite_errors(uow, (OWN_ADDRESSES_FILE,), found.errors)
+    return found
+
+
+def load_crypto_labels(uow: UnitOfWork, data_dir: Path) -> CryptoLabels:
+    """Rewrite ``crypto_label`` from ``crypto_labels.csv``."""
+    found = build_crypto_labels(
+        load_csv(data_dir / MANUAL_DIR_NAME / CRYPTO_LABELS_FILE, CryptoLabelRow)
+    )
+    uow.execute(delete(crypto_label))
+    if found.rows:
+        uow.execute(
+            insert(crypto_label),
+            [
+                {"line_key_id": row.line_ref, "label": row.label, "note": row.note}
+                for row in found.rows
+            ],
+        )
+    _rewrite_errors(uow, (CRYPTO_LABELS_FILE,), found.errors)
     return found
 
 

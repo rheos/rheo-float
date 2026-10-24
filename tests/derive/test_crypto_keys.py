@@ -498,7 +498,8 @@ def test_movement_kinds_follow_the_source_the_own_addresses_and_the_trade_ref(
         for row in rows(ledger)
     }  # fmt: skip
     assert found == {
-        ("ethereum", Decimal("-0.5")): ("crypto_transfer", True, "unresolved"),
+        # To an own address with no receiving row loaded: a one-sided own transfer.
+        ("ethereum", Decimal("-0.5")): ("crypto_transfer", True, "paired"),
         ("solana", Decimal("3")): ("crypto_transfer", True, "unresolved"),
         ("bitcoin", Decimal("-0.02")): ("crypto_swap_leg", False, None),
         ("ethereum", Decimal("0.6")): ("crypto_swap_leg", False, None),

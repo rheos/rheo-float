@@ -21,6 +21,16 @@ edge set alone, so it does not depend on the order lines were imported or read.
 
 So each transfer-like line ends in exactly one of {paired, ambiguous, unresolved}.
 
+**Crypto lines** (FR-15(b), edge cases 24, 40 and 77). A crypto line a
+``crypto_labels.csv`` row names (``crypto_edges.labelled``; stage 9 left it out of
+every pairing) is ``paired`` with ``pair_kind = label``: out of every total and off the
+unresolved count. A crypto transfer-like line with no edge ends ``unresolved`` (an
+unresolved crypto movement), and each WITHDRAWAL among them (kind
+``crypto_transfer``, a negative quantity) raises one ``finance.withdrawal.flagged``
+event, dated its posting date, whose data holds the account ref and the line ref only.
+A withdrawal an applied ``own_one_sided`` edge pairs is not unresolved, so it raises
+none.
+
 **Reversals are settled already.** Stage 8 decides its ``reversal`` edges and their
 lines' states. Stage 11 counts those edges (a line with a reversal edge and another
 edge has two, so neither applies) but never changes a reversal edge, and a line whose
@@ -60,16 +70,24 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from types import MappingProxyType
+from typing import Annotated, Final
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import bindparam, func, insert, select, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.contracts import Tiered
+from rheo_finance.derive import crypto_edges
 from rheo_finance.derive.stage4 import cents
+from rheo_finance.events import record_event
 from rheo_finance.storage.ids import derived_id
+from rheo_finance.storage.refs import FINANCE_SYSTEM, format_ref
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
+from rheo_finance.tier import Tier
 
 # The edge kinds that apply on their own when mutually unique, to the ``pair_kind``
 # their lines get. Phase 7 adds ``loan_out``, ``loan_repay`` and (conditionally)
@@ -92,6 +110,26 @@ FEE_TYPE: Final = "fee"
 FEE_WORDING: Final = "derived fee"
 # A derived fee's source reference: the prefix, then the edge's id.
 FEE_REF: Final = "derived_fee:"
+LABEL: Final = "label"
+CRYPTO_TRANSFER: Final = "crypto_transfer"
+
+# --- events ---------------------------------------------------------------------------
+
+WITHDRAWAL_FLAGGED: Final = "finance.withdrawal.flagged"
+
+
+class WithdrawalFlagged(BaseModel):
+    """An unresolved crypto withdrawal: refs only, never a quantity or an address."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    account_ref: Annotated[str, Tiered(Tier.PUBLIC)]
+    txn_ref: Annotated[str, Tiered(Tier.PUBLIC)]
+
+
+EVENT_MODELS: Final[Mapping[str, type[BaseModel]]] = MappingProxyType(
+    {WITHDRAWAL_FLAGGED: WithdrawalFlagged}
+)
 
 
 @dataclass(frozen=True)
@@ -239,6 +277,9 @@ def resolve(uow: UnitOfWork) -> None:
     for edge in applied:
         for end in edge.ends:
             states[end] = ("paired", AUTO_KINDS[edge.kind])
+    # Stage 9 left every labelled crypto line out of every pairing, so none is an end.
+    for line_id in crypto_edges.labelled(uow):
+        states[line_id] = ("paired", LABEL)
 
     fees: dict[uuid.UUID, dict[str, object]] = {}
     paired_legs = [e for e in applied if e.kind == FEE_KIND and len(e.ends) == 2]
@@ -318,3 +359,29 @@ def resolve(uow: UnitOfWork) -> None:
         .where(txn.c.transfer_like, txn.c.transfer_state.is_(None))
         .values(transfer_state="unresolved")
     )
+    _flag_withdrawals(uow)
+
+
+def _flag_withdrawals(uow: UnitOfWork) -> None:
+    """One ``finance.withdrawal.flagged`` per unresolved crypto withdrawal (module
+    docstring)."""
+    rows = uow.execute(
+        select(txn.c.id, txn.c.account_id, txn.c.posting_date).where(
+            txn.c.movement_kind == CRYPTO_TRANSFER,
+            txn.c.amount < 0,
+            txn.c.transfer_state == "unresolved",
+        )
+    ).all()
+    for row in rows:
+        txn_ref = format_ref(FINANCE_SYSTEM, "txn", row.id)
+        record_event(
+            uow,
+            EVENT_MODELS,
+            WITHDRAWAL_FLAGGED,
+            txn_ref,
+            row.posting_date,
+            WithdrawalFlagged(
+                account_ref=format_ref(FINANCE_SYSTEM, "account", row.account_id),
+                txn_ref=txn_ref,
+            ),
+        )

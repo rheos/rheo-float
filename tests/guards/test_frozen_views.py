@@ -85,6 +85,9 @@ PINNED = {
     "0018_crypto_core.py": (
         "01cb3523437ceebff6bdabf9ad272e45bfe2517d2d82b173abb2ecdcb780fb48"
     ),
+    "0019_crypto_label.py": (
+        "952db656af5c1befbe106ad720d52f560d25c176a4855bbc67488dbac4cdfe5c"
+    ),
 }
 
 

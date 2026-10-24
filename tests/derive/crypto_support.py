@@ -21,7 +21,7 @@ The layout, one item per line:
 - ``FEE key=value ...``: one ``crypto_fee`` line, ``qty`` the positive fee;
 - ``WITHDRAW key=value ...``: a withdrawal through ``parsers.crypto.withdrawal_lines``,
   ``qty`` the positive printed figure, with optional ``fee``, ``gross=1`` (the figure
-  includes the fee) and ``feeasset``.
+  includes the fee), ``feeasset`` and ``hint=1`` (the source marks it a transfer).
 
 Two formats are registered (``txt`` and ``csv``), so two documents can rank apart: a
 CSV ranks above a text file of equal control (``derive.precedence``). Every value a
@@ -31,6 +31,7 @@ dates are arbitrary.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from decimal import Decimal
 from typing import Final
@@ -116,7 +117,8 @@ def parse_crypto(text: str, accounts: AccountLookup) -> ParseResult:
             lines.append(_line(head, account, f))
         elif head == "WITHDRAW":
             lines.extend(
-                withdrawal_lines(
+                dataclasses.replace(line, transfer_hint=f.get("hint") == "1")
+                for line in withdrawal_lines(
                     Withdrawal(
                         account=account,
                         occurred_at=_when(f["at"]),

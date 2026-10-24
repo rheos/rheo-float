@@ -33,8 +33,10 @@ range, so its coverage extends to the requested end, but only when its latest
 observation lies within ``LOOKBACK_DAYS`` of that end: the days between are the
 weekend and holidays after its last business day. A short or empty reply covers no
 more than it showed, whatever the series, so no later line converts across days the
-fetch never saw. A failed request, a reply it cannot read, or a redirect to another
-host fails that series alone and records no coverage; the others are stored.
+fetch never saw. A reply with no observation in the requested range is outcome
+``empty``, not ``stored``: nothing is covered and the next fetch asks again. A failed
+request, a reply it cannot read, or a redirect to another host fails that series alone
+and records no coverage; the others are stored.
 """
 
 from __future__ import annotations
@@ -333,7 +335,9 @@ class FetchIn(BaseModel):
         return self
 
 
-Outcome = Literal["stored", "failed"]
+# ``empty``: the reply held no observation in the requested range, so nothing was
+# stored or covered and the series is asked again next time.
+Outcome = Literal["stored", "empty", "failed"]
 
 
 class SeriesFetched(BaseModel):
@@ -357,6 +361,7 @@ class FetchOut(BaseModel):
     planned: Annotated[int, Tiered(P)]
     requests: Annotated[int, Tiered(P)]
     stored: Annotated[int, Tiered(P)]
+    empty: Annotated[int, Tiered(P)]
     failed: Annotated[int, Tiered(P)]
     series: Annotated[list[SeriesFetched], Tiered(P)]
 
@@ -451,6 +456,8 @@ def _fetch_one(
         ]
     except ValetReplyError:
         return failed.model_copy(update={"reason": "the reply was not understood"})
+    if not found:
+        return failed.model_copy(update={"outcome": "empty"})
     stored = _store(uow, each.currency, found, at)
     _cover(uow, each, end, max((day for day, _ in found), default=None), at)
     return failed.model_copy(
@@ -471,6 +478,7 @@ def fetch(ctx: FinanceContext, uow: UnitOfWork, data: FetchIn) -> FetchOut:
             planned=len(planned),
             requests=0,
             stored=0,
+            empty=0,
             failed=0,
             series=[],
         )
@@ -484,6 +492,7 @@ def fetch(ctx: FinanceContext, uow: UnitOfWork, data: FetchIn) -> FetchOut:
         planned=len(planned),
         requests=len(results),
         stored=sum(each.stored for each in results),
+        empty=sum(each.outcome == "empty" for each in results),
         failed=sum(each.outcome == "failed" for each in results),
         series=results,
     )

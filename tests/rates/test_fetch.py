@@ -282,7 +282,8 @@ def test_an_empty_legacy_reply_records_no_coverage_and_is_asked_again(
 
     out = fetch(fx_ledger)
 
-    assert (out.requests, out.stored, out.failed) == (1, 0, 0)
+    assert (out.requests, out.stored, out.empty, out.failed) == (1, 0, 1, 0)
+    assert [(each.outcome, each.received) for each in out.series] == [("empty", 0)]
     # Closed or not, a reply with no observation covers nothing: a later line must
     # never convert at an older rate across days the fetch did not see.
     assert coverage(fx_ledger) == []
@@ -657,7 +658,37 @@ def test_finance_rate_fetch_reports_counts_when_approved(
     out = capsys.readouterr().out
     assert code == 0
     assert out.splitlines()[0] == (
-        "finance rate fetch: 1 request(s) sent, 1 rate(s) stored, 0 failed."
+        "finance rate fetch: 1 request(s) sent, 1 rate(s) stored, 0 empty, 0 failed."
     )
     assert "FXUSDCAD (USD) 2025-12-03 to 2025-12-31: stored 1 of 1 received." in out
     assert "1.3725" not in out
+
+
+def test_finance_rate_fetch_says_when_no_observations_came_back(
+    usd_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sink_settings(rates=True)
+    approve_current(usd_ledger, record_sink_approval)
+    valet_stub.reply(
+        "/valet/observations/FXUSDCAD/json", body=valet_reply("FXUSDCAD", [])
+    )
+    monkeypatch.setattr(composition, "build_context", lambda _role: usd_ledger.ctx)
+
+    code = main(["rate", "fetch", "--to", "2025-12-31"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.splitlines()[0] == (
+        "finance rate fetch: 1 request(s) sent, 0 rate(s) stored, 1 empty, 0 failed."
+    )
+    assert (
+        "FXUSDCAD (USD) 2025-12-03 to 2025-12-31: no observations came back;"
+        " nothing covered, asked again next time."
+    ) in out
+    assert "stored 0 of 0" not in out
+    assert coverage(usd_ledger) == []

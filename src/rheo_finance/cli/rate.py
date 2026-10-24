@@ -47,13 +47,16 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         )
         return 1
     stamp = as_of(ctx.clock, ctx.settings.timezone)
+    outcomes = {
+        "stored": "stored {stored} of {received} received.",
+        "empty": "no observations came back; nothing covered, asked again next time.",
+        "failed": "failed, {reason}.",
+    }
     detail = [
         f"{each.series} ({each.currency}) {each.start_date.isoformat()} to"
         f" {each.end_date.isoformat()}: "
-        + (
-            f"stored {each.stored} of {each.received} received."
-            if each.outcome == "stored"
-            else f"failed, {each.reason}."
+        + outcomes[each.outcome].format(
+            stored=each.stored, received=each.received, reason=each.reason
         )
         for each in out.series
     ]
@@ -61,7 +64,7 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         Report(
             [
                 f"{label}: {out.requests} request(s) sent, {out.stored} rate(s)"
-                f" stored, {out.failed} failed.",
+                f" stored, {out.empty} empty, {out.failed} failed.",
                 stamp,
             ],
             detail,

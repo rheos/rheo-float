@@ -103,6 +103,9 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
         )
         .outerjoin(document_line, document_line.c.id == txn_source.c.document_line_id)
         .where(txn.c.amount != 0)
+        # A fixed read order, the primary source first; the fold below is an "any",
+        # so the result does not depend on it either way.
+        .order_by(txn.c.id, txn_source.c.role.desc())
     )
     found: dict[uuid.UUID, _Line] = {}
     for row in rows:

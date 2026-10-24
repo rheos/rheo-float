@@ -14,17 +14,21 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
 from types import MappingProxyType
+from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from rheo_finance.context import UnitOfWork
+from rheo_finance.derive import stage8
 from rheo_finance.documents import issuers
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.parsers import registry
-from rheo_finance.storage.schema import pair_edge, txn
+from rheo_finance.storage.schema import pair_edge, txn, txn_source
 
 from .support import (
     CSV_IDENTIFIER,
@@ -36,6 +40,7 @@ from .support import (
     fx_lines,
 )
 from .test_conversion import cover, store_rates
+from .test_receipts_invoices import CLINIC, RECEIPT, debit_only_receipt
 from .test_reversals import OUTGOING, export
 
 D = dt.date
@@ -279,6 +284,30 @@ def test_equal_payments_sharing_a_posting_date_keep_every_edge(own: Ledger) -> N
     assert len(edges(own)) == 4
 
 
+def test_equal_payments_whose_candidate_sets_are_not_mutual_keep_every_edge(
+    own: Ledger,
+) -> None:
+    # Two equal debits and two equal card credits, every date distinct, but the
+    # first debit and the second credit post 10 days apart, outside the window: the
+    # group holds three edges, not four, so it is not the equal-payments case and
+    # nothing is thinned (date order would have dropped the second debit's edge to
+    # the first credit).
+    debits = [(D(2025, 6, 2), BILL_PAYMENT, Decimal("-200.00")),
+              (D(2025, 6, 9), BILL_PAYMENT, Decimal("-200.00"))]  # fmt: skip
+    credits = [(D(2025, 6, 4), PAYMENT_RECEIVED, Decimal("200.00")),
+               (D(2025, 6, 12), PAYMENT_RECEIVED, Decimal("200.00"))]  # fmt: skip
+    file_bank(own, *on(CSV_IDENTIFIER, *debits))
+    file_card(own, *credits)
+
+    own.derive()
+
+    assert {(debit, credit) for debit, _, credit, _, _ in edges(own)} == {
+        (D(2025, 6, 2), D(2025, 6, 4)),
+        (D(2025, 6, 9), D(2025, 6, 4)),
+        (D(2025, 6, 9), D(2025, 6, 12)),
+    }
+
+
 # --- the hint account: an issuer key or the owner's account slug --------------------
 
 
@@ -399,6 +428,84 @@ def test_a_line_stage_8_reversed_is_never_a_candidate(
 
     standing = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"), False)]
     assert edges(own) == ([] if reversed_ else standing)
+
+
+SWEEP = "SAMPLE SAVINGS SWEEP 99976"
+SAMPLE_PARTY = uuid.UUID(int=999)
+
+
+def marked_before_stage_9(
+    monkeypatch: pytest.MonkeyPatch, wording: str, **values: object
+) -> None:
+    """Set ``values`` on the txns whose wording holds ``wording``, between stages 8
+    and 9 of the next derive, as the stages that set a party or an exclusion will."""
+    original: Callable[..., None] = stage8.pair_reversals
+
+    def then_mark(uow: UnitOfWork, **kwargs: Any) -> None:
+        original(uow, **kwargs)
+        if values:
+            uow.execute(
+                update(txn)
+                .where(txn.c.description_norm.contains(wording.lower()))
+                .values(**values)
+            )
+
+    monkeypatch.setattr(stage8, "pair_reversals", then_mark)
+
+
+@pytest.mark.parametrize(
+    "mark",
+    [{}, {"party_id": SAMPLE_PARTY}, {"exclusion": "spam"}],
+    ids=["ordinary", "party", "excluded"],
+)
+def test_a_party_or_excluded_line_is_never_transfer_like_nor_a_candidate(
+    own: Ledger, monkeypatch: pytest.MonkeyPatch, mark: dict[str, object]
+) -> None:
+    own.manual(TRANSFER_HINTS_FILE, "sample savings sweep,out,")
+    swept, arrived = D(2025, 6, 2), D(2025, 6, 3)
+    file_bank(
+        own,
+        *on(CSV_IDENTIFIER, (swept, SWEEP, Decimal("-300.00"))),
+        *on(SECOND, (arrived, "DEPOSIT SAMPLE SWEEP 99977", Decimal("300.00"))),
+    )
+    marked_before_stage_9(monkeypatch, SWEEP, **mark)
+
+    own.derive()
+
+    edge = (swept, Decimal("-300.00"), arrived, Decimal("300.00"), False)
+    assert edges(own) == ([] if mark else [edge])
+    like = own.conn.scalar(select(txn.c.transfer_like).where(txn.c.amount < 0))
+    assert like is (not mark)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "paired"),
+    [("sample dental clinic", True), ("patient receipt", False)],
+    ids=["payment-line", "receipt-only"],
+)
+def test_transfer_wording_on_an_evidence_source_alone_makes_no_start(
+    own: Ledger, pattern: str, paired: bool
+) -> None:
+    # A receipt is evidence of the payment line, not a line of it: wording only the
+    # receipt carries never makes the payment transfer-like.
+    own.manual(TRANSFER_HINTS_FILE, f"{pattern},out,")
+    own.file(RECEIPT, debit_only_receipt())
+    paid, arrived = D(2026, 3, 15), D(2026, 3, 16)
+    file_bank(
+        own,
+        *on(CSV_IDENTIFIER, (paid, CLINIC, Decimal("-45.00"))),
+        *on(SECOND, (arrived, "DEPOSIT SAMPLE 99979", Decimal("45.00"))),
+    )
+
+    own.derive()
+
+    # The control: the receipt is the payment's evidence source.
+    evidence = own.conn.scalar(
+        select(txn_source.c.txn_id).where(txn_source.c.role == "evidence")
+    )
+    assert evidence is not None
+    edge = (paid, Decimal("-45.00"), arrived, Decimal("45.00"), False)
+    assert edges(own) == ([edge] if paired else [])
 
 
 # --- CAD values and unconverted legs --------------------------------------------------

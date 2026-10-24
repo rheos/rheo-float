@@ -554,22 +554,29 @@ def card_document(header: str, *lines: str, period: str = "") -> str:
 
 
 @pytest.mark.parametrize("with_row", [True, False])
-def test_a_reversal_row_matches_an_additional_source_line_alone(
-    ledger: Ledger, card_parsers: None, with_row: bool
+@pytest.mark.parametrize(
+    "on_primary", [False, True], ids=["on-additional", "on-primary"]
+)
+def test_a_reversal_row_matches_either_source_line_alone(
+    ledger: Ledger, card_parsers: None, with_row: bool, on_primary: bool
 ) -> None:
     # The statement prints the credit one way and the export another; the overlap
-    # joins them into one txn whose wording is the statement's. Only the export's
-    # wording carries what the row names.
+    # joins them into one txn whose wording is the statement's (the primary source).
+    # Only one of the two carries what the row names, the primary or the additional
+    # line: the result is the same either way, so it never depends on the order the
+    # sources are read in.
     if with_row:
         ledger.manual(TRANSFER_HINTS_FILE, "sample bank adjustment,reversal,")
     ledger.card()
     bought, adjusted = D(2025, 1, 10), D(2025, 1, 14)
+    plain, named = "SAMPLE CREDIT 99974", "SAMPLE BANK ADJUSTMENT 99973"
+    statement, export_wording = (named, plain) if on_primary else (plain, named)
     ledger.file(
         "synthetic-card/2025-02-05.pdf",
         card_document(
             CARD_STATEMENT,
             "2025-01-10 - -64.00 SAMPLE SHOP 99972",
-            "2025-01-14 - 64.00 SAMPLE CREDIT 99974",
+            f"2025-01-14 - 64.00 {statement}",
             period="2025-01-06 2025-02-05",
         ),
     )
@@ -578,17 +585,17 @@ def test_a_reversal_row_matches_an_additional_source_line_alone(
         card_document(
             CARD_TRANSACTIONS,
             "2025-01-10 - -64.00 SAMPLE SHOP 99972",
-            "2025-01-14 - 64.00 SAMPLE BANK ADJUSTMENT 99973",
+            f"2025-01-14 - 64.00 {export_wording}",
         ),
     )
 
     out = ledger.derive()
 
     # The control: one txn per purchase and credit, each with its export line as an
-    # additional source, and the credit's own wording is not the row's.
+    # additional source, and the credit's own wording is the statement's.
     assert (out.lines.txns, out.lines.additional_sources) == (2, 2)
     wording = ledger.conn.scalar(select(txn.c.description_norm).where(txn.c.amount > 0))
-    assert "adjustment" not in (wording or "")
+    assert ("adjustment" in (wording or "")) is on_primary
     state, kind = ("paired", "reversal") if with_row else (None, None)
     assert states(ledger) == [
         (bought, Decimal("-64.00"), state, kind),

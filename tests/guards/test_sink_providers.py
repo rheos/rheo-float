@@ -8,8 +8,10 @@ two registries for recording dicts before anything else of the package loads, im
 every module under ``src/rheo_finance`` but ``source_tree.NOT_IMPORTED`` (Alembic's
 env runs its migration at import) and reports which module's import added a key, by
 whatever route: a subscript, ``update``, ``setdefault``, ``|=``, ``__setitem__``,
-through an alias or an attribute. The control plants one module per route in a copy of
-the package and scans that copy instead.
+through an alias or an attribute. A route that skips the recording's methods
+(``dict.__setitem__(R, ...)``, ``dict.update(R, ...)``, or rebinding the module
+attribute) is reported as unattributed and refused. The controls plant one module per
+route in a copy of the package and scan that copy instead.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from rheo_finance.sinks.store import PROVIDER_MODULES
 
@@ -27,9 +30,8 @@ from .source_tree import NOT_IMPORTED, PACKAGE, copy_package
 SCAN = Path(__file__).with_name("provider_scan.py")
 
 
-def registering_modules(package: Path = PACKAGE) -> dict[str, list[str]]:
-    """``{module: ["<registry>:<key>", ...]}`` for every module whose import adds a
-    key, observed in a fresh interpreter importing ``package``."""
+def scan(package: Path = PACKAGE) -> dict[str, Any]:
+    """The scan's report on ``package``, from a fresh interpreter."""
     env = dict(os.environ)
     if package != PACKAGE:
         # The copy shadows the installed package: PYTHONPATH precedes site-packages.
@@ -43,8 +45,16 @@ def registering_modules(package: Path = PACKAGE) -> dict[str, list[str]]:
         timeout=300,
     )
     assert done.returncode == 0, done.stderr[-2000:]
-    report = json.loads(done.stdout)
+    report: dict[str, Any] = json.loads(done.stdout)
     assert Path(report["package"]) == package, "the scan imported another tree"
+    return report
+
+
+def registering_modules(package: Path = PACKAGE) -> dict[str, list[str]]:
+    """``{module: ["<registry>:<key>", ...]}`` for every module whose import adds a
+    key, observed in a fresh interpreter importing ``package``; nothing may bypass the
+    recording."""
+    report = scan(package)
     assert report["unattributed"] == [], report["unattributed"]
     found: dict[str, list[str]] = report["added"]
     return found
@@ -107,3 +117,37 @@ def test_a_planted_registration_is_found_by_every_route(tmp_path: Path) -> None:
         "rheo_finance.rates.planted_via_helper": ["SINK_SPECS:mot"],
     }
     assert set(found) & set(PROVIDER_MODULES) == set(PROVIDER_MODULES)
+
+
+def test_a_registration_that_bypasses_the_recording_is_unattributed(
+    tmp_path: Path,
+) -> None:
+    # Planted at the package top under names that sort last, so every real provider
+    # has registered before them.
+    root = copy_package(tmp_path)
+    planted = {
+        "rebind": (
+            "from rheo_finance.sinks import spec\n"
+            "spec.SINK_SPECS = {**spec.SINK_SPECS, 'kraken': lambda uow: None}\n"
+        ),
+        "dict_setitem": (
+            "from rheo_finance.sinks.preview import PREVIEW_BUILDERS\n"
+            "dict.__setitem__(PREVIEW_BUILDERS, 'coinstats', None)\n"
+        ),
+        "dict_update": (
+            "from rheo_finance.sinks.preview import PREVIEW_BUILDERS\n"
+            "dict.update(PREVIEW_BUILDERS, telegram=None)\n"
+        ),
+    }
+    for name, source in planted.items():
+        (root / f"zz_planted_{name}.py").write_text(source, encoding="utf-8")
+
+    report = scan(root)
+
+    assert sorted(report["unattributed"]) == [
+        "PREVIEW_BUILDERS:coinstats",
+        "PREVIEW_BUILDERS:telegram",
+        "SINK_SPECS:<rebound>",
+        "SINK_SPECS:kraken",
+    ]
+    assert not any(name.startswith("rheo_finance.zz_") for name in report["added"])

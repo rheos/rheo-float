@@ -13,8 +13,12 @@ dicts; then it imports every module under the ``rheo_finance`` package it finds 
   module is the innermost module body on the stack when the key was added, so a module
   that merely imports a registering one is not blamed, while one that registers through
   a helper function another module defines is;
-- ``unattributed``: keys that reached the original dicts instead (a module imported
-  before the swap had bound them), which the test refuses.
+- ``unattributed``: what the recording did not see, which the test refuses: keys that
+  reached the original dicts instead (a module imported before the swap had bound
+  them); after every import, each key of the registry the module attribute now holds
+  that was never recorded (``dict.__setitem__(R, k, v)`` or ``dict.update(R, ...)``
+  skip the recording's methods); and ``"<registry>:<rebound>"`` when that attribute
+  no longer holds the recording dict (``spec.SINK_SPECS = {**spec.SINK_SPECS, k: v}``).
 """
 
 from __future__ import annotations
@@ -51,10 +55,12 @@ class Recording(dict[str, Any]):
         super().__init__()
         self._registry = registry
         self._added = added
+        self.noted: set[str] = set()
 
     def _note(self, keys: Iterable[str]) -> None:
         module = _importing_module()
         for key in keys:
+            self.noted.add(key)
             if key not in self:
                 self._added.setdefault(module, []).append(f"{self._registry}:{key}")
 
@@ -95,16 +101,31 @@ def module_names(package: Path, skip: tuple[str, ...]) -> list[str]:
     return names
 
 
+def _unrecorded(registry: str, recording: Recording, final: object) -> list[str]:
+    """What the registry the module attribute holds after every import has that
+    ``recording`` never saw."""
+    found = [] if final is recording else [f"{registry}:<rebound>"]
+    if isinstance(final, dict):
+        unseen = sorted(key for key in final if key not in recording.noted)
+        found += [f"{registry}:{key}" for key in unseen]
+    return found
+
+
 def main(argv: list[str]) -> int:
     added: Added = {}
     original_specs, original_builders = spec.SINK_SPECS, preview.PREVIEW_BUILDERS
-    spec.SINK_SPECS = Recording("SINK_SPECS", added)
-    preview.PREVIEW_BUILDERS = Recording("PREVIEW_BUILDERS", added)
+    specs = Recording("SINK_SPECS", added)
+    builders = Recording("PREVIEW_BUILDERS", added)
+    spec.SINK_SPECS = specs
+    preview.PREVIEW_BUILDERS = builders
     package = Path(importlib.import_module("rheo_finance").__file__ or "").parent
     for name in module_names(package, tuple(argv)):
         importlib.import_module(name)
-    unattributed = [f"SINK_SPECS:{key}" for key in sorted(original_specs)] + [
-        f"PREVIEW_BUILDERS:{key}" for key in sorted(original_builders)
+    unattributed = [
+        *(f"SINK_SPECS:{key}" for key in sorted(original_specs)),
+        *(f"PREVIEW_BUILDERS:{key}" for key in sorted(original_builders)),
+        *_unrecorded("SINK_SPECS", specs, spec.SINK_SPECS),
+        *_unrecorded("PREVIEW_BUILDERS", builders, preview.PREVIEW_BUILDERS),
     ]
     report = {
         "package": str(package),

@@ -16,7 +16,8 @@ an end. Reading a line reads its primary source (``pairing.source_lines``) for
 deposit of the same asset code on another account:
 
 - with a TXID on both sides, only when the TXIDs are equal (``txid_key``: a hex TXID
-  compared in lower case); the TXID settles it, whatever the times or the figures;
+  compared in lower case, without a leading ``0x``); the TXID settles it, whatever
+  the times or the figures;
 - otherwise when the deposit's quantity equals the withdrawal's within
   ``finance.crypto.qty_epsilon``, or, when the withdrawal's line has ``fee_stated``
   false (one printed figure that may include an unstated fee), when the deposit is
@@ -103,9 +104,12 @@ class _Line:
 
 
 def txid_key(txid: str) -> str:
-    """A TXID in its compared form: stripped, and lower-cased when it is hex."""
+    """A TXID in its compared form: stripped, and when it is hex, without a leading
+    ``0x`` (an EVM TXID is printed with and without it) and lower-cased."""
     txid = txid.strip()
-    return txid.lower() if _HEX.fullmatch(txid) else txid
+    if not _HEX.fullmatch(txid):
+        return txid
+    return txid[2:].lower() if txid[:2] in ("0x", "0X") else txid.lower()
 
 
 def labelled(uow: UnitOfWork) -> set[uuid.UUID]:

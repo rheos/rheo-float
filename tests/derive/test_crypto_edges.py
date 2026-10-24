@@ -124,15 +124,21 @@ def txn_id(ledger: Ledger, amount: str) -> uuid.UUID:
 
 @pytest.mark.parametrize(
     ("deposit_txid", "paired"),
-    [("9990AB12CD", True), ("9990ab12ce", False)],
-    ids=["equal", "unequal"],
+    [
+        ("9990AB12CD", True),
+        ("0x9990ab12cd", True),
+        ("0X9990AB12CD", True),
+        ("9990ab12ce", False),
+    ],
+    ids=["equal", "equal-0x", "equal-0X", "unequal"],
 )
 def test_a_shared_txid_pairs_whatever_the_figures_and_times(
     crypto_ledger: Ledger, deposit_txid: str, paired: bool
 ) -> None:
     # The exchange prints the withdrawal gross with its fee; the wallet prints the
     # deposit three days later with a figure of its own. Equal TXIDs (hex, in either
-    # case) settle the pair; unequal ones rule it out even at an equal quantity.
+    # case, with or without a leading 0x) settle the pair; unequal ones rule it out
+    # even at an equal quantity.
     ledger = crypto_ledger
     file(
         ledger,

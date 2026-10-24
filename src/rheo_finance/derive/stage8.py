@@ -1,9 +1,10 @@
 """Derivation stage 8: reversals, in both directions (FR-15(a), Key decision 9, edge
 cases 33, 34, 63 and 81).
 
-**A reversal line** is a txn one of whose lines its parser marked ``reversal_hint``
-(the issuer's wording in ``reference/patterns.json``: "debit reversal", "customer
-cancel", "credit reversal", "return", "recall", "nsf" and the like), or whose wording a
+**A reversal line** is a txn one of whose lines (its primary or an additional source,
+never an evidence source such as a receipt) its parser marked ``reversal_hint`` (the
+issuer's wording in ``reference/patterns.json``: "debit reversal", "customer cancel",
+"credit reversal", "return", "recall", "nsf" and the like), or carries wording a
 ``reversal`` row of ``transfer_hints.csv`` matches. Its sign is its direction: a
 reversal credit undoes a debit (the owner's payment cancelled), a reversal debit undoes
 a credit (a received payment clawed back). A line with reversal wording is never
@@ -45,7 +46,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from sqlalchemy import bindparam, exists, insert, select, update
+from sqlalchemy import and_, bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.manual.transfer_hints import TransferHintRow
@@ -80,12 +81,9 @@ class _Edge:
 
 
 def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]:
-    hinted = exists().where(
-        txn_source.c.txn_id == txn.c.id,
-        txn_source.c.role.in_(LINE_ROLES),
-        document_line.c.id == txn_source.c.document_line_id,
-        document_line.c.reversal_hint.is_(True),
-    )
+    """Every nonzero txn, a reversal when any of its line sources (``LINE_ROLES``)
+    carries the parser's ``reversal_hint`` or wording a ``reversal`` row matches. A
+    source with no document line (a manual cash line) has the txn's own wording."""
     rows = uow.execute(
         select(
             txn.c.id,
@@ -93,22 +91,36 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             txn.c.currency,
             txn.c.amount,
             txn.c.posting_date,
-            txn.c.description_norm,
-            hinted.label("hinted"),
-        ).where(txn.c.amount != 0)
+            txn.c.description_norm.label("txn_wording"),
+            txn_source.c.document_line_id,
+            document_line.c.reversal_hint,
+            document_line.c.description_norm.label("line_wording"),
+        )
+        .select_from(txn)
+        .outerjoin(
+            txn_source,
+            and_(txn_source.c.txn_id == txn.c.id, txn_source.c.role.in_(LINE_ROLES)),
+        )
+        .outerjoin(document_line, document_line.c.id == txn_source.c.document_line_id)
+        .where(txn.c.amount != 0)
     )
-    return [
-        _Line(
+    found: dict[uuid.UUID, _Line] = {}
+    for row in rows:
+        if row.document_line_id is None:
+            hinted, wording = False, row.txn_wording
+        else:
+            hinted, wording = bool(row.reversal_hint), row.line_wording
+        reversal = hinted or reversal_row_matches(wording or "", hint_rows)
+        before = found.get(row.id)
+        found[row.id] = _Line(
             id=row.id,
             account_id=row.account_id,
             currency=row.currency,
             amount=row.amount,
             day=row.posting_date,
-            reversal=bool(row.hinted)
-            or reversal_row_matches(row.description_norm or "", hint_rows),
+            reversal=reversal or (before is not None and before.reversal),
         )
-        for row in rows
-    ]
+    return list(found.values())
 
 
 def _candidate_edges(lines: list[_Line], window_days: int) -> list[_Edge]:

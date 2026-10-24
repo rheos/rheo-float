@@ -30,7 +30,13 @@ from rheo_finance.ledger.totals import cad_total
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.storage.schema import pair_edge, txn
 
-from .support import CSV_IDENTIFIER, Ledger
+from .support import (
+    CARD_IDENTIFIER,
+    CARD_STATEMENT,
+    CARD_TRANSACTIONS,
+    CSV_IDENTIFIER,
+    Ledger,
+)
 
 D = dt.date
 OTHER_IDENTIFIER = "999000000088-999-99901-99902"
@@ -428,6 +434,59 @@ def test_a_reversal_row_of_transfer_hints_marks_a_reversal_line(
     state, kind = ("paired", "reversal") if with_row else (None, None)
     assert states(chequing) == [
         (sent, Decimal("-64.00"), state, kind),
+        (adjusted, Decimal("64.00"), state, kind),
+    ]
+
+
+def card_document(header: str, *lines: str, period: str = "") -> str:
+    """A document in the synthetic card layout (``support.parse_card``), opening at
+    zero; each line is ``"<posting> <txn date|-> <signed amount> <description>"``."""
+    rows = [header, f"ACCOUNT {CARD_IDENTIFIER}"]
+    if header == CARD_STATEMENT:
+        closing = sum((Decimal(line.split(" ")[2]) for line in lines), Decimal(0))
+        rows += [f"PERIOD {period}", "OPENING 0", f"CLOSING {closing}"]
+    return "\n".join([*rows, *(f"LINE {line}" for line in lines)]) + "\n"
+
+
+@pytest.mark.parametrize("with_row", [True, False])
+def test_a_reversal_row_matches_an_additional_source_line_alone(
+    ledger: Ledger, card_parsers: None, with_row: bool
+) -> None:
+    # The statement prints the credit one way and the export another; the overlap
+    # joins them into one txn whose wording is the statement's. Only the export's
+    # wording carries what the row names.
+    if with_row:
+        ledger.manual(TRANSFER_HINTS_FILE, "sample bank adjustment,reversal,")
+    ledger.card()
+    bought, adjusted = D(2025, 1, 10), D(2025, 1, 14)
+    ledger.file(
+        "synthetic-card/2025-02-05.pdf",
+        card_document(
+            CARD_STATEMENT,
+            "2025-01-10 - -64.00 SAMPLE SHOP 99972",
+            "2025-01-14 - 64.00 SAMPLE CREDIT 99974",
+            period="2025-01-06 2025-02-05",
+        ),
+    )
+    ledger.file(
+        "synthetic-card/2025-02-05-export.csv",
+        card_document(
+            CARD_TRANSACTIONS,
+            "2025-01-10 - -64.00 SAMPLE SHOP 99972",
+            "2025-01-14 - 64.00 SAMPLE BANK ADJUSTMENT 99973",
+        ),
+    )
+
+    out = ledger.derive()
+
+    # The control: one txn per purchase and credit, each with its export line as an
+    # additional source, and the credit's own wording is not the row's.
+    assert (out.lines.txns, out.lines.additional_sources) == (2, 2)
+    wording = ledger.conn.scalar(select(txn.c.description_norm).where(txn.c.amount > 0))
+    assert "adjustment" not in (wording or "")
+    state, kind = ("paired", "reversal") if with_row else (None, None)
+    assert states(ledger) == [
+        (bought, Decimal("-64.00"), state, kind),
         (adjusted, Decimal("64.00"), state, kind),
     ]
 

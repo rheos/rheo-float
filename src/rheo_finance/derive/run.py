@@ -36,7 +36,9 @@ Order of work, set by what each step reads:
    reversals in both directions (``stage8``), which reads the lines' reversal wording
    and the ``reversal`` rows of ``transfer_hints.csv``; then stage 9, the fiat own
    transfer candidate edges (``stage9``), which reads the lines' transfer wording, the
-   other rows of that file, the CAD values and the lines stage 8 paired.
+   other rows of that file, the CAD values and the lines stage 8 paired; then stage
+   11, resolution (``stage11``): the mutually unique edges apply, every transfer-like
+   line gets its state, and an applied transfer's net becomes a derived fee line.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -67,6 +69,7 @@ from rheo_finance.derive import (
     stage5,
     stage8,
     stage9,
+    stage11,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -201,6 +204,7 @@ def run(
             ),
             hint_rows=manual.transfer_hints.rows,
         )
+        stage11.resolve(uow)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

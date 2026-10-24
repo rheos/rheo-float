@@ -5,9 +5,10 @@ Seam: ``derive.run`` through the derive ``ledger`` over synthetic Vancity chequi
 Vancity Visa exports, read by the real parsers with the repo's transfer wording (and
 over ``FX_LINES`` documents for the currency cases), then read back as the
 ``own_transfer`` rows of ``pair_edge`` and the txns' ``transfer_like`` and
-``hint_account_id``. Stage 9 stores candidates only (``applied`` false); stage 11
-decides. Every date, amount and name is invented; 20.00, 2,000.00 and 200.00 are the
-spec's own boundary figures.
+``hint_account_id``. These tests read the candidate set stage 9 stores, not the
+``applied`` flag or the derived fee lines: stage 11 makes those
+(``test_resolution``). Every date, amount and name is invented; 20.00, 2,000.00 and
+200.00 are the spec's own boundary figures.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ PAYMENT_RECEIVED = "PAYMENT RECEIVED -- THANK YOU"
 REFUND = "SAMPLE SHOP REFUND 99975"
 
 Row = tuple[dt.date, str, Decimal]
-Edge = tuple[dt.date, Decimal, dt.date, Decimal, bool]
+Edge = tuple[dt.date, Decimal, dt.date, Decimal]
 
 
 @pytest.fixture
@@ -110,13 +111,7 @@ def file_card(ledger: Ledger, *rows: Row) -> None:
 def edges(ledger: Ledger) -> list[Edge]:
     a, b = txn.alias("a"), txn.alias("b")
     rows = ledger.conn.execute(
-        select(
-            a.c.posting_date,
-            a.c.amount,
-            b.c.posting_date,
-            b.c.amount,
-            pair_edge.c.applied,
-        )
+        select(a.c.posting_date, a.c.amount, b.c.posting_date, b.c.amount)
         .join(a, a.c.id == pair_edge.c.a_txn_id)
         .join(b, b.c.id == pair_edge.c.b_txn_id)
         .where(pair_edge.c.kind == "own_transfer")
@@ -127,7 +122,7 @@ def edges(ledger: Ledger) -> list[Edge]:
 def marks(ledger: Ledger) -> list[tuple[dt.date, Decimal, bool, uuid.UUID | None]]:
     rows = ledger.conn.execute(
         select(txn.c.posting_date, txn.c.amount, txn.c.transfer_like,
-               txn.c.hint_account_id)
+               txn.c.hint_account_id).where(txn.c.origin != "derived_fee")
     )  # fmt: skip
     return sorted(tuple(row) for row in rows)
 
@@ -159,7 +154,7 @@ def test_the_tolerance_is_the_larger_of_five_dollars_and_one_and_a_half_percent(
 
     own.derive()
 
-    expected = [(sent, -amount(paid), arrived, amount(received), False)]
+    expected = [(sent, -amount(paid), arrived, amount(received))]
     assert edges(own) == (expected if edge else [])
     # Both legs are transfer-like either way: outside the tolerance they have no edge,
     # which stage 11 reads as unresolved, never ambiguous.
@@ -177,7 +172,7 @@ def test_the_legs_post_at_most_the_window_apart(
 
     own.derive()
 
-    expected = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"), False)]
+    expected = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"))]
     assert edges(own) == (expected if edge else [])
 
 
@@ -197,7 +192,7 @@ def test_a_card_refund_is_never_offered_as_the_leg_of_a_chequing_debit(
 
     own.derive()
 
-    expected = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"), False)]
+    expected = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"))]
     assert edges(own) == (expected if with_payment else [])
 
 
@@ -227,8 +222,8 @@ def test_two_equal_debits_and_two_equal_card_credits_thin_to_date_order(
 
     # The k-th debit by date with the k-th credit by date, whichever was filed first.
     assert edges(own) == [
-        (D(2025, 6, 2), Decimal("-200.00"), D(2025, 6, 4), Decimal("200.00"), False),
-        (D(2025, 6, 3), Decimal("-200.00"), D(2025, 6, 8), Decimal("200.00"), False),
+        (D(2025, 6, 2), Decimal("-200.00"), D(2025, 6, 4), Decimal("200.00")),
+        (D(2025, 6, 3), Decimal("-200.00"), D(2025, 6, 8), Decimal("200.00")),
     ]
 
 
@@ -242,7 +237,7 @@ def test_three_debits_against_two_credits_keep_every_edge(own: Ledger) -> None:
 
     found = edges(own)
     assert len(found) == 6
-    assert {(debit, credit) for debit, _, credit, _, _ in found} == {
+    assert {(debit, credit) for debit, _, credit, _ in found} == {
         (debit, credit)
         for debit in (D(2025, 6, 2), D(2025, 6, 3), D(2025, 6, 5))
         for credit in (D(2025, 6, 4), D(2025, 6, 8))
@@ -301,7 +296,7 @@ def test_equal_payments_whose_candidate_sets_are_not_mutual_keep_every_edge(
 
     own.derive()
 
-    assert {(debit, credit) for debit, _, credit, _, _ in edges(own)} == {
+    assert {(debit, credit) for debit, _, credit, _ in edges(own)} == {
         (D(2025, 6, 2), D(2025, 6, 4)),
         (D(2025, 6, 9), D(2025, 6, 4)),
         (D(2025, 6, 9), D(2025, 6, 12)),
@@ -349,7 +344,7 @@ def test_a_transfer_hints_row_names_the_owners_account_by_slug(
         for row in own.conn.execute(select(txn.c.hint_account_id, txn.c.amount))
         if row.amount < 0
     }
-    to_second = (swept, Decimal("-300.00"), arrived, Decimal("300.00"), False)
+    to_second = (swept, Decimal("-300.00"), arrived, Decimal("300.00"))
     if counterpart:
         # Only the named account's deposit is a candidate.
         assert hinted == {account_id("second")}
@@ -377,9 +372,7 @@ def test_a_start_whose_hinted_account_has_no_candidate_searches_every_account(
 
     own.derive()
 
-    assert edges(own) == [
-        (swept, Decimal("-300.00"), arrived, Decimal("300.00"), False)
-    ]
+    assert edges(own) == [(swept, Decimal("-300.00"), arrived, Decimal("300.00"))]
     hinted = own.conn.scalar(select(txn.c.hint_account_id).where(txn.c.amount < 0))
     assert hinted == account_id("second")
 
@@ -405,7 +398,7 @@ def test_a_card_paid_from_a_second_banks_chequing_gets_its_edge(
 
     own.derive()
 
-    assert edges(own) == [(paid, Decimal("-200.00"), arrived, Decimal("200.00"), False)]
+    assert edges(own) == [(paid, Decimal("-200.00"), arrived, Decimal("200.00"))]
     card_hint = own.conn.scalar(select(txn.c.hint_account_id).where(txn.c.amount > 0))
     assert card_hint == account_id("chequing")
 
@@ -426,7 +419,7 @@ def test_a_line_stage_8_reversed_is_never_a_candidate(
 
     own.derive()
 
-    standing = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"), False)]
+    standing = [(sent, Decimal("-200.00"), arrived, Decimal("200.00"))]
     assert edges(own) == ([] if reversed_ else standing)
 
 
@@ -472,7 +465,7 @@ def test_a_party_or_excluded_line_is_never_transfer_like_nor_a_candidate(
 
     own.derive()
 
-    edge = (swept, Decimal("-300.00"), arrived, Decimal("300.00"), False)
+    edge = (swept, Decimal("-300.00"), arrived, Decimal("300.00"))
     assert edges(own) == ([] if mark else [edge])
     like = own.conn.scalar(select(txn.c.transfer_like).where(txn.c.amount < 0))
     assert like is (not mark)
@@ -504,7 +497,7 @@ def test_transfer_wording_on_an_evidence_source_alone_makes_no_start(
         select(txn_source.c.txn_id).where(txn_source.c.role == "evidence")
     )
     assert evidence is not None
-    edge = (paid, Decimal("-45.00"), arrived, Decimal("45.00"), False)
+    edge = (paid, Decimal("-45.00"), arrived, Decimal("45.00"))
     assert edges(own) == ([edge] if paired else [])
 
 
@@ -535,7 +528,7 @@ def test_unconverted_legs_in_one_currency_compare_natively(
     states = set(own.conn.scalars(select(txn.c.conversion_state)))
     assert states == {"unconverted"}
     expected = [(D(2025, 12, 10), Decimal("-100.00"), D(2025, 12, 11),
-                 Decimal(received), False)]  # fmt: skip
+                 Decimal(received))]  # fmt: skip
     assert edges(own) == (expected if edge else [])
 
 
@@ -564,5 +557,5 @@ def test_legs_in_two_currencies_compare_by_cad_value_or_not_at_all(
     # Unconverted, nothing measures it against a CAD line, though the two figures
     # are equal.
     expected = [(D(2025, 12, 10), Decimal("-100.00"), D(2025, 12, 11),
-                 Decimal("100.00"), False)]  # fmt: skip
+                 Decimal("100.00"))]  # fmt: skip
     assert edges(own) == (expected if rated else [])

@@ -13,7 +13,9 @@ as a receipt); a manual cash line, with no document line, has the txn's own word
 **Transfer-like** (the lines that start a pairing): a source line carries the parser's
 ``transfer_hint`` or ``conversion_hint``, or its wording matches an ``out``, ``in`` or
 ``conversion`` row of ``transfer_hints.csv`` (``reference.patterns.row_hints``, the
-matching ``classify`` uses).
+matching ``classify`` uses). A fee line (``fee_type`` set) never is: a parser prints a
+transfer's fee as its own line under the transfer's wording plus "(fee)", and the fee
+is spending, not a leg.
 
 **The hint account.** A line's ``hint_account_slug`` names its counterpart in two
 ways, told apart by the transfer kind (prompt 29): a built-in pattern's counterpart is
@@ -135,6 +137,7 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             txn.c.amount,
             txn.c.cad_amount,
             txn.c.posting_date,
+            txn.c.fee_type,
             document_line.c.transfer_hint,
             document_line.c.conversion_hint,
             document_line.c.hint_account_slug,
@@ -147,7 +150,10 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
         )
     )
     found: dict[uuid.UUID, _Reading] = {}
+    fees: set[uuid.UUID] = set()
     for row in rows:
+        if row.fee_type is not None:
+            fees.add(row.id)
         reading = found.get(row.id)
         if reading is None:
             reading = found[row.id] = _Reading(
@@ -184,7 +190,11 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             elif rows_say.transfer_hint is not None and rows_say.hint_account_slug:
                 reading.hint = (rows_say.transfer_hint, rows_say.hint_account_slug)
     return [
-        dataclasses.replace(each.line, transfer_like=each.transfer_like, hint=each.hint)
+        dataclasses.replace(
+            each.line,
+            transfer_like=each.transfer_like and each.line.id not in fees,
+            hint=each.hint,
+        )
         for each in found.values()
     ]
 

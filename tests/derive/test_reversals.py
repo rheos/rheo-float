@@ -8,7 +8,10 @@ that count (``transfer_state`` null); and a guard that stage 8 never reads a
 counterparty, payee, party or alias, by the SQL it sends and by its source. Two shapes
 come from real kinds of event, built here with invented dates, amounts and names: an
 outgoing reversal (a payment sent, cancelled, and sent again) and a clawed-back credit
-(a deposit received, taken back, and received again).
+(a deposit received, taken back, and received again). The outgoing shape also runs on
+the credit-union parser's own synthetic statement, and the matching rules on the card
+fixtures (an export line joined to a statement line), the conversion fixtures (one
+account, two currencies) and a receipt that is a payment's evidence source.
 """
 
 from __future__ import annotations
@@ -23,20 +26,23 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import ColumnElement, event, select
+from sqlalchemy import ColumnElement, event, func, select
 
 from rheo_finance.derive import stage8
 from rheo_finance.ledger.totals import cad_total
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
-from rheo_finance.storage.schema import pair_edge, txn
+from rheo_finance.storage.schema import pair_edge, txn, txn_source
 
 from .support import (
     CARD_IDENTIFIER,
     CARD_STATEMENT,
     CARD_TRANSACTIONS,
     CSV_IDENTIFIER,
+    FIXTURES,
     Ledger,
+    fx_lines,
 )
+from .test_receipts_invoices import CLINIC, RECEIPT, debit_only_receipt
 
 D = dt.date
 OTHER_IDENTIFIER = "999000000088-999-99901-99902"
@@ -400,7 +406,7 @@ def test_a_reversal_line_is_never_the_original_of_another(chequing: Ledger) -> N
     # A cancelled payment, then a debit with clawback wording of the same amount: the
     # credit reversal is not an original the debit can undo, so the first pair stands
     # and the debit has no candidate.
-    sent, cancelled, later = D(2025, 3, 3), D(2025, 3, 6), D(2025, 3, 9)
+    sent, cancelled, later = D(2025, 8, 18), D(2025, 8, 21), D(2025, 8, 24)
     derive(
         chequing,
         line(sent, OUTGOING.original, Decimal("-875.00")),
@@ -435,6 +441,105 @@ def test_a_reversal_row_of_transfer_hints_marks_a_reversal_line(
     assert states(chequing) == [
         (sent, Decimal("-64.00"), state, kind),
         (adjusted, Decimal("64.00"), state, kind),
+    ]
+
+
+@pytest.mark.parametrize(("original", "paired"), [("CAD", True), ("USD", False)])
+def test_an_equal_amount_in_another_currency_is_no_candidate(
+    fx_ledger: Ledger, original: str, paired: bool
+) -> None:
+    # One account holding two currencies: the CAD reversal undoes a CAD original of
+    # its amount, never the same figure in USD.
+    fx_ledger.manual(TRANSFER_HINTS_FILE, "sample bank adjustment,reversal,")
+    sent, adjusted = D(2025, 8, 4), D(2025, 8, 7)
+    fx_ledger.file(
+        "synthetic-fx/original.txt",
+        fx_lines(original, "2025-08-04 -50.00 - - SAMPLE SHOP 99941"),
+    )
+    fx_ledger.file(
+        "synthetic-fx/adjustment.txt",
+        fx_lines("CAD", "2025-08-07 50.00 - - SAMPLE BANK ADJUSTMENT 99973"),
+    )
+
+    fx_ledger.derive()
+
+    rows = fx_ledger.conn.execute(
+        select(txn.c.posting_date, txn.c.currency, txn.c.transfer_state)
+    )
+    if paired:
+        assert sorted(tuple(row) for row in rows) == [
+            (sent, "CAD", "paired"), (adjusted, "CAD", "paired"),
+        ]  # fmt: skip
+        assert len(edges(fx_ledger)) == 1
+    else:
+        assert sorted(tuple(row) for row in rows) == [
+            (sent, "USD", None), (adjusted, "CAD", "unresolved"),
+        ]  # fmt: skip
+        assert edges(fx_ledger) == []
+
+
+@pytest.mark.parametrize(
+    ("pattern", "paired"),
+    [("sample dental clinic", True), ("patient receipt", False)],
+    ids=["payment-line", "receipt-only"],
+)
+def test_reversal_wording_on_an_evidence_source_alone_makes_no_reversal(
+    chequing: Ledger, pattern: str, paired: bool
+) -> None:
+    # A receipt is evidence of the payment line, not a line of it: wording only the
+    # receipt carries never makes the payment a reversal of the earlier deposit.
+    chequing.manual(TRANSFER_HINTS_FILE, f"{pattern},reversal,")
+    chequing.file(RECEIPT, debit_only_receipt())
+    received, paid = D(2026, 3, 10), D(2026, 3, 15)
+    derive(
+        chequing,
+        line(received, "DEPOSIT   SAMPLE PAYER   99909", Decimal("45.00")),
+        line(paid, CLINIC, Decimal("-45.00")),
+    )
+
+    # The control: the receipt is the payment's evidence source.
+    evidence = chequing.conn.scalar(
+        select(func.count()).where(txn_source.c.role == "evidence")
+    )
+    assert evidence == 1
+    state, kind = ("paired", "reversal") if paired else (None, None)
+    assert states(chequing) == [
+        (received, Decimal("45.00"), state, kind),
+        (paid, Decimal("-45.00"), state, kind),
+    ]
+
+
+CU = "Nelson & District Credit Union"
+
+
+def test_the_credit_union_outgoing_reversal_fixture_nets_through_derive(
+    ledger: Ledger,
+) -> None:
+    # The credit-union parser's own synthetic statement: an e-Transfer debit, the
+    # bank's reversal by customer cancel with no payee printed, the debit again.
+    ledger.accounts(
+        ("cu-chequing", CU, "chequing", "999000000101"),
+        ("cu-shares", CU, "savings", "999000000102"),
+    )
+    ledger.file(
+        "nelson-district-cu/2025-11-30.pdf",
+        (FIXTURES / "ndcu_statement_current.txt").read_text(encoding="utf-8"),
+    )
+
+    ledger.derive()
+
+    sent, cancelled, again = D(2025, 11, 4), D(2025, 11, 9), D(2025, 11, 10)
+    assert edges(ledger) == [
+        (cancelled, Decimal("1234.56"), sent, Decimal("-1234.56"), True),
+    ]
+    found = states(ledger)
+    assert (sent, Decimal("-1234.56"), "paired", "reversal") in found
+    assert (cancelled, Decimal("1234.56"), "paired", "reversal") in found
+    assert (again, Decimal("-1234.56"), None, None) in found
+    # Nothing else on the statement is touched.
+    assert [row for row in found if row[2] is not None] == [
+        (sent, Decimal("-1234.56"), "paired", "reversal"),
+        (cancelled, Decimal("1234.56"), "paired", "reversal"),
     ]
 
 

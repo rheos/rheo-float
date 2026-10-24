@@ -32,7 +32,12 @@ from rheo_finance.operations import dispatch
 from rheo_finance.parsers import registry
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage.refs import format_ref
-from rheo_finance.storage.schema import source_discrepancy, txn, txn_source
+from rheo_finance.storage.schema import (
+    document_line,
+    source_discrepancy,
+    txn,
+    txn_source,
+)
 
 from .crypto_support import (
     CRYPTO_HEADER,
@@ -501,6 +506,57 @@ def test_movement_kinds_follow_the_source_the_own_addresses_and_the_trade_ref(
         # Spam keeps its kind and is never transfer-like.
         ("fake-coin-999", Decimal("9")): ("crypto_transfer", False, None),
     }
+
+
+def test_a_trade_ref_with_one_sign_is_no_swap(crypto_ledger: Ledger) -> None:
+    # Two legs of one trade ref with both signs are a swap; a trade ref whose lines
+    # all leave the account is not, and stays unclassified.
+    ledger = crypto_ledger
+    file(
+        ledger,
+        "wallet.txt",
+        WALLET,
+        f"MOVE at={NOON} asset=bitcoin qty=-0.02 type=Trade trade=T999A",
+        f"MOVE at={NOON} asset=ethereum qty=0.6 type=Trade trade=T999A",
+        f"MOVE at={NOON} asset=solana qty=-2 type=Trade trade=T999B",
+        f"MOVE at={NOON} asset=cardano qty=-7 type=Trade trade=T999B",
+    )
+
+    ledger.derive()
+
+    assert {row["asset_identifier"]: row["movement_kind"] for row in rows(ledger)} == {
+        "bitcoin": "crypto_swap_leg",
+        "ethereum": "crypto_swap_leg",
+        "solana": "crypto_unclassified",
+        "cardano": "crypto_unclassified",
+    }
+
+
+def test_a_fee_and_a_movement_of_one_figure_and_second_stay_two_txns(
+    crypto_ledger: Ledger,
+) -> None:
+    # Two documents print the same fee and the same movement (no TXID, one figure,
+    # one second, one source type), in opposite orders. The line kind keeps them two
+    # txns, each with its two sources of its own kind.
+    ledger = crypto_ledger
+    move = f"MOVE at={NOON} asset=ethereum qty=-0.001 type=Sent"
+    fee = f"FEE at={NOON} asset=ethereum qty=0.001 type=Sent"
+    file(ledger, "first.csv", WALLET, move, fee)
+    file(ledger, "second.txt", WALLET, fee, move)
+
+    ledger.derive()
+
+    kinds = ledger.conn.execute(
+        select(txn.c.movement_kind, document_line.c.line_kind)
+        .join(txn_source, txn_source.c.txn_id == txn.c.id)
+        .join(document_line, document_line.c.id == txn_source.c.document_line_id)
+    ).all()
+    assert sorted(tuple(row) for row in kinds) == [
+        ("crypto_fee", "crypto_fee"),
+        ("crypto_fee", "crypto_fee"),
+        ("crypto_unclassified", "crypto_movement"),
+        ("crypto_unclassified", "crypto_movement"),
+    ]
 
 
 # --- the fixture parser never ships ---------------------------------------------------

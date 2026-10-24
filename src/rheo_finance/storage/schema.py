@@ -353,6 +353,19 @@ def _account_fk() -> ForeignKey:
     return ForeignKey("finance.account.id", deferrable=True, initially="DEFERRED")
 
 
+# --- the owner's own wallet addresses (stage 2; migration 0018) -----------------------
+# One row per address in its compared form (``manual.own_addresses``). Restricted,
+# like every address.
+
+own_address = Table(
+    "own_address",
+    metadata,
+    Column("address", Text, primary_key=True),
+    Column("account_id", Uuid, _account_fk(), nullable=False),
+)
+_tiers(own_address, {"address": R, "account_id": R})
+
+
 statement_period = Table(
     "statement_period",
     metadata,

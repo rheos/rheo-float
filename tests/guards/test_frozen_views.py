@@ -82,6 +82,9 @@ PINNED = {
     "0017_pair_edge.py": (
         "0f57a45971ef9f67345c71332a271cd2fa66a2e83a00399a21f77d1fd311e1c4"
     ),
+    "0018_crypto_core.py": (
+        "01cb3523437ceebff6bdabf9ad272e45bfe2517d2d82b173abb2ecdcb780fb48"
+    ),
 }
 
 

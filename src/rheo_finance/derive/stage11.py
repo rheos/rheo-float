@@ -4,10 +4,12 @@ and 70).
 
 **Mutual uniqueness.** An edge applies only when it is the only edge on both of its
 ends, counting the edges of every kind in ``pair_edge`` together, and its kind allows
-it (``AUTO_KINDS``: ``own_transfer``, ``own_one_sided`` and ``conversion``; the
-``trade`` and ``loan_*`` kinds are decided by the peer-money stages). The result is a
-function of the stored edge set alone, so it does not depend on the order lines were
-imported or read.
+it (``AUTO_KINDS``: ``own_transfer``, ``own_one_sided`` and ``conversion`` today). The
+spec's stage 11 also auto-applies ``loan_out`` and ``loan_repay``, and ``trade`` when
+its CAD end qualifies, in this same pass: Phase 7 adds those kinds to ``AUTO_KINDS``
+here, so one count over every kind keeps uniqueness across kinds. ``loan_partial`` and
+``loan_proposal`` never apply on their own. The result is a function of the stored
+edge set alone, so it does not depend on the order lines were imported or read.
 
 **States.** On every line that is an end of an edge stage 11 decides:
 
@@ -56,7 +58,8 @@ from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
 
 # The edge kinds that apply on their own when mutually unique, to the ``pair_kind``
-# their lines get.
+# their lines get. Phase 7 adds ``loan_out``, ``loan_repay`` and (conditionally)
+# ``trade`` here, so they share this one pass and its count across kinds.
 AUTO_KINDS: Final = {
     "own_transfer": "own_transfer",
     "own_one_sided": "own_one_sided",

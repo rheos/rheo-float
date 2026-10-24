@@ -234,6 +234,97 @@ def test_a_gross_email_and_a_net_export_of_one_withdrawal_agree_after_the_split(
     assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == []
 
 
+def roles_by_amount(ledger: Ledger) -> dict[Decimal, list[str]]:
+    """Each txn's amount to its sources' roles."""
+    return {
+        Decimal(str(row["amount"])): sources(ledger, row["id"]) for row in rows(ledger)
+    }
+
+
+def test_an_unnetted_primary_folds_a_lower_sources_fee_line_into_the_withdrawal(
+    crypto_ledger: Ledger,
+) -> None:
+    # The export (a CSV, ranking first) prints one figure and no fee; the email
+    # prints the same withdrawal gross with its fee. The email's fee line makes no
+    # txn: the export's figure already holds the fee, and the email's net figure is a
+    # quantity discrepancy, so the fee counts once.
+    ledger = crypto_ledger
+    head = f"WITHDRAW at={NOON} asset=BTC txid=999tx0ee55 to={FOREIGN}"
+    file(ledger, "export.csv", EXCHANGE, f"{head} qty=1.0")
+    file(ledger, "email.txt", EXCHANGE, f"{head} qty=1.0 fee=0.0005 gross=1")
+
+    ledger.derive()
+
+    assert roles_by_amount(ledger) == {
+        Decimal("-1.0"): ["additional", "additional", "primary"]
+    }
+    assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == [
+        "quantity_mismatch"
+    ]
+
+
+def test_a_primary_printing_its_fee_on_its_own_line_keeps_the_fee_txn(
+    crypto_ledger: Ledger,
+) -> None:
+    # A tracker export prints the net quantity and the fee as two lines with no
+    # fee_stated flag; the email prints the withdrawal gross with its fee. The fee is
+    # one txn with both sources, the movement another, and nothing disagrees.
+    ledger = crypto_ledger
+    tx = "txid=999tx0ab77"
+    file(
+        ledger,
+        "export.csv",
+        EXCHANGE,
+        f"MOVE at={NOON} asset=BTC qty=-0.9995 {tx} to={FOREIGN}",
+        f"FEE at={NOON} asset=BTC qty=0.0005 {tx}",
+    )
+    file(
+        ledger,
+        "email.txt",
+        EXCHANGE,
+        f"WITHDRAW at={NOON} asset=BTC qty=1.0 fee=0.0005 gross=1 {tx} to={FOREIGN}",
+    )
+
+    ledger.derive()
+
+    assert roles_by_amount(ledger) == {
+        Decimal("-0.9995"): ["additional", "primary"],
+        Decimal("-0.0005"): ["additional", "primary"],
+    }
+    assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("export", "email", "movement"),
+    [
+        ("qty=0.9995 fee=0.0005", "qty=1.0", "-0.9995"),
+        ("qty=1.0 fee=0", "qty=1.0 fee=0.0005 gross=1", "-1.0"),
+    ],
+    ids=["net-plus-fee", "stated-zero-fee"],
+)
+def test_a_primary_stating_its_fee_keeps_the_rule_as_it_was(
+    crypto_ledger: Ledger, export: str, email: str, movement: str
+) -> None:
+    # The export states its fee (a fee line, or a stated fee of zero); the email
+    # ranks lower and prints another figure. The email's fee line, if any, keys as
+    # before and is a txn, and the email's figure is a quantity discrepancy on the
+    # withdrawal.
+    ledger = crypto_ledger
+    head = f"WITHDRAW at={NOON} asset=BTC txid=999tx0ff66 to={FOREIGN}"
+    file(ledger, "export.csv", EXCHANGE, f"{head} {export}")
+    file(ledger, "email.txt", EXCHANGE, f"{head} {email}")
+
+    ledger.derive()
+
+    assert roles_by_amount(ledger) == {
+        Decimal(movement): ["additional", "primary"],
+        Decimal("-0.0005"): ["primary"],
+    }
+    assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == [
+        "quantity_mismatch"
+    ]
+
+
 def test_a_withdrawal_with_no_stated_fee_is_one_line_carrying_its_figure(
     crypto_ledger: Ledger,
 ) -> None:

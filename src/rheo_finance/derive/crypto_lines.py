@@ -37,6 +37,15 @@ also a ``quantity_mismatch`` source discrepancy, which ``status`` counts. A cryp
 account has no tied-out statement, so no window refuses a line and no txn is
 provisional.
 
+**An unnetted primary.** When the line that ranks first among a TXID's outgoing
+movement lines prints one figure with no fee (``fee_stated`` false, and its document
+prints no fee line for the TXID), a lower-ranked document's separate fee line for that
+TXID makes no txn of its own: it is one more additional source of the withdrawal's
+txn, with no discrepancy of its own. The primary's figure includes the fee, and the
+lower-ranked movement line's net figure is already a ``quantity_mismatch``, so the fee
+is never counted twice. When the primary prints a net figure and a fee, the fee keys
+as above.
+
 **What the txn carries.** The signed quantity as ``amount``, the asset code as
 ``currency``, the identifier as printed, the TXID and addresses, ``fee_type`` and
 ``trade_ref`` as the parser gave them, and ``movement_kind`` ``crypto_fee`` for a fee
@@ -48,6 +57,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final
@@ -153,6 +163,7 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
             document_line.c.source_type,
             document_line.c.fee_type,
             document_line.c.trade_ref,
+            document_line.c.fee_stated,
         )
         .join(document, document.c.id == document_line.c.document_id)
         .outerjoin(account, account.c.id == document_line.c.account_id)
@@ -190,17 +201,16 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
         by_key[natural].append(_Keyed(row, code, at, derived_id(at.date(), natural)))
 
     found = standings(uow)
+
+    def place(each: _Keyed) -> int:
+        return _rank(found, each.row.account_id, each.row.document_id)
+
+    groups, folded = _fold_unnetted_fees(by_key, place)
     txns: list[dict[str, object]] = []
     sources: list[dict[str, object]] = []
     discrepancies: list[dict[str, object]] = []
-    for lines in by_key.values():
-        ranked = sorted(
-            lines,
-            key=lambda each: (
-                _rank(found, each.row.account_id, each.row.document_id),
-                each.row.line_no,
-            ),
-        )
+    for natural, lines in groups.items():
+        ranked = sorted(lines, key=lambda each: (place(each), each.row.line_no))
         first = ranked[0]
         row, key = first.row, first.key
         standing = found[row.account_id][_rank(found, row.account_id, row.document_id)]
@@ -226,17 +236,17 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
                 "trade_ref": row.trade_ref,
             }
         )
-        for place, each in enumerate(ranked):
+        for position, each in enumerate(ranked):
             sources.append(
                 {
                     "txn_id": key,
                     "document_line_id": each.row.id,
                     "manual_ref": None,
                     "line_key_id": each.key,
-                    "role": "primary" if place == 0 else "additional",
+                    "role": "primary" if position == 0 else "additional",
                 }
             )
-            if place and each.row.amount != row.amount:
+            if position and each.row.amount != row.amount:
                 discrepancies.append(
                     {
                         "id": derived_id(
@@ -248,6 +258,18 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
                         "kind": QUANTITY_MISMATCH,
                     }
                 )
+        # A fee line folded into this withdrawal is one more of its sources, with no
+        # discrepancy of its own: its document's movement line already has one.
+        for each in folded.get(natural, ()):
+            sources.append(
+                {
+                    "txn_id": key,
+                    "document_line_id": each.row.id,
+                    "manual_ref": None,
+                    "line_key_id": each.key,
+                    "role": "additional",
+                }
+            )
     if txns:
         uow.execute(insert(txn), txns)
         uow.execute(insert(txn_source), sources)
@@ -276,3 +298,44 @@ def build_crypto_lines(uow: UnitOfWork, zone: ZoneInfo) -> CryptoLines:
         discrepancies=len(discrepancies),
         incomplete_lines=incomplete,
     )
+
+
+def _fold_unnetted_fees(
+    by_key: dict[tuple[object, ...], list[_Keyed]],
+    place: Callable[[_Keyed], int],
+) -> tuple[
+    dict[tuple[object, ...], list[_Keyed]], dict[tuple[object, ...], list[_Keyed]]
+]:
+    """The key groups with every unnetted-fee line taken out, and those lines by the
+    key of the withdrawal they fold into (module docstring, "An unnetted primary")."""
+    # The line ranking first among a TXID's outgoing movement lines, and its key.
+    primary: dict[tuple[object, object], tuple[_Keyed, tuple[object, ...]]] = {}
+    for natural, lines in by_key.items():
+        if natural[0] != TXID_KEY or natural[4] != "out":
+            continue
+        for each in lines:
+            txid = (natural[1], natural[3])
+            held = primary.get(txid)
+            if held is None or (place(each), each.row.line_no) < (
+                place(held[0]),
+                held[0].row.line_no,
+            ):
+                primary[txid] = (each, natural)
+    groups: dict[tuple[object, ...], list[_Keyed]] = {}
+    folded: dict[tuple[object, ...], list[_Keyed]] = defaultdict(list)
+    for natural, lines in by_key.items():
+        kept = lines
+        if natural[0] == TXID_KEY and natural[4] == FEE_DIRECTION:
+            held = primary.get((natural[1], natural[3]))
+            # Unnetted: no fee stated, and no fee line from the primary's document (or
+            # one ranking with it), as a source that prints the fee on its own line.
+            if (
+                held is not None
+                and not held[0].row.fee_stated
+                and all(place(each) > place(held[0]) for each in lines)
+            ):
+                folded[held[1]].extend(lines)
+                kept = []
+        if kept:
+            groups[natural] = kept
+    return groups, folded

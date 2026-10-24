@@ -79,6 +79,9 @@ PINNED = {
     "0016_rates.py": (
         "d7e8a2208f9e393a68e9cc8699550b306e2629bdbe323d8840d645dcd1172790"
     ),
+    "0017_pair_edge.py": (
+        "6e12e194ec49b6fa18b28e7928f5432d35575f866bafc0bad59622bddb88b11d"
+    ),
 }
 
 

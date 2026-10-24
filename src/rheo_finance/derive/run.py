@@ -11,7 +11,8 @@ either way.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   coverage matrix, the ``txn`` tables, the source discrepancies and the events. The
+   coverage matrix, the pairing graph, the ``txn`` tables, the source discrepancies and
+   the events. The
    parse cache (``PARSE_CACHE``: lines, periods, rejected periods and the rejection
    events) is cleared whole with ``reparse``; otherwise stage 1 clears and rewrites a
    document's rows when it parses that document, and the columns stage 3 writes on a
@@ -31,7 +32,9 @@ Order of work, set by what each step reads:
    and invoices linked to the txns as evidence (``evidence``).
 5. Stage 4, conversion to CAD from the stored rates (``stage4``); stage 5,
    recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
-   which reads the periods, the lines and ``document_periods.csv``.
+   which reads the periods, the lines and ``document_periods.csv``; then stage 8, the
+   reversals in both directions (``stage8``), which reads the lines' reversal wording
+   and the ``reversal`` rows of ``transfer_hints.csv``.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -53,7 +56,15 @@ from sqlalchemy import delete, text, update
 
 from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
-from rheo_finance.derive import coverage, stage1, stage2, stage3, stage4, stage5
+from rheo_finance.derive import (
+    coverage,
+    stage1,
+    stage2,
+    stage3,
+    stage4,
+    stage5,
+    stage8,
+)
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import DOCUMENT_REJECTED
@@ -64,6 +75,7 @@ from rheo_finance.storage.schema import (
 from rheo_finance.storage.schema import (
     document_line,
     event,
+    pair_edge,
     rejected_period,
     source_discrepancy,
     statement_period,
@@ -76,7 +88,7 @@ RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
-    coverage_table, txn_source, txn, source_discrepancy, document_line,
+    coverage_table, pair_edge, txn_source, txn, source_discrepancy, document_line,
     statement_period, rejected_period, event,
 )  # fmt: skip
 # Of CLEARED, what stage 1 stores per document: kept for documents a derive does not
@@ -172,6 +184,11 @@ def run(
         stage5.recognize(uow)
         today = local_today(ctx.clock, ctx.settings.timezone)
         months = coverage.build_coverage(uow, manual.document_periods.periods, today)
+        stage8.pair_reversals(
+            uow,
+            window_days=ctx.settings.get_int(stage8.WINDOW_KEY),
+            hint_rows=manual.transfer_hints.rows,
+        )
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

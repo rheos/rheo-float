@@ -551,6 +551,33 @@ _tiers(
     {"txn_id": P, "document_line_id": P, "manual_ref": P, "line_key_id": P, "role": P},
 )
 
+# --- the pairing graph (derived, stage 8 on; migration 0017) --------------------------
+
+pair_edge = Table(
+    "pair_edge",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("a_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("loan_key", Text),
+    Column("b_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("b_part_id", Uuid),
+    Column("b_account_id", Uuid, _account_fk()),
+    Column("group_id", Uuid),
+    Column("applied", Boolean, nullable=False, server_default="false"),
+    Column("basis_ref", Text),
+    Column("fee_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("spread_cad", Numeric(20, 2)),
+)
+_tiers(
+    pair_edge,
+    {
+        "id": P, "kind": P, "a_txn_id": P, "loan_key": P, "b_txn_id": P,
+        "b_part_id": P, "b_account_id": P, "group_id": P, "applied": P,
+        "basis_ref": P, "fee_txn_id": P, "spread_cad": R,
+    },
+)  # fmt: skip
+
 # --- source discrepancies (derived, stage 3; migration 0011) --------------------------
 # Keys and codes only: the line's amount and description stay on ``document_line``.
 

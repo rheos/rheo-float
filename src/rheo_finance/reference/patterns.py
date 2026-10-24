@@ -273,6 +273,18 @@ def classify(
     )
 
 
+def reversal_row_matches(
+    description_norm: str, hint_rows: Sequence[TransferHintRow]
+) -> bool:
+    """Whether a ``reversal`` row of ``transfer_hints.csv`` matches a line's wording,
+    as ``classify`` matches its rows. Parsers never pass the owner's rows, so derive
+    stage 8 asks this for every line beside the parser's ``reversal_hint``."""
+    return any(
+        row.direction == "reversal" and _has(description_norm, row.pattern)
+        for row in hint_rows
+    )
+
+
 _PARENTHESIZED: Final = re.compile(r"\(([^()]*)\)")
 
 

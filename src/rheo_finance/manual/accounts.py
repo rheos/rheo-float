@@ -277,8 +277,8 @@ def build_registry(
         reject(IDENTIFIERS_FILE, line, "identifier: another row has the same one")
     bad_identifiers |= repeated
 
-    # Two accounts at one institution whose last-four identifiers share them, unless
-    # both are distinct full numbers.
+    # An (institution, last four) group is refused unless every cross-account pair in
+    # it is two distinct full numbers (ADR-0011).
     by_four: dict[tuple[str, str], list[tuple[int, AccountIdentifierRow]]] = (
         defaultdict(list)
     )

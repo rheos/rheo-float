@@ -131,6 +131,80 @@ CARD_PARSERS = tuple(
 )
 
 
+# The conversion fixtures: one account at a test-only institution, and a layout whose
+# lines carry what stage 4 reads (a currency, an issuer-stated CAD amount, a foreign
+# original), read by ``parse_fx`` under the test-only issuer directory ``FX_ISSUER``.
+FX_ISSUER = "synthetic-fx"
+FX_INSTITUTION = "Sample FX"
+FX_IDENTIFIER = "999000000044"
+FX_LINES = "SYNTHETIC FX LINES"
+
+
+def parse_fx(text: str, accounts: AccountLookup) -> ParseResult:
+    """``FX_LINES``, ``CURRENCY <code>``, then ``LINE <posting date> <signed amount>
+    <stated CAD or -> <original currency or -> <description>``. The period runs from
+    the earliest line to the latest, control ``none``."""
+    rows = [row.strip() for row in text.splitlines() if row.strip()]
+    if not rows or rows[0] != FX_LINES:
+        raise NotRecognised
+    currency = "CAD"
+    found: list[tuple[dt.date, Decimal, Decimal | None, str | None, str]] = []
+    for row in rows[1:]:
+        head, _, rest = row.partition(" ")
+        if head == "CURRENCY":
+            currency = rest
+        elif head == "LINE":
+            posting, amount, stated, original, description = rest.split(" ", 4)
+            found.append(
+                (
+                    dt.date.fromisoformat(posting),
+                    Decimal(amount),
+                    None if stated == "-" else Decimal(stated),
+                    None if original == "-" else original,
+                    description,
+                )
+            )
+    first, last = min(line[0] for line in found), max(line[0] for line in found)
+    matched = accounts.by_identifier(FX_INSTITUTION, FX_IDENTIFIER, first, last)
+    if len(matched) != 1:
+        raise Rejected("unknown_account", (first, last))
+    account = matched[0]
+    period = ParsedPeriod(
+        account=account,
+        currency=currency,
+        period_start=first,
+        period_end=last,
+        control_kind="none",
+    )
+    return ParseResult(
+        periods=(period,),
+        lines=tuple(
+            ParsedLine(
+                line_kind="transaction",
+                account=account,
+                posting_date=posting,
+                amount=amount,
+                currency=currency,
+                stated_cad=stated,
+                original_currency=original,
+                original_amount=None if original is None else amount,
+                description_raw=description,
+            )
+            for posting, amount, stated, original, description in found
+        ),
+        control_kind="none",
+    )
+
+
+FX_PARSER = Parser("synthetic_fx_txt", FX_ISSUER, "txt", "1", parse_fx)
+
+
+def fx_lines(currency: str, *lines: str) -> str:
+    """An ``FX_LINES`` document; each line is ``"<date> <amount> <stated|-> <original|->
+    <description>"``."""
+    return "\n".join([FX_LINES, f"CURRENCY {currency}", *(f"LINE {x}" for x in lines)])
+
+
 def read_as_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 

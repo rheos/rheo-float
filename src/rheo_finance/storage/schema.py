@@ -123,6 +123,25 @@ _tiers(
     },
 )  # fmt: skip
 
+# --- stored exchange rates (state, an input of stage 4; migration 0016) ---------------
+
+rate = Table(
+    "rate",
+    metadata,
+    Column("rate_date", Date, primary_key=True),
+    Column("base", Text, primary_key=True),
+    Column("quote", Text, primary_key=True),
+    Column("rate", Numeric, nullable=False),
+    Column("source", Text, primary_key=True),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+# A published market rate is not personal, but the tier guard restricts every numeric
+# column outside its reviewed exceptions, as it does ``txn.rate``.
+_tiers(
+    rate,
+    {"rate_date": P, "base": P, "quote": P, "rate": R, "source": P, "fetched_at": P},
+)
+
 # --- sink specs (derived, stage 16; migration 0003) -----------------------------------
 
 sink_spec = Table(

@@ -26,3 +26,10 @@
 #   path = "/valet/observations/:series/json"
 #   docs = "https://example.invalid/valet-api-docs"
 #   why = "Reads published exchange-rate observations; the endpoint has no write verb."
+
+[[read_path]]
+sink = "rates"
+method = "GET"
+path = "/valet/observations/:series/json"
+docs = "https://www.bankofcanada.ca/valet/docs"
+why = "Reads published exchange-rate observations for one series and date range; Valet has no write verb."

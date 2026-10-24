@@ -29,8 +29,9 @@ Order of work, set by what each step reads:
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
    source discrepancies (``stage3``, ``precedence``, ``overlap``), then the receipts
    and invoices linked to the txns as evidence (``evidence``).
-5. Stage 5, recognition dates (``stage5``), then stage 6, the coverage matrix
-   (``coverage``), which reads the periods, the lines and ``document_periods.csv``.
+5. Stage 4, conversion to CAD from the stored rates (``stage4``); stage 5,
+   recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
+   which reads the periods, the lines and ``document_periods.csv``.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -52,7 +53,7 @@ from sqlalchemy import delete, text, update
 
 from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
-from rheo_finance.derive import coverage, stage1, stage2, stage3, stage5
+from rheo_finance.derive import coverage, stage1, stage2, stage3, stage4, stage5
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import DOCUMENT_REJECTED
@@ -90,8 +91,10 @@ REWRITTEN: Final = frozenset(
         "sink_spec",
     }
 )  # fmt: skip
-# State, never truncated (Key decision 3).
-STATE: Final = frozenset({"decision", "decision_item", "decision_target"})
+# State, never truncated (Key decision 3): the decisions and the stored rates. Each is
+# an input of a derive and feeds a part of the input fingerprint
+# (``fingerprint.STATE_PARTS``).
+STATE: Final = frozenset({"decision", "decision_item", "decision_target", "rate"})
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 
@@ -163,6 +166,7 @@ def run(
             invoice_days=ctx.settings.get_int(INVOICE_DAYS_KEY),
         )
 
+        stage4.convert(uow)
         stage5.recognize(uow)
         today = local_today(ctx.clock, ctx.settings.timezone)
         months = coverage.build_coverage(uow, manual.document_periods.periods, today)

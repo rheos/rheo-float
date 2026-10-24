@@ -52,7 +52,6 @@ figures or times say, ``a_txn_id`` the smaller quantity.
 from __future__ import annotations
 
 import datetime as dt
-import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -62,6 +61,7 @@ from sqlalchemy import and_, insert, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
+from rheo_finance.derive.crypto_lines import txid_key
 from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.manual.own_addresses import normalize_address
 from rheo_finance.parsers.base import CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED, FIAT
@@ -81,7 +81,6 @@ EPSILON_KEY: Final = "finance.crypto.qty_epsilon"
 KIND: Final = "own_transfer"
 ONE_SIDED: Final = "own_one_sided"
 HUNDRED: Final = Decimal(100)
-_HEX: Final = re.compile(r"(0[xX])?[0-9a-fA-F]+")
 
 
 @dataclass(frozen=True)
@@ -107,15 +106,6 @@ class _Line:
     to_address: str | None
     kind: str
     fee_stated: bool
-
-
-def txid_key(txid: str) -> str:
-    """A TXID in its compared form: stripped, and when it is hex, without a leading
-    ``0x`` (an EVM TXID is printed with and without it) and lower-cased."""
-    txid = txid.strip()
-    if not _HEX.fullmatch(txid):
-        return txid
-    return txid[2:].lower() if txid[:2] in ("0x", "0X") else txid.lower()
 
 
 def labelled(uow: UnitOfWork) -> set[uuid.UUID]:

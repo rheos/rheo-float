@@ -10,7 +10,9 @@ identifier; a line missing one of them is left out and counted
 identifier. Keys are UTC throughout, so changing ``finance.locale.timezone`` re-keys
 nothing and orphans no decision:
 
-- a line with a TXID: (account, asset code, TXID, direction, occurrence), the
+- a line with a TXID: (account, asset code, TXID in its compared form
+  (``txid_key``: a hex TXID lower-cased, a leading ``0x`` dropped, so one TXID
+  printed two ways is one key), direction, occurrence), the
   direction ``in`` or ``out`` by the quantity's sign, the occurrence counted among the
   lines of the same four in one document. No quantity, so an email that prints a gross
   figure and an export that prints a net one are one txn with two sources;
@@ -61,6 +63,7 @@ line, else ``crypto_unclassified`` until stage 7 classifies it.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -96,6 +99,7 @@ QUANTITY_MISMATCH: Final = "quantity_mismatch"
 TXID_KEY: Final = "crypto_txid"
 TIME_KEY: Final = "crypto_time"
 FEE_DIRECTION: Final = "fee"
+_HEX: Final = re.compile(r"(0[xX])?[0-9a-fA-F]+")
 
 
 @dataclass(frozen=True)
@@ -117,6 +121,15 @@ class _Keyed:
     key: uuid.UUID
 
 
+def txid_key(txid: str) -> str:
+    """A TXID in its compared form: stripped, and when it is hex, without a leading
+    ``0x`` (an EVM TXID is printed with and without it) and lower-cased."""
+    txid = txid.strip()
+    if not _HEX.fullmatch(txid):
+        return txid
+    return txid[2:].lower() if txid[:2] in ("0x", "0X") else txid.lower()
+
+
 def key_base(
     *,
     slug: str,
@@ -131,7 +144,7 @@ def key_base(
     """A crypto line's natural key without its occurrence (module docstring)."""
     if txid is not None:
         direction = FEE_DIRECTION if fee else ("in" if quantity > 0 else "out")
-        return (TXID_KEY, slug, code, txid, direction)
+        return (TXID_KEY, slug, code, txid_key(txid), direction)
     return (TIME_KEY, slug, at, identifier, quantity, source_type,
             CRYPTO_FEE if fee else CRYPTO_MOVEMENT)  # fmt: skip
 

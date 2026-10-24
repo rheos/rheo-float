@@ -104,6 +104,26 @@ def line_ref(txn_id: object) -> str:
 # --- stage 3: keys and ids ------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "printed", ["0x9990AB12EF", "9990AB12EF", "0X9990ab12ef"], ids=["0x", "upper", "0X"]
+)
+def test_a_hex_txid_printed_two_ways_is_one_line(
+    crypto_ledger: Ledger, printed: str
+) -> None:
+    # The export prints the TXID lower case without 0x, the email another way: one
+    # key, one txn with both sources.
+    ledger = crypto_ledger
+    head = f"WITHDRAW at={NOON} asset=ETH qty=0.25 to={FOREIGN}"
+    file(ledger, "export.csv", EXCHANGE, f"{head} txid=9990ab12ef")
+    file(ledger, "email.txt", EXCHANGE, f"{head} txid={printed}")
+
+    ledger.derive()
+
+    [row] = rows(ledger)
+    assert sources(ledger, row["id"]) == ["additional", "primary"]
+    assert row["txid"] == "9990ab12ef"
+
+
 def test_a_quantity_printed_two_ways_is_one_line_and_one_id(
     crypto_ledger: Ledger,
 ) -> None:

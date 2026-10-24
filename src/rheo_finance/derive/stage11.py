@@ -2,27 +2,21 @@
 transfer states, and the derived fee lines (FR-15, Key decision 9, edge cases 2, 3, 5
 and 70).
 
-**The owner's decisions come first** (FR-15, FR-18; ``pair_decisions``). Each
-``unpair`` deletes the edges joining exactly the lines it names (the target and the
-counterpart; the target's ``own_one_sided`` edge when it names one line), of any
-kind, a ``reversal`` included: a line it frees is eligible for its other edges, and a
-loan proposal it names ("not a loan") is gone. Then each ``pair``, newest first,
-applies the edge joining its target to each other line it names (the counterpart and
-each leg; with no other line, the target's ``own_one_sided`` edge), of any kind; when
-two lines it names have no edge, it joins them by hand with a new edge, applied:
-``own_transfer`` across two accounts, ``conversion`` on one account in two currencies
-(no spread, so no derived fee), ``reversal`` on one account in one currency (the later
-line its ``a_txn_id``). A pair naming a line that a newer pair already took, or a lone
-line with no ``own_one_sided`` edge, applies nothing. A decided edge is ``applied``
-with ``basis_ref`` the decision's reference (``finance.decision:<id>``, the owner's
-basis), and its lines are ``paired`` with the edge's kind as ``pair_kind``.
-Every other edge on a line a decision took is out of the graph for this derive:
-stored, not applied (a reversal edge stage 8 applied is un-applied), and not counted
-on its other end, so that end resolves on its remaining edges. A line that loses its
-reversal edges this way and has none left is restated: a reversal line
-``unresolved``, an original an ordinary line again. Decisions key their lines by line
-key, so they hold through a rebuild; one whose key no line carries is the orphan
-stage's, and applies nothing here.
+**The owner's decisions come first** (FR-15, FR-18; ``pair_decisions``, read before
+stage 8). The candidate stages already built the graph around them: no edge joining
+exactly an ``unpair``'s lines is stored (a loan proposal it names, "not a loan", is
+gone, and a line it frees took part in the candidate search as an ordinary line), and
+a line a ``pair`` took is an end of its decision's edges only, which the stages stored
+even when no ordinary candidate existed. Here each ``pair`` applies its edges (the
+target to each other line it names; with no other line, the target's
+``own_one_sided`` edge), of any kind; a ``pair`` one of whose edges was not stored (a
+crypto pair the crypto stage could not join, a one-line pair with no own address)
+applies nothing. A decided edge is ``applied`` with ``basis_ref`` the decision's
+reference (``finance.decision:<id>``, the owner's basis), and its lines are
+``paired`` with the edge's kind as ``pair_kind``. A ``pair`` that mixes fiat and
+crypto lines is inert: it stays recorded and applies nothing, since no edge kind
+joins the two (``pair_decisions``). Decisions key their lines by line key, so they
+hold through a rebuild; one whose key no line carries is the orphan stage's.
 
 **Mutual uniqueness.** On the edges no decision touched, an edge applies only when it
 is the only edge on both of its ends, counting the edges of every kind in
@@ -58,13 +52,15 @@ none.
 lines' states. Stage 11 counts those edges (a line with a reversal edge and another
 edge has two, so neither applies) but never changes a reversal edge, and a line whose
 only edges are reversal edges keeps the state stage 8 gave it. A line stage 8 paired
-is never a stage 9 candidate, so its one edge is its reversal edge. A decision is the
-one exception (above). shortcut: a line that keeps reversal edges after a decision
-removed one of them keeps the state stage 8 gave its group (ambiguous, out of every
-total) rather than having stage 8's rule run again on the smaller group; upgrade when
-a real case needs the remaining edge to net without a decision.
+is never a stage 9 candidate, so its one edge is its reversal edge. A reversal edge
+of the owner's ``pair`` is the one stage 11 applies (above).
 
-**Derived fee lines.** An applied fiat ``own_transfer`` whose legs do not net to zero
+**Derived fee lines.** A decided ``pair`` whose edges are all fiat ``own_transfer``
+edges nets once: the target against the sum of every other line it names, so a
+payment paid by two credits is one movement and at most one fee line, on the
+outbound side (the target when it is the debit, else the first debit among the
+others), keyed to the decision's first edge. Otherwise an applied fiat
+``own_transfer`` whose legs do not net to zero
 (inside the tolerance, or stage 9 gave no edge) books the net as one txn of origin
 ``derived_fee`` on the OUTBOUND account (the debit's), dated and recognized as the
 debit, ``fee_type`` ``fee``, with no transfer state, so it counts once in spending
@@ -104,13 +100,12 @@ from types import MappingProxyType
 from typing import Annotated, Final
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import bindparam, delete, func, insert, select, update
+from sqlalchemy import bindparam, func, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.contracts import Tiered
-from rheo_finance.decision import DecisionKind
 from rheo_finance.derive import crypto_edges
-from rheo_finance.derive.pair_decisions import LineDecision, line_decisions
+from rheo_finance.derive.pair_decisions import Decided, PairDecision
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.events import record_event
 from rheo_finance.parsers.base import CRYPTO_TRANSFER, FIAT
@@ -127,10 +122,8 @@ AUTO_KINDS: Final = {
     "own_one_sided": "own_one_sided",
     "conversion": "conversion",
 }
-# Stage 8's kind: counted, never auto-applied here (a decision may apply or delete it).
+# Stage 8's kind: counted, never auto-applied here (a decision may apply it).
 SETTLED: Final = "reversal"
-OWN_TRANSFER: Final = "own_transfer"
-ONE_SIDED: Final = "own_one_sided"
 DECISION_REF_TYPE: Final = "decision"
 FEE_KIND: Final = "own_transfer"
 CONVERSION: Final = "conversion"
@@ -171,7 +164,6 @@ class _Edge:
     ends: tuple[uuid.UUID, ...]
     spread: Decimal | None = None
     printed_fee: uuid.UUID | None = None
-    applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,8 +185,7 @@ class _Leg:
 def _edges(uow: UnitOfWork) -> list[_Edge]:
     rows = uow.execute(
         select(pair_edge.c.id, pair_edge.c.kind, pair_edge.c.a_txn_id,
-               pair_edge.c.b_txn_id, pair_edge.c.spread_cad, pair_edge.c.fee_txn_id,
-               pair_edge.c.applied)
+               pair_edge.c.b_txn_id, pair_edge.c.spread_cad, pair_edge.c.fee_txn_id)
     )  # fmt: skip
     return [
         _Edge(
@@ -203,7 +194,6 @@ def _edges(uow: UnitOfWork) -> list[_Edge]:
             tuple(end for end in (row.a_txn_id, row.b_txn_id) if end),
             row.spread_cad,
             row.fee_txn_id,
-            row.applied,
         )
         for row in rows
     ]
@@ -222,16 +212,18 @@ def _legs(uow: UnitOfWork, ids: set[uuid.UUID]) -> dict[uuid.UUID, _Leg]:
     return {row.id: _Leg(*row) for row in rows}
 
 
-def _fee(edge: _Edge, a: _Leg, b: _Leg) -> dict[str, object] | None:
-    """The derived fee txn of one applied fiat ``own_transfer``, or None when its legs
-    net to zero or cannot be measured (module docstring)."""
-    debit, credit = (a, b) if a.amount < 0 else (b, a)
+def _fee(key: uuid.UUID, legs: list[_Leg]) -> dict[str, object] | None:
+    """The derived fee txn of one movement: an applied fiat ``own_transfer``'s two
+    legs, or a decided ``pair``'s lines, the target first; None when they net to zero
+    or cannot be measured (module docstring). ``key`` is the edge its id derives from.
+    """
+    debit = next((leg for leg in legs if leg.amount < 0), legs[0])
     native: dict[str, object] = {
         "cad_source": "native", "rate": None, "rate_date": None,
         "conversion_state": "native",
     }  # fmt: skip
-    if debit.currency == credit.currency:
-        net = debit.amount + credit.amount
+    if len({leg.currency for leg in legs}) == 1:
+        net = sum((leg.amount for leg in legs), Decimal(0))
         currency = debit.currency
         if currency == CAD:
             cad: Decimal | None = net
@@ -245,8 +237,8 @@ def _fee(edge: _Edge, a: _Leg, b: _Leg) -> dict[str, object] | None:
             cad = None
             conversion = {"cad_source": None, "rate": None, "rate_date": None,
                           "conversion_state": "unconverted"}  # fmt: skip
-    elif debit.cad is not None and credit.cad is not None:
-        net = cad = debit.cad + credit.cad
+    elif all(leg.cad is not None for leg in legs):
+        net = cad = sum((leg.cad for leg in legs if leg.cad is not None), Decimal(0))
         currency = CAD
         conversion = native
     else:
@@ -254,7 +246,7 @@ def _fee(edge: _Edge, a: _Leg, b: _Leg) -> dict[str, object] | None:
     if net == 0:
         return None
     return {
-        "id": derived_id(debit.day, (FEE_ORIGIN, edge.id)),
+        "id": derived_id(debit.day, (FEE_ORIGIN, key)),
         "account_id": debit.account_id,
         "posting_date": debit.day,
         "recognition_date": debit.recognized,
@@ -293,144 +285,81 @@ def _conversion_fee(edge: _Edge, out: _Leg) -> dict[str, object] | None:
     }
 
 
-@dataclass(frozen=True)
-class _Decided:
-    """What the owner's decisions did to the stored edges (module docstring)."""
-
-    # Each decided edge, with the decision that applied it.
-    applied: list[tuple[_Edge, uuid.UUID]]
-    # The edges a decision joined by hand, not stored yet.
-    new: list[_Edge]
-    # The ids of the edges an ``unpair`` deleted.
-    deleted: set[uuid.UUID]
-    # The lines a ``pair`` took.
-    taken: set[uuid.UUID]
-
-
-def _by_hand(a: _Leg, b: _Leg) -> _Edge:
-    """The edge a ``pair`` decision joins two lines with when they have none."""
-    if a.account_id != b.account_id:
-        kind = OWN_TRANSFER
-    elif a.currency != b.currency:
-        kind = CONVERSION
-    else:
-        kind = SETTLED
-    if kind == SETTLED:
-        first, second = sorted((a, b), key=lambda leg: (leg.day, leg.id), reverse=True)
-    else:
-        first, second = (a, b) if a.amount < 0 else (b, a)
-    edge_id = derived_id(first.day, ("pair_edge", kind, first.id, second.id))
-    return _Edge(edge_id, kind, (first.id, second.id))
-
-
 def _decide(
-    uow: UnitOfWork, stored: list[_Edge], decisions: list[LineDecision]
-) -> _Decided:
-    """Apply the ``unpair`` decisions, then the ``pair`` decisions newest first, to the
-    stored edges (module docstring)."""
+    stored: list[_Edge], decided: Decided
+) -> list[tuple[PairDecision, list[_Edge]]]:
+    """Each ``pair`` decision that applies, with its edges in the order of its lines
+    (module docstring)."""
     by_ends: dict[frozenset[uuid.UUID], list[_Edge]] = defaultdict(list)
     for edge in stored:
         by_ends[frozenset(edge.ends)].append(edge)
-    deleted = {
-        edge.id
-        for each in decisions
-        if each.kind is DecisionKind.UNPAIR
-        for edge in by_ends.get(frozenset(each.lines), ())
-    }
-    pairs = [each for each in decisions if each.kind is DecisionKind.PAIR]
-    legs = _legs(uow, {line for each in pairs for line in each.lines})
-    decided = _Decided([], [], deleted, set())
-    for each in pairs:
-        if decided.taken & set(each.lines):
-            continue
-        target, *others = each.lines
-        chosen: list[tuple[_Edge, bool]] = []
-        for ends in [frozenset({target, other}) for other in others] or [
-            frozenset({target})
-        ]:
-            found = [e for e in by_ends.get(ends, ()) if e.id not in deleted]
-            if found:
-                # One edge per kind joins two lines; two kinds is the kind order's.
-                chosen.append((min(found, key=lambda e: (e.kind, e.id)), False))
-            elif len(ends) == 2:
-                chosen.append((_by_hand(*(legs[line] for line in sorted(ends))), True))
-            else:
+    found: list[tuple[PairDecision, list[_Edge]]] = []
+    for each in decided.pairs:
+        edges = []
+        for ends in each.edge_sets:
+            stored_here = by_ends.get(ends)
+            if not stored_here:
                 break
+            # One edge per kind joins two lines; two kinds is the kind order's.
+            edges.append(min(stored_here, key=lambda e: (e.kind, e.id)))
         else:
-            decided.taken.update(each.lines)
-            decided.applied.extend((edge, each.id) for edge, _ in chosen)
-            decided.new.extend(edge for edge, new in chosen if new)
-    return decided
+            found.append((each, edges))
+    return found
 
 
-def resolve(uow: UnitOfWork) -> None:
-    """Apply the owner's decisions, then the mutually unique edges, set the transfer
-    states and book the derived fee lines (module docstring)."""
+def resolve(uow: UnitOfWork, decided: Decided) -> None:
+    """Apply the owner's ``pair`` decisions, then the mutually unique edges, set the
+    transfer states and book the derived fee lines (module docstring)."""
     stored = _edges(uow)
-    decided = _decide(uow, stored, line_decisions(uow))
-    by_decision = {edge.id: decision_id for edge, decision_id in decided.applied}
-    # An edge a decision removed from the graph: deleted, or on a line a pair took.
-    out = [
-        edge
-        for edge in stored
-        if edge.id not in by_decision
-        and (edge.id in decided.deleted or decided.taken & set(edge.ends))
-    ]
-    gone = {edge.id for edge in out}
-    edges = [e for e in stored if e.id not in by_decision and e.id not in gone]
+    pairs = _decide(stored, decided)
+    by_decision = {edge.id: d.id for d, edges in pairs for edge in edges}
+    edges = [edge for edge in stored if edge.id not in by_decision]
     count: Counter[uuid.UUID] = Counter(end for edge in edges for end in edge.ends)
     automatic = [edge for edge in edges if edge.kind != SETTLED]
     applied = [
         edge
         for edge in automatic
         if edge.kind in AUTO_KINDS and all(count[end] == 1 for end in edge.ends)
-    ] + [edge for edge, _ in decided.applied]
+    ]
+    chosen = [edge for _, found in pairs for edge in found]
 
-    states: dict[uuid.UUID, tuple[str | None, str | None]] = {}
+    states: dict[uuid.UUID, tuple[str, str | None]] = {}
     for edge in automatic:
         for end in edge.ends:
             states.setdefault(end, ("ambiguous", None))
-    for edge in applied:
+    for edge in applied + chosen:
         for end in edge.ends:
             states[end] = ("paired", AUTO_KINDS.get(edge.kind, edge.kind))
     # Stage 9 left every labelled crypto line out of every pairing, so none is an end.
     for line_id in crypto_edges.labelled(uow):
         states[line_id] = ("paired", LABEL)
-    # A line that lost its reversal edges to a decision and has no edge left.
-    kept = {end for edge in edges if edge.kind == SETTLED for end in edge.ends}
-    for edge in out:
-        if edge.kind != SETTLED:
-            continue
-        for place, end in enumerate(edge.ends):
-            if end not in states and end not in kept:
-                states[end] = ("unresolved", None) if place == 0 else (None, None)
 
-    if decided.new:
-        uow.execute(
-            insert(pair_edge),
-            [
-                {
-                    "id": edge.id,
-                    "kind": edge.kind,
-                    "a_txn_id": edge.ends[0],
-                    "b_txn_id": edge.ends[1],
-                    "applied": False,
-                }
-                for edge in decided.new
-            ],
-        )
     fees: dict[uuid.UUID, dict[str, object]] = {}
-    paired_legs = [e for e in applied if e.kind == FEE_KIND and len(e.ends) == 2]
-    converted = [e for e in applied if e.kind == CONVERSION]
-    legs = _legs(uow, {end for edge in paired_legs + converted for end in edge.ends})
-    for edge in paired_legs:
+    transfers = [e for e in applied if e.kind == FEE_KIND and len(e.ends) == 2]
+    converted = [e for e in applied + chosen if e.kind == CONVERSION]
+    netted = [
+        (each, found)
+        for each, found in pairs
+        if all(e.kind == FEE_KIND and len(e.ends) == 2 for e in found)
+    ]
+    legs = _legs(
+        uow,
+        {end for edge in transfers + converted + chosen for end in edge.ends},
+    )
+    for edge in transfers:
         a, b = (legs[end] for end in edge.ends)
         if a.movement_kind == FIAT and b.movement_kind == FIAT:
-            fee = _fee(edge, a, b)
+            fee = _fee(edge.id, [a, b])
             if fee is not None:
                 fees[edge.id] = fee
+    for each, found in netted:
+        lines = [legs[line] for line in each.lines]
+        if all(line.movement_kind == FIAT for line in lines):
+            fee = _fee(found[0].id, lines)
+            if fee is not None:
+                fees[found[0].id] = fee
     for edge in converted:
-        # ``a_txn_id`` is the out-leg (stage 9, and ``_by_hand``).
+        # ``a_txn_id`` is the out-leg (stage 9).
         fee = _conversion_fee(edge, legs[edge.ends[0]])
         if fee is not None:
             fees[edge.id] = fee
@@ -456,7 +385,7 @@ def resolve(uow: UnitOfWork) -> None:
         if edge.kind == CONVERSION and edge.printed_fee is not None:
             naming[edge.printed_fee].add(edge.ends[0])
     shared = [fee for fee, outs in naming.items() if len(outs) > 1]
-    if applied:
+    if applied or chosen:
         uow.execute(
             update(pair_edge)
             .where(pair_edge.c.id == bindparam("b_id"))
@@ -478,15 +407,8 @@ def resolve(uow: UnitOfWork) -> None:
                         else None
                     ),
                 }
-                for edge in applied
+                for edge in applied + chosen
             ],
-        )
-    if decided.deleted:
-        uow.execute(delete(pair_edge).where(pair_edge.c.id.in_(decided.deleted)))
-    unapplied = [e.id for e in out if e.applied and e.id not in decided.deleted]
-    if unapplied:
-        uow.execute(
-            update(pair_edge).where(pair_edge.c.id.in_(unapplied)).values(applied=False)
         )
     if shared:
         uow.execute(

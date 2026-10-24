@@ -38,6 +38,16 @@ only: the bank prints no payee, or not the original one, on a reversal.
 Every candidate edge is stored in ``pair_edge`` (kind ``reversal``, ``a_txn_id`` the
 reversal, ``b_txn_id`` the original), applied or not. A re-sent payment is an ordinary
 line and counts once.
+
+**The owner's decisions** (``pair_decisions``, read before this stage). An edge
+joining exactly an ``unpair``'s two lines is never stored, so its lines group and
+resolve as if it had never been a candidate: a freed original is an ordinary line
+again and reaches stage 9. A line a ``pair`` took is an end of no edge but its
+decision's: the decision's edge is stored when it is a candidate, and when the
+decision joins two lines on one account, in one currency, of exactly opposite amounts
+that have no candidate edge, stage 8 stores that edge too (``a_txn_id`` the later
+line by posting date, then id). Stage 8 applies none of its decision's edges; stage
+11 applies them and states their lines.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ from sqlalchemy import bindparam, insert, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
+from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.parsers.base import FIAT
 from rheo_finance.reference.patterns import reversal_row_matches
@@ -138,17 +149,55 @@ def _candidate_edges(lines: list[_Line], window_days: int) -> list[_Edge]:
     return edges
 
 
+def _decided_edges(
+    lines: list[_Line], edges: list[_Edge], decided: Decided
+) -> list[_Edge]:
+    """The reversal-shaped edges the owner's ``pair`` decisions join that have no
+    candidate edge (module docstring)."""
+    by_id = {line.id: line for line in lines}
+    have = {frozenset((e.reversal.id, e.original.id)) for e in edges}
+    found: list[_Edge] = []
+    for ends in sorted(decided.joined - have, key=sorted):
+        if len(ends) != 2 or not ends <= by_id.keys():
+            continue
+        later, earlier = sorted(
+            (by_id[end] for end in ends),
+            key=lambda line: (line.day, line.id),
+            reverse=True,
+        )
+        if (
+            later.account_id == earlier.account_id
+            and later.currency == earlier.currency
+            and later.amount == -earlier.amount
+        ):
+            found.append(_Edge(later, earlier))
+    return found
+
+
 def pair_reversals(
-    uow: UnitOfWork, *, window_days: int, hint_rows: Sequence[TransferHintRow]
+    uow: UnitOfWork,
+    *,
+    window_days: int,
+    hint_rows: Sequence[TransferHintRow],
+    decided: Decided,
 ) -> None:
     """Store every reversal edge and set the reversal states (module docstring)."""
     lines = _lines(uow, hint_rows)
-    edges = _candidate_edges(lines, window_days)
+    edges = [
+        edge
+        for edge in _candidate_edges(lines, window_days)
+        if decided.allows((edge.reversal.id, edge.original.id))
+    ]
+    edges += _decided_edges(lines, edges, decided)
     states: dict[uuid.UUID, tuple[str, str | None]] = {
         line.id: ("unresolved", None) for line in lines if line.reversal
     }
     applied: set[_Edge] = set()
-    for group in pairing.groups(edges, lambda e: (e.reversal.id, e.original.id)):
+    # A decision's own edges are stage 11's to apply.
+    open_edges = [
+        e for e in edges if not {e.reversal.id, e.original.id} & decided.taken
+    ]
+    for group in pairing.groups(open_edges, lambda e: (e.reversal.id, e.original.id)):
         if len(group) == 1 and not group[0].same_day:
             applied.add(group[0])
             states[group[0].reversal.id] = ("paired", KIND)

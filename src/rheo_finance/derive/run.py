@@ -34,7 +34,9 @@ Order of work, set by what each step reads:
    recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
    which reads the periods, the lines and ``document_periods.csv``; then stage 7, the
    exclusions and the crypto movement kinds (``stage7``), which reads the own
-   addresses stage 2 stored and the ``include`` decisions; then stage 8, the
+   addresses stage 2 stored and the ``include`` decisions; then the owner's ``pair``
+   and ``unpair`` decisions are read once (``pair_decisions``) for stages 8, 9 and
+   11, which build and resolve the candidate graph around them; then stage 8, the
    reversals in both directions (``stage8``), which reads the lines' reversal wording
    and the ``reversal`` rows of ``transfer_hints.csv``; then stage 9, the fiat own
    transfer and same-account conversion candidate edges (``stage9``), which reads the
@@ -70,6 +72,7 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import (
     coverage,
     crypto_edges,
+    pair_decisions,
     stage1,
     stage2,
     stage3,
@@ -202,10 +205,12 @@ def run(
         today = local_today(ctx.clock, ctx.settings.timezone)
         months = coverage.build_coverage(uow, manual.document_periods.periods, today)
         stage7.attribute(uow)
+        decided = pair_decisions.read(uow)
         stage8.pair_reversals(
             uow,
             window_days=ctx.settings.get_int(stage8.WINDOW_KEY),
             hint_rows=manual.transfer_hints.rows,
+            decided=decided,
         )
         stage9.pair_transfers(
             uow,
@@ -219,6 +224,7 @@ def run(
                 pct=ctx.settings.get_decimal(stage9.SPREAD_KEY),
             ),
             hint_rows=manual.transfer_hints.rows,
+            decided=decided,
         )
         crypto_edges.pair_crypto(
             uow,
@@ -227,8 +233,9 @@ def run(
                 fee_pct=ctx.settings.get_decimal(crypto_edges.FEE_PCT_KEY),
                 epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
             ),
+            decided=decided,
         )
-        stage11.resolve(uow)
+        stage11.resolve(uow, decided)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

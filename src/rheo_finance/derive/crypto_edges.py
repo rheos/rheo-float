@@ -40,6 +40,13 @@ it: the line is ``paired`` with ``pair_kind = own_one_sided``, in no total and n
 disposal, and raises no ``finance.withdrawal.flagged``. When the receiving row loads,
 the next derive finds the ``own_transfer`` candidate instead and the line pairs two
 sided, with no decision.
+
+**The owner's decisions** (``pair_decisions``, read before stage 8). No edge joining
+exactly an ``unpair``'s lines is stored, and a line a ``pair`` took is an end of no
+edge but its decision's. A one-line ``pair`` of a withdrawal to an own address keeps
+only its ``own_one_sided`` edge. When two crypto lines (on two accounts) a ``pair``
+joins have no candidate edge, an ``own_transfer`` joins them whatever the TXIDs,
+figures or times say, ``a_txn_id`` the smaller quantity.
 """
 
 from __future__ import annotations
@@ -55,6 +62,7 @@ from sqlalchemy import and_, insert, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
+from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.manual.own_addresses import normalize_address
 from rheo_finance.parsers.base import CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED, FIAT
 from rheo_finance.storage.ids import derived_id
@@ -183,7 +191,7 @@ def _matches(out: _Line, into: _Line, tolerance: Tolerance) -> bool:
     return not out.fee_stated and 0 < short <= sent * tolerance.fee_pct / HUNDRED
 
 
-def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance) -> None:
+def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance, decided: Decided) -> None:
     """Store every crypto ``own_transfer`` and ``own_one_sided`` candidate edge
     (module docstring)."""
     lines = _lines(uow)
@@ -211,6 +219,7 @@ def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance) -> None:
             for into in deposits.get(out.code, ())
             if into.account_id != out.account_id
             and (destination is None or into.account_id == destination)
+            and decided.allows((out.id, into.id))
             and _matches(out, into, tolerance)
         ]
         edges += [
@@ -223,7 +232,7 @@ def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance) -> None:
             }
             for into in found
         ]
-        if not found and destination is not None:
+        if not found and destination is not None and decided.allows((out.id,)):
             edges.append(
                 {
                     "id": derived_id(out.day, ("pair_edge", ONE_SIDED, out.id)),
@@ -234,8 +243,35 @@ def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance) -> None:
                     "applied": False,
                 }
             )
+    edges += _decided(lines, edges, decided)
     if edges:
         uow.execute(
             insert(pair_edge),
             [{"b_account_id": None, **edge} for edge in edges],
         )
+
+
+def _decided(
+    lines: list[_Line], edges: list[dict[str, object]], decided: Decided
+) -> list[dict[str, object]]:
+    """The ``own_transfer`` edges of the owner's crypto ``pair`` decisions that have
+    no candidate edge (module docstring)."""
+    by_id = {line.id: line for line in lines}
+    have = {frozenset((edge["a_txn_id"], edge["b_txn_id"])) for edge in edges}
+    found: list[dict[str, object]] = []
+    for ends in sorted(decided.joined - have, key=sorted):
+        if len(ends) != 2 or not ends <= by_id.keys():
+            continue
+        out, into = sorted((by_id[end] for end in ends), key=lambda x: (x.amount, x.id))
+        if out.account_id == into.account_id:
+            continue
+        found.append(
+            {
+                "id": derived_id(out.day, ("pair_edge", KIND, out.id, into.id)),
+                "kind": KIND,
+                "a_txn_id": out.id,
+                "b_txn_id": into.id,
+                "applied": False,
+            }
+        )
+    return found

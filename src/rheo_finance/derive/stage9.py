@@ -94,6 +94,21 @@ out-leg's posting date. Lines on two accounts are never a conversion: the
   11 books no second fee line for that conversion. Two conversions with the same
   wording on one account and day can name the same line; stage 11 then lets neither
   keep it.
+
+**The owner's decisions** (``pair_decisions``, read before stage 8). No edge joining
+exactly an ``unpair``'s two lines is stored, and a line a ``pair`` took is an end of no
+edge but its decision's: those are dropped from the candidates before the equal-card
+tie-break and before the conversion legs are set aside. When two fiat lines a ``pair``
+joins have no candidate edge of any kind (stage 8's included), stage 9 stores one,
+whatever the tolerance, the window or the wording say:
+
+- on one account in two currencies, a ``conversion`` (``a_txn_id`` the smaller
+  amount, the out-leg) whose spread follows the rule above, with the in-leg's own CAD
+  value when no rate is stored for the conversion date, and whose printed fee line is
+  named by the rule above;
+- otherwise an ``own_transfer`` (``a_txn_id`` the smaller amount, the debit), across
+  two accounts or on one account in one currency (a reversal-shaped pair there is
+  stage 8's), so stage 11 books the difference as one fee line.
 """
 
 from __future__ import annotations
@@ -112,6 +127,7 @@ from sqlalchemy import bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
+from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.parsers.base import FIAT
@@ -446,31 +462,83 @@ def _conversions(
     return found
 
 
+def _decided(
+    uow: UnitOfWork,
+    lines: list[_Line],
+    found: set[frozenset[uuid.UUID]],
+    decided: Decided,
+) -> tuple[list[_Edge], list[_Conversion]]:
+    """The edges of the owner's fiat ``pair`` decisions that have no candidate edge
+    (module docstring); ``found`` holds the ends of every candidate edge so far."""
+    by_id = {line.id: line for line in lines}
+    fees = [line for line in lines if line.fee]
+    books: dict[str, RateBook] = {}
+    edges: list[_Edge] = []
+    conversions: list[_Conversion] = []
+    for ends in sorted(decided.joined - found, key=sorted):
+        if len(ends) != 2 or not ends <= by_id.keys():
+            continue
+        out, into = sorted(
+            (by_id[end] for end in ends), key=lambda leg: (leg.amount, leg.id)
+        )
+        if out.account_id == into.account_id and out.currency != into.currency:
+            into_cad = _in_cad(uow, books, into, out.day)
+            if into_cad is None:
+                into_cad = into.cad
+            residual = (
+                None if out.cad is None or into_cad is None else -out.cad - into_cad
+            )
+            conversions.append(
+                _Conversion(out, into, residual, _printed_fee(out, into, fees))
+            )
+        else:
+            edges.append(_Edge(out, into))
+    return edges, conversions
+
+
 def pair_transfers(
     uow: UnitOfWork,
     *,
     tolerance: Tolerance,
     spread: Spread,
     hint_rows: Sequence[TransferHintRow],
+    decided: Decided,
 ) -> None:
     """Store every fiat ``own_transfer`` and ``conversion`` candidate edge and set
     ``transfer_like`` and ``hint_account_id`` (module docstring)."""
     lines = _lines(uow, hint_rows)
     resolved = _resolver(uow)
     named = {line.id: _accounts(line.hint, resolved) for line in lines}
-    conversions = sorted(
-        _conversions(uow, lines, spread),
-        key=lambda c: (c.out.day, c.out.id, c.into.id),
-    )
+    conversions = [
+        c
+        for c in _conversions(uow, lines, spread)
+        if decided.allows((c.out.id, c.into.id))
+    ]
     converting = frozenset(leg.id for c in conversions for leg in (c.out, c.into))
+    candidates = {
+        edge
+        for edge in _candidate_edges(lines, named, tolerance, converting)
+        if decided.allows((edge.debit.id, edge.credit.id))
+    }
     edges = [
         edge
-        for group in pairing.groups(
-            _candidate_edges(lines, named, tolerance, converting),
-            lambda e: (e.debit.id, e.credit.id),
-        )
+        for group in pairing.groups(candidates, lambda e: (e.debit.id, e.credit.id))
         for edge in _thinned(group)
     ]
+    stored = {
+        frozenset(row)
+        for row in uow.execute(select(pair_edge.c.a_txn_id, pair_edge.c.b_txn_id))
+    }
+    found = (
+        stored
+        | {frozenset((e.debit.id, e.credit.id)) for e in edges}
+        | {frozenset((c.out.id, c.into.id)) for c in conversions}
+    )
+    own, converted = _decided(uow, lines, found, decided)
+    edges += own
+    conversions = sorted(
+        conversions + converted, key=lambda c: (c.out.day, c.out.id, c.into.id)
+    )
     edges.sort(key=lambda edge: (edge.debit.day, edge.debit.id, edge.credit.id))
     if edges:
         uow.execute(

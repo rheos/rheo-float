@@ -403,6 +403,38 @@ def test_a_card_paid_from_a_second_banks_chequing_gets_its_edge(
     assert card_hint == account_id("chequing")
 
 
+def test_hints_naming_accounts_without_a_candidate_on_both_ends_still_form_the_edge(
+    own: Ledger,
+) -> None:
+    # The debit's row names ``third`` (no line there), the card's payment wording the
+    # card issuer's bank (whose chequing account holds lines but no candidate). Each
+    # start falls back to every account, and neither end's hint filters the other's
+    # search, so the one edge forms.
+    own.manual(TRANSFER_HINTS_FILE, "sample card payment,out,third")
+    paid, arrived = D(2025, 6, 3), D(2025, 6, 4)
+    file_bank(own, *on(CSV_IDENTIFIER, (D(2025, 6, 1), "SAMPLE CAFE 99970",
+                                        Decimal("-4.00"))))  # fmt: skip
+    own.file(
+        "synthetic-fx/payment.txt",
+        fx_lines("CAD", "2025-06-03 -200.00 - - SAMPLE CARD PAYMENT 99971"),
+    )
+    file_card(own, (arrived, PAYMENT_RECEIVED, Decimal("200.00")))
+
+    own.derive()
+
+    assert edges(own) == [(paid, Decimal("-200.00"), arrived, Decimal("200.00"))]
+    rows = own.conn.execute(
+        select(txn.c.amount, txn.c.hint_account_id).where(
+            txn.c.amount.in_([Decimal("-200.00"), Decimal("200.00")])
+        )
+    )
+    hints = {row.amount: row.hint_account_id for row in rows}
+    assert hints == {
+        Decimal("-200.00"): account_id("third"),
+        Decimal("200.00"): account_id("chequing"),
+    }
+
+
 # --- what is never a candidate --------------------------------------------------------
 
 

@@ -482,3 +482,36 @@ def test_the_original_of_a_same_day_reversal_is_not_made_ambiguous(
         select(pair_edge.c.applied).where(pair_edge.c.kind == "reversal")
     ).all()
     assert reversal == [False]
+
+
+def test_a_same_day_reversal_edge_and_a_card_candidate_leave_both_ambiguous(
+    ledger: Ledger,
+) -> None:
+    # Uniqueness counts every kind together: the payment is the original a same-day
+    # reversal names (stage 8's edge, not applied) and the card credit's one transfer
+    # candidate. Two edges on the payment, so the transfer edge does not apply.
+    register(ledger, CHEQUING, VISA)
+    day, arrived = D(2025, 6, 2), D(2025, 6, 4)
+    ledger.file(
+        "vancity/export.csv",
+        export(
+            (CSV_IDENTIFIER, day, BILL_PAYMENT, Decimal("-200.00")),
+            (CSV_IDENTIFIER, day, OUTGOING.reversal, Decimal("200.00")),
+        ),
+    )
+    ledger.file(
+        "vancity-visa/2025-06-30.csv",
+        visa_export((arrived, PAYMENT_RECEIVED, Decimal("200.00"))),
+    )
+
+    ledger.derive()
+
+    assert states(ledger) == [
+        (day, Decimal("-200.00"), "ambiguous", None),
+        (day, Decimal("200.00"), "ambiguous", None),
+        (arrived, Decimal("200.00"), "ambiguous", None),
+    ]
+    assert applied(ledger) == [False]
+    assert not ledger.conn.scalar(select(pair_edge.c.applied).where(
+        pair_edge.c.kind == "reversal"))  # fmt: skip
+    assert income(ledger) == spending(ledger) == Decimal("0.00")

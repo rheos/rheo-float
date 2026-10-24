@@ -33,6 +33,7 @@ from .crypto_support import (
     crypto_document,
 )
 from .support import Ledger
+from .test_crypto_keys import with_zone
 
 T0 = dt.datetime(2025, 6, 10, 12, 0, tzinfo=dt.UTC)
 EXCHANGE = f"ACCOUNT {EXCHANGE_ID}"
@@ -435,3 +436,34 @@ def test_a_labelled_deposit_is_no_candidate(crypto_ledger: Ledger) -> None:
         ("paired", "own_transfer"),
         ("paired", "own_transfer"),
     ]
+
+
+def test_crypto_edge_ids_do_not_move_with_the_time_zone(crypto_ledger: Ledger) -> None:
+    # Late in the UTC day, so the local posting date differs between the two zones.
+    # An edge id, like a line's, is keyed to the UTC date: a zone change re-keys none.
+    ledger = crypto_ledger
+    late = "2025-03-10T03:30:00+00:00"
+    ledger.manual(OWN_ADDRESSES_FILE, f"vault,{OWN_VAULT}")
+    three_accounts(ledger)
+    file(
+        ledger,
+        "exchange.txt",
+        EXCHANGE,
+        f"MOVE at={late} asset=ETH qty=-0.5 type=Withdrawal hint=1",
+        f"MOVE at={late} asset=SOL qty=-4 type=Withdrawal to={OWN_VAULT}",
+    )
+    file(ledger, "wallet.txt", WALLET, f"MOVE at={late} asset=ethereum qty=0.5")
+    ledger.derive()
+    before = set(ledger.conn.scalars(select(pair_edge.c.id)))
+    dates = set(ledger.conn.scalars(select(txn.c.posting_date)))
+
+    with_zone(ledger, "Asia/Tokyo")
+    ledger.derive()
+
+    # The control: the posting dates moved, and both kinds of edge are there.
+    assert set(ledger.conn.scalars(select(txn.c.posting_date))).isdisjoint(dates)
+    assert sorted(ledger.conn.scalars(select(pair_edge.c.kind))) == [
+        "own_one_sided",
+        "own_transfer",
+    ]
+    assert set(ledger.conn.scalars(select(pair_edge.c.id))) == before

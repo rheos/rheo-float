@@ -27,8 +27,9 @@ deposit of the same asset code on another account:
   ``manual.own_addresses.normalize_address`` holds it), only on that address's
   account.
 
-``a_txn_id`` is the withdrawal, ``b_txn_id`` the deposit. A crypto pair books no
-derived fee line (stage 11 makes those for fiat legs only).
+``a_txn_id`` is the withdrawal, ``b_txn_id`` the deposit. An edge's id is derived on
+the UTC date of the withdrawal's time, never its local posting date. A crypto pair
+books no derived fee line (stage 11 makes those for fiat legs only).
 
 **``own_one_sided``** (edge case 77). A withdrawal whose destination is an own address
 of account X and that has no ``own_transfer`` candidate (X's rows are not loaded, or
@@ -92,6 +93,8 @@ class _Line:
     code: str
     amount: Decimal
     at: dt.datetime
+    # The UTC date of ``at``: edge ids are keyed to it, as line ids are (stage 3), so
+    # a change of ``finance.locale.timezone`` re-keys no edge.
     day: dt.date
     txid: str | None
     to_address: str | None
@@ -132,7 +135,6 @@ def _lines(uow: UnitOfWork) -> list[_Line]:
             txn.c.currency,
             txn.c.amount,
             txn.c.occurred_at,
-            txn.c.posting_date,
             txn.c.txid,
             txn.c.to_address,
             txn.c.movement_kind,
@@ -157,7 +159,7 @@ def _lines(uow: UnitOfWork) -> list[_Line]:
             code=row.currency,
             amount=row.amount,
             at=row.occurred_at,
-            day=row.posting_date,
+            day=row.occurred_at.astimezone(dt.UTC).date(),
             txid=row.txid,
             to_address=row.to_address,
             kind=row.movement_kind,

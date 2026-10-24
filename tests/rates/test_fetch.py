@@ -351,6 +351,42 @@ def test_a_short_legacy_reply_covers_only_the_days_it_showed(
     }
 
 
+def test_an_open_series_covers_only_to_its_latest_observation(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+) -> None:
+    # A line on the fetch day; the open FX series' reply ends the day before. That
+    # day is within LOOKBACK_DAYS of the requested end, but only a closed series
+    # extends across such days: the fetch day's rate is simply not published yet.
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines("USD", "2026-01-15 -10.00 - - SAMPLE SHOP 99961"),
+    )
+    fx_ledger.derive()
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+    valet_stub.reply(
+        "/valet/observations/FXUSDCAD/json",
+        body=valet_reply("FXUSDCAD", [("2026-01-14", "1.3900")]),
+    )
+
+    fetch(fx_ledger)
+
+    assert requested(valet_stub) == [
+        (
+            "/valet/observations/FXUSDCAD/json",
+            {"start_date": "2026-01-08", "end_date": "2026-01-15"},
+        )
+    ]
+    assert coverage(fx_ledger) == [
+        ("FXUSDCAD", dt.date(2026, 1, 8), dt.date(2026, 1, 14)),
+    ]
+    fx_ledger.derive()
+    assert fx_ledger.conn.scalar(select(txn.c.conversion_state)) == "unconverted"
+
+
 def test_from_and_to_bound_every_series_of_the_set(
     usd_ledger: Ledger,
     valet_stub: StubServer,

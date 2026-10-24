@@ -77,7 +77,7 @@ PINNED = {
         "45a2d6547d37f13f7e71ad5d8e7b4ffafa53b927c41beb80f5a4fa60441a07ee"
     ),
     "0016_rates.py": (
-        "ebe87859a7418df747650c66ca7888192604fdf6f6ba11ed9ef92565b27615f8"
+        "d7e8a2208f9e393a68e9cc8699550b306e2629bdbe323d8840d645dcd1172790"
     ),
 }
 

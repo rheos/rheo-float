@@ -10,8 +10,10 @@ it. ``source`` is ``boc`` today; ``kraken`` is the crypto source the spec names 
 later phase.
 
 ``rate_coverage`` holds, per series, each range a fetch covered: from the requested
-start to the latest observation the reply returned (to the requested end for a closed
-series, one that publishes nothing more for that range). A day inside a covered range
+start to the latest observation the reply returned. A closed series (one that
+publishes nothing more for that range) is covered to the requested end only when that
+latest observation lies within the fetch's lookback window (7 days) of the end; a
+reply with no observation records no row, closed or not. A day inside a covered range
 with no ``rate`` row is a day the series published nothing, so stage 4 may carry the
 last observation over it; a day outside every covered range was never fetched, and a
 line there waits. Both tables are state and inputs of stage 4. No reader grant: report

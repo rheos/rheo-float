@@ -8,8 +8,9 @@ Its parts:
 - ``manual``: the sha256 of each manual file (``absent`` for a missing one);
 - ``decisions``: the newest decision's id and the count (a decision's items and
   targets are written with it and never change);
-- ``rates``: the count of stored rates and the newest ``fetched_at``, so a fetch that
-  stores a rate makes the next derive convert again rather than reuse its result;
+- ``rates``: the count and newest ``fetched_at`` of the stored rates and of the fetch
+  coverage, so a fetch that stores a rate or covers a range makes the next derive
+  convert again rather than reuse its result;
 - ``settings``: ``settings.settings_hash``;
 - ``parsers``: every registered parser's id, issuer, format and version, the
   installed ``doc-extraction-api`` (``docextract_adapter.docextract_version``), and
@@ -56,7 +57,7 @@ from rheo_finance.parsers import docextract_adapter
 from rheo_finance.parsers.registry import load_parsers
 from rheo_finance.reference import patterns
 from rheo_finance.settings import settings_hash
-from rheo_finance.storage.schema import decision, rate
+from rheo_finance.storage.schema import decision, rate, rate_coverage
 
 ABSENT = "absent"
 
@@ -66,6 +67,7 @@ STATE_PARTS: Final[Mapping[str, str]] = {
     "decision_item": "decisions",
     "decision_target": "decisions",
     "rate": "rates",
+    "rate_coverage": "rates",
     "document": "archive",
     "archive_skip": "archive",
 }
@@ -124,10 +126,13 @@ def _decisions(uow: UnitOfWork) -> str:
 
 
 def _rates(uow: UnitOfWork) -> str:
-    count, newest = uow.execute(
-        select(func.count(), func.max(rate.c.fetched_at)).select_from(rate)
-    ).one()
-    return _sha([int(count or 0), None if newest is None else newest.isoformat()])
+    found: list[object] = []
+    for table in (rate, rate_coverage):
+        count, newest = uow.execute(
+            select(func.count(), func.max(table.c.fetched_at)).select_from(table)
+        ).one()
+        found += [int(count or 0), None if newest is None else newest.isoformat()]
+    return _sha(found)
 
 
 def _parsers() -> str:

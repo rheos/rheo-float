@@ -18,18 +18,18 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from derive.support import Ledger, fx_lines
 from rheo_finance import catalogue, composition, operations
 from rheo_finance.cli.main import main
 from rheo_finance.contracts import Role
-from rheo_finance.rates import valet
+from rheo_finance.rates import LEGACY_NOON_SERIES, valet
 from rheo_finance.rates.valet import FetchOut
 from rheo_finance.sinks.gate import is_enabled
 from rheo_finance.sinks.ops import Preview
 from rheo_finance.sinks.spec import spec_digest
-from rheo_finance.storage.schema import rate, txn
+from rheo_finance.storage.schema import rate, rate_coverage, txn
 
 from .conftest import valet_reply
 
@@ -65,6 +65,17 @@ def requested(stub: StubServer) -> list[tuple[str, dict[str, str]]]:
         parts = urlsplit(each.path)
         found.append((parts.path, dict(parse_qsl(parts.query))))
     return found
+
+
+def coverage(ledger: Ledger) -> list[tuple[str, dt.date, dt.date]]:
+    rows = ledger.conn.execute(
+        select(
+            rate_coverage.c.series,
+            rate_coverage.c.covered_from,
+            rate_coverage.c.covered_to,
+        ).order_by(rate_coverage.c.series, rate_coverage.c.covered_from)
+    )
+    return [(row.series, row.covered_from, row.covered_to) for row in rows]
 
 
 def approve_current(ledger: Ledger, approve: Approve) -> None:
@@ -126,16 +137,16 @@ def test_with_an_approval_it_sends_one_request_per_series_and_stores_the_rates(
     out = fetch(fx_ledger)
 
     assert (out.enabled, out.requests, out.stored, out.failed) == (True, 2, 3, 0)
-    # From RATE_GAP_DAYS before each currency's earliest line to the fetch day (the
+    # From LOOKBACK_DAYS before each currency's earliest line to the fetch day (the
     # fake clock's local date).
     assert sorted(requested(valet_stub)) == [
         (
             "/valet/observations/FXEURCAD/json",
-            {"start_date": "2025-12-06", "end_date": "2026-01-15"},
+            {"start_date": "2025-12-04", "end_date": "2026-01-15"},
         ),
         (
             "/valet/observations/FXUSDCAD/json",
-            {"start_date": "2025-12-05", "end_date": "2026-01-15"},
+            {"start_date": "2025-12-03", "end_date": "2026-01-15"},
         ),
     ]
     rows = fx_ledger.conn.execute(select(rate).order_by(rate.c.base, rate.c.rate_date))
@@ -147,6 +158,12 @@ def test_with_an_approval_it_sends_one_request_per_series_and_stores_the_rates(
     assert set(fx_ledger.conn.scalars(select(rate.c.fetched_at))) == {
         fx_ledger.ctx.clock.now_utc()
     }
+    # Each series is covered from the requested start to the latest observation the
+    # reply returned, not to the fetch day: the days after are not published yet.
+    assert coverage(fx_ledger) == [
+        ("FXEURCAD", dt.date(2025, 12, 4), dt.date(2025, 12, 11)),
+        ("FXUSDCAD", dt.date(2025, 12, 3), dt.date(2025, 12, 11)),
+    ]
 
     # The next derive converts with them; a second fetch needs nothing.
     fx_ledger.derive()
@@ -177,7 +194,7 @@ def test_an_eur_line_widens_the_spec_and_stales_a_usd_only_approval(
     after = preview(usd_ledger)
     assert [item.key for item in after.items] == ["FXEURCAD", "FXUSDCAD"]
     assert after.spec_digest != before.spec_digest
-    assert "series FXEURCAD: currency EUR; start_date 2025-12-06" in after.text
+    assert "series FXEURCAD: currency EUR; start_date 2025-12-04" in after.text
     assert "end_date 2026-01-15 (the fetch day)" in after.text
     assert is_enabled(usd_ledger.uow, "rates") is False
     out = fetch(usd_ledger)
@@ -205,15 +222,15 @@ def test_a_2016_line_asks_the_legacy_noon_series_up_to_the_day_before_fx_begins(
     fx_ledger.derive()
     items = {item.key: dict(item.fields) for item in preview(fx_ledger).items}
     assert items == {
-        valet.LEGACY_NOON_SERIES["USD"]: {
+        LEGACY_NOON_SERIES["USD"]: {
             "currency": "USD",
-            "start_date": "2016-12-23",
+            "start_date": "2016-12-21",
             "end_date": "2017-01-02",
         }
     }
     sink_settings(rates=True)
     approve_current(fx_ledger, record_sink_approval)
-    legacy = valet.LEGACY_NOON_SERIES["USD"]
+    legacy = LEGACY_NOON_SERIES["USD"]
     valet_stub.reply(
         f"/valet/observations/{legacy}/json",
         body=valet_reply(legacy, [("2016-12-28", "1.3500"), ("2016-12-30", "1.3400")]),
@@ -224,19 +241,23 @@ def test_a_2016_line_asks_the_legacy_noon_series_up_to_the_day_before_fx_begins(
     assert requested(valet_stub) == [
         (
             f"/valet/observations/{legacy}/json",
-            {"start_date": "2016-12-23", "end_date": "2017-01-02"},
+            {"start_date": "2016-12-21", "end_date": "2017-01-02"},
         )
     ]
     fx_ledger.derive()
     states = fx_ledger.conn.execute(
         select(txn.c.description_norm, txn.c.conversion_state)
     )
-    # The second line needs a later observation to prove the holiday: the FX series
-    # has none stored yet, so it waits.
+    # The legacy series is closed, so its coverage runs to the requested end: the
+    # holiday on its last day converts at the business day before, with no FX
+    # coverage needed.
     assert dict(tuple(row) for row in states) == {
         "sample shop 99953": "converted",
-        "sample shop 99954": "unconverted",
+        "sample shop 99954": "converted",
     }
+    assert coverage(fx_ledger) == [
+        (legacy, dt.date(2016, 12, 21), dt.date(2017, 1, 2)),
+    ]
 
 
 def test_from_and_to_bound_every_series_of_the_set(
@@ -256,10 +277,62 @@ def test_from_and_to_bound_every_series_of_the_set(
             {"start_date": "2017-01-03", "end_date": "2025-12-31"},
         ),
         (
-            f"/valet/observations/{valet.LEGACY_NOON_SERIES['USD']}/json",
+            f"/valet/observations/{LEGACY_NOON_SERIES['USD']}/json",
             {"start_date": "2016-06-01", "end_date": "2017-01-02"},
         ),
     ]
+
+
+def test_a_late_line_in_a_gap_between_fetches_is_planned_then_converted(
+    fx_ledger: Ledger,
+    valet_stub: StubServer,
+    sink_settings: Callable[..., None],
+    record_sink_approval: Approve,
+) -> None:
+    # Two earlier fetches left a Monday and the Monday two weeks on, with the days
+    # between never fetched; then a Wednesday line arrives.
+    fx_ledger.conn.execute(
+        insert(rate),
+        [
+            {"rate_date": day, "base": "USD", "quote": "CAD", "rate": Decimal(v),
+             "source": "boc", "fetched_at": T0}
+            for day, v in ((dt.date(2025, 12, 1), "1.3000"),
+                           (dt.date(2025, 12, 15), "1.3200"))
+        ],
+    )  # fmt: skip
+    fx_ledger.conn.execute(
+        insert(rate_coverage),
+        [
+            {"series": "FXUSDCAD", "source": "boc", "covered_from": first,
+             "covered_to": last, "fetched_at": T0}
+            for first, last in ((dt.date(2025, 11, 24), dt.date(2025, 12, 1)),
+                                (dt.date(2025, 12, 15), dt.date(2025, 12, 15)))
+        ],
+    )  # fmt: skip
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines("USD", "2025-12-03 -10.00 - - SAMPLE SHOP 99957"),
+    )
+    fx_ledger.derive()
+    assert fx_ledger.conn.scalar(select(txn.c.conversion_state)) == "unconverted"
+    items = {item.key: dict(item.fields) for item in preview(fx_ledger).items}
+    assert items == {"FXUSDCAD": {"currency": "USD", "start_date": "2025-11-26"}}
+
+    sink_settings(rates=True)
+    approve_current(fx_ledger, record_sink_approval)
+    valet_stub.reply(
+        "/valet/observations/FXUSDCAD/json",
+        body=valet_reply(
+            "FXUSDCAD", [("2025-12-02", "1.3100"), ("2025-12-03", "1.3150")]
+        ),
+    )
+    fetch(fx_ledger)
+    fx_ledger.derive()
+
+    row = fx_ledger.conn.execute(
+        select(txn.c.rate, txn.c.rate_date, txn.c.conversion_state)
+    ).one()
+    assert tuple(row) == (Decimal("1.3150"), dt.date(2025, 12, 3), "converted")
 
 
 # --- failures -------------------------------------------------------------------------
@@ -377,5 +450,5 @@ def test_finance_rate_fetch_reports_counts_when_approved(
     assert out.splitlines()[0] == (
         "finance rate fetch: 1 request(s) sent, 1 rate(s) stored, 0 failed."
     )
-    assert "FXUSDCAD (USD) 2025-12-05 to 2025-12-31: stored 1 of 1 received." in out
+    assert "FXUSDCAD (USD) 2025-12-03 to 2025-12-31: stored 1 of 1 received." in out
     assert "1.3725" not in out

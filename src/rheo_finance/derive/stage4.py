@@ -9,10 +9,10 @@ Every txn gets ``cad_amount``, ``cad_source``, ``rate``, ``rate_date`` and
   (``document_line.stated_cad``) uses that amount, source ``issuer``, ``converted``;
   the rate stored is the one it implies, on the line's date. It is never re-converted.
 - Any other fiat txn uses the stored Bank of Canada rate of the last business day on or
-  before its date (``rates.Observations.on_or_before``; the date is the transaction
-  date, else the posting date), source ``boc``, ``converted``. With no usable rate it
-  is ``unconverted``, with no CAD amount, and stays out of every CAD total
-  (``ledger.totals.cad_total`` counts it).
+  before its date (``rates.RateBook.on_or_before``: only across days a fetch covered;
+  the date is the transaction date, else the posting date), source ``boc``,
+  ``converted``. With no usable rate it is ``unconverted``, with no CAD amount, and
+  stays out of every CAD total (``ledger.totals.cad_total`` counts it).
 - A crypto txn is ``unconverted`` until the crypto price sources land.
 
 Each converted amount rounds half-even to the cent on its own line; totals are sums of
@@ -28,7 +28,7 @@ from typing import Final
 from sqlalchemy import and_, bindparam, func, select, update
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.rates import QUOTE_CAD, SOURCE_BOC, Observations, stored
+from rheo_finance.rates import QUOTE_CAD, SOURCE_BOC, RateBook, rate_book
 from rheo_finance.storage.schema import document_line, txn, txn_source
 
 CENT: Final = Decimal("0.01")
@@ -76,7 +76,7 @@ def convert(uow: UnitOfWork) -> None:
         )
         .outerjoin(document_line, document_line.c.id == txn_source.c.document_line_id)
     ).all()
-    series: dict[str, Observations] = {}
+    books: dict[str, RateBook] = {}
     values: list[dict[str, object]] = []
     for row in rows:
         amount: Decimal = row.amount
@@ -97,9 +97,9 @@ def convert(uow: UnitOfWork) -> None:
                 )
             )
         else:
-            if row.currency not in series:
-                series[row.currency] = stored(uow, row.currency)
-            found = series[row.currency].on_or_before(row.day)
+            if row.currency not in books:
+                books[row.currency] = rate_book(uow, row.currency)
+            found = books[row.currency].on_or_before(row.day)
             if found is None:
                 values.append(_converted(row.id, None, None, None, None, "unconverted"))
             else:

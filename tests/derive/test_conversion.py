@@ -1,9 +1,9 @@
 """Derivation stage 4, conversion to CAD, and ``ledger.totals.cad_total`` (FR-14,
 AC-15).
 
-Seams: ``derive.run`` over ``FX_LINES`` documents with rates stored in ``rate`` (as a
-fetch leaves them), read back from ``txn``; ``cad_total`` over the derived txns. Every
-date, amount and rate is invented.
+Seams: ``derive.run`` over ``FX_LINES`` documents with rates stored in ``rate`` and the
+fetched ranges in ``rate_coverage`` (as a fetch leaves them), read back from ``txn``;
+``cad_total`` over the derived txns. Every date, amount and rate is invented.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ from decimal import Decimal
 from sqlalchemy import insert, select
 
 from rheo_finance.ledger.totals import cad_total
-from rheo_finance.storage.schema import rate, txn
+from rheo_finance.rates import LEGACY_NOON_SERIES
+from rheo_finance.storage.schema import rate, rate_coverage, txn
 
 from .support import NOW, Ledger, fx_lines
 
 D = dt.date
+LEFT_OUT = (None, None, None, None, "unconverted")
 
 
 def store_rates(ledger: Ledger, base: str, *rows: tuple[dt.date, str]) -> None:
@@ -34,6 +36,22 @@ def store_rates(ledger: Ledger, base: str, *rows: tuple[dt.date, str]) -> None:
                 "fetched_at": NOW,
             }
             for day, value in rows
+        ],
+    )
+
+
+def cover(ledger: Ledger, series: str, *ranges: tuple[dt.date, dt.date]) -> None:
+    ledger.conn.execute(
+        insert(rate_coverage),
+        [
+            {
+                "series": series,
+                "source": "boc",
+                "covered_from": first,
+                "covered_to": last,
+                "fetched_at": NOW,
+            }
+            for first, last in ranges
         ],
     )
 
@@ -58,6 +76,7 @@ def test_a_usd_line_converts_at_the_stored_rate_of_its_day_half_even(
     store_rates(
         fx_ledger, "USD", (D(2025, 12, 10), "1.3725"), (D(2025, 12, 11), "1.3800")
     )
+    cover(fx_ledger, "FXUSDCAD", (D(2025, 12, 3), D(2025, 12, 11)))
     fx_ledger.file(
         "synthetic-fx/usd.txt",
         fx_lines("USD", "2025-12-10 -10.00 - - SAMPLE SHOP 99941"),
@@ -75,12 +94,13 @@ def test_a_usd_line_converts_at_the_stored_rate_of_its_day_half_even(
     )
 
 
-def test_a_weekend_line_takes_the_last_business_day_before_it(
+def test_a_weekend_line_inside_a_covered_range_takes_the_business_day_before(
     fx_ledger: Ledger,
 ) -> None:
     store_rates(
         fx_ledger, "USD", (D(2025, 12, 12), "1.3500"), (D(2025, 12, 15), "1.4000")
     )
+    cover(fx_ledger, "FXUSDCAD", (D(2025, 12, 6), D(2025, 12, 15)))
     fx_ledger.file(
         "synthetic-fx/usd.txt",
         fx_lines("USD", "2025-12-13 -100.00 - - SAMPLE SHOP 99942"),
@@ -97,39 +117,72 @@ def test_a_weekend_line_takes_the_last_business_day_before_it(
     )
 
 
-def test_a_line_with_no_usable_rate_is_unconverted_and_counted_beside_the_total(
+def test_adjacent_covered_ranges_carry_a_rate_across_their_join(
     fx_ledger: Ledger,
 ) -> None:
+    # Two fetches: the first covered to Sunday, the second from the Monday holiday.
+    store_rates(
+        fx_ledger, "USD", (D(2025, 12, 5), "1.3500"), (D(2025, 12, 9), "1.3600")
+    )
+    cover(
+        fx_ledger,
+        "FXUSDCAD",
+        (D(2025, 11, 28), D(2025, 12, 7)),
+        (D(2025, 12, 8), D(2025, 12, 9)),
+    )
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines("USD", "2025-12-08 -10.00 - - SAMPLE SHOP 99955"),
+    )
+
+    fx_ledger.derive()
+
+    assert converted(fx_ledger)["sample shop 99955"][2:] == (
+        Decimal("1.3500"),
+        D(2025, 12, 5),
+        "converted",
+    )
+
+
+def test_a_line_in_a_gap_or_after_the_last_observation_is_unconverted_and_counted(
+    fx_ledger: Ledger,
+) -> None:
+    # Two fetches two weeks apart, each returning one Monday: the days between were
+    # never fetched.
     store_rates(
         fx_ledger,
         "USD",
         (D(2025, 12, 1), "1.3000"),
-        (D(2025, 12, 20), "1.3100"),
-        (D(2025, 12, 22), "1.3200"),
+        (D(2025, 12, 15), "1.3200"),
+    )
+    cover(
+        fx_ledger,
+        "FXUSDCAD",
+        (D(2025, 11, 24), D(2025, 12, 1)),
+        (D(2025, 12, 8), D(2025, 12, 15)),
     )
     fx_ledger.file(
         "synthetic-fx/usd.txt",
         fx_lines(
             "USD",
-            # Nine days after the last rate before it: a hole, not a weekend.
-            "2025-12-10 -10.00 - - SAMPLE SHOP 99943",
-            # After the newest stored rate: not fetched yet.
-            "2025-12-23 -20.00 - - SAMPLE SHOP 99944",
-            "2025-12-22 -30.00 - - SAMPLE SHOP 99945",
+            # The Wednesday after the first Monday: in the gap.
+            "2025-12-03 -10.00 - - SAMPLE SHOP 99943",
+            # After the latest observation fetched.
+            "2025-12-16 -20.00 - - SAMPLE SHOP 99944",
+            "2025-12-15 -30.00 - - SAMPLE SHOP 99945",
         ),
     )
     fx_ledger.file(
         "synthetic-fx/eur.txt",
-        fx_lines("EUR", "2025-12-22 -40.00 - - SAMPLE SHOP 99946"),
+        fx_lines("EUR", "2025-12-15 -40.00 - - SAMPLE SHOP 99946"),
     )
 
     fx_ledger.derive()
 
     found = converted(fx_ledger)
-    left_out = (None, None, None, None, "unconverted")
-    assert found["sample shop 99943"] == left_out
-    assert found["sample shop 99944"] == left_out
-    assert found["sample shop 99946"] == left_out  # no EUR rate at all
+    assert found["sample shop 99943"] == LEFT_OUT
+    assert found["sample shop 99944"] == LEFT_OUT
+    assert found["sample shop 99946"] == LEFT_OUT  # no EUR rate at all
     assert found["sample shop 99945"][0] == Decimal("-39.60")
     total = cad_total(fx_ledger.uow)
     assert total.sum == Decimal("-39.60")
@@ -140,8 +193,29 @@ def test_a_line_with_no_usable_rate_is_unconverted_and_counted_beside_the_total(
     assert (usd.sum, usd.unconverted_count) == (Decimal("-39.60"), 2)
 
 
+def test_a_line_on_the_last_legacy_days_needs_only_legacy_coverage(
+    fx_ledger: Ledger,
+) -> None:
+    legacy = LEGACY_NOON_SERIES["USD"]
+    store_rates(fx_ledger, "USD", (D(2016, 12, 30), "1.3400"))
+    cover(fx_ledger, legacy, (D(2016, 12, 23), D(2017, 1, 2)))
+    fx_ledger.file(
+        "synthetic-fx/usd.txt",
+        fx_lines("USD", "2017-01-02 -10.00 - - SAMPLE SHOP 99956"),
+    )
+
+    fx_ledger.derive()
+
+    assert converted(fx_ledger)["sample shop 99956"][2:] == (
+        Decimal("1.3400"),
+        D(2016, 12, 30),
+        "converted",
+    )
+
+
 def test_an_issuer_stated_cad_amount_is_never_re_converted(fx_ledger: Ledger) -> None:
     store_rates(fx_ledger, "USD", (D(2025, 12, 10), "1.5000"))
+    cover(fx_ledger, "FXUSDCAD", (D(2025, 12, 3), D(2025, 12, 10)))
     # A card line billed in CAD for a USD purchase, and a USD line whose issuer
     # states the CAD amount.
     fx_ledger.file(

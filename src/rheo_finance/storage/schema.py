@@ -123,7 +123,7 @@ _tiers(
     },
 )  # fmt: skip
 
-# --- stored exchange rates (state, an input of stage 4; migration 0016) ---------------
+# --- stored exchange rates and fetch coverage (state, inputs of stage 4; 0016) -------
 
 rate = Table(
     "rate",
@@ -141,6 +141,23 @@ _tiers(
     rate,
     {"rate_date": P, "base": P, "quote": P, "rate": R, "source": P, "fetched_at": P},
 )
+
+rate_coverage = Table(
+    "rate_coverage",
+    metadata,
+    Column("series", Text, primary_key=True),
+    Column("source", Text, primary_key=True),
+    Column("covered_from", Date, primary_key=True),
+    Column("covered_to", Date, primary_key=True),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+_tiers(
+    rate_coverage,
+    {
+        "series": P, "source": P, "covered_from": P, "covered_to": P,
+        "fetched_at": P,
+    },
+)  # fmt: skip
 
 # --- sink specs (derived, stage 16; migration 0003) -----------------------------------
 

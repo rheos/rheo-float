@@ -3,7 +3,9 @@
 **The series.** One ``FX<CCY>CAD`` daily series per fiat currency other than CAD
 present in ``txn`` (``currencies``), each observation the CAD price of one unit. The
 ``FX`` series start on ``FX_SERIES_START``; a line dated before that uses the legacy
-noon series named in ``LEGACY_NOON_SERIES`` (USD only), fetched up to the day before.
+noon series named in ``rates.LEGACY_NOON_SERIES`` (USD only), fetched up to the day
+before. Which series a date belongs to, and the rule for a usable rate, are in
+``rates``.
 
 **The spec.** ``spec`` is the sink's ``SinkSpec`` provider: the Valet host, one GET
 template (``/valet/observations/:series/json`` with query keys ``start_date`` and
@@ -12,18 +14,23 @@ the series it implies. Adding a currency changes the digest, so an approval give
 the old set goes stale until the owner approves again.
 
 **The plan.** ``plan`` asks only for what a line lacks: for each series, the dates of
-the lines that have no usable stored rate (``rates.Observations.on_or_before``), from
-``RATE_GAP_DAYS`` before the earliest of them up to the fetch day (the legacy series:
-up to its last day). ``--from`` and ``--to`` replace either bound and request every
-series of the set. ``finance sink preview rates`` lists the planned series and their
-start dates; the end is the fetch day, so it is shown and not digested.
+the lines that ``rates.RateBook.on_or_before`` cannot convert (a date in no covered
+range, or after the latest observation fetched), from ``LOOKBACK_DAYS`` before the
+earliest of them up to the fetch day (the legacy series: up to its last day). ``--from``
+and ``--to`` replace either bound and request every series of the set. ``finance sink
+preview rates`` lists the planned series and their start dates; the end is the fetch
+day, so it is shown and not digested.
 
 **The fetch.** ``finance.rate.fetch`` asks the gate first and sends nothing while the
 sink is off. Otherwise it sends one GET per planned series through ``http.Client``
 (sink ``rates``, the one template on its allowlist) and inserts each observation as a
-``rate`` row (source ``boc``), keeping a row already stored. A failed request or a
-reply it cannot read, or a redirect to another host, fails that series alone; the
-others are stored.
+``rate`` row (source ``boc``), keeping a row already stored, and records the range the
+reply covered as a ``rate_coverage`` row: from the requested start to the latest
+observation returned, so days not yet published stay uncovered. A closed series (the
+legacy one, whose window ends before ``FX_SERIES_START``) publishes nothing more for its
+range, so its coverage runs to the requested end. A failed request, a reply it cannot
+read, or a redirect to another host fails that series alone and records no coverage;
+the others are stored.
 """
 
 from __future__ import annotations
@@ -45,11 +52,20 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.http import Client, HostRefused, RequestFailed
 from rheo_finance.operations import OperationSpec, register
-from rheo_finance.rates import QUOTE_CAD, RATE_GAP_DAYS, SOURCE_BOC, stored
+from rheo_finance.rates import (
+    FX_SERIES_START,
+    LEGACY_NOON_SERIES,
+    LOOKBACK_DAYS,
+    QUOTE_CAD,
+    SOURCE_BOC,
+    fx_series,
+    rate_book,
+    series_ids,
+)
 from rheo_finance.sinks.gate import is_enabled
 from rheo_finance.sinks.preview import PREVIEW_BUILDERS, PreviewItem, SinkPreview
 from rheo_finance.sinks.spec import SINK_SPECS, RequestTemplate, SinkSpec, current_spec
-from rheo_finance.storage.schema import rate, txn
+from rheo_finance.storage.schema import rate, rate_coverage, txn
 from rheo_finance.tier import Tier
 
 P = Tier.PUBLIC
@@ -63,12 +79,6 @@ OBSERVATIONS: Final = RequestTemplate(
 )
 ALLOWLIST: Final = ((OBSERVATIONS.method, OBSERVATIONS.path),)
 PAYLOAD_POLICY_VERSION: Final = 1
-# The first observation of Valet's FX<CCY>CAD series.
-FX_SERIES_START: Final = dt.date(2017, 1, 3)
-# The legacy noon series for dates before FX_SERIES_START, by currency. The id is the
-# one the Bank's legacy noon tables used for the US dollar; it is to be confirmed at
-# the first live fetch (prompt 46), and a change here changes the spec's digest.
-LEGACY_NOON_SERIES: Final[dict[str, str]] = {"USD": "IEXE0101"}
 _CURRENCY: Final = re.compile(r"[A-Z]{3}")
 
 
@@ -95,10 +105,6 @@ make_client: ClientFactory = https_client
 # --- the series set and the spec ------------------------------------------------------
 
 
-def fx_series(currency: str) -> str:
-    return f"FX{currency}{QUOTE_CAD}"
-
-
 def currencies(uow: UnitOfWork) -> list[str]:
     """The fiat currencies other than CAD in ``txn``, sorted."""
     found = uow.scalars(
@@ -107,11 +113,6 @@ def currencies(uow: UnitOfWork) -> list[str]:
         .distinct()
     )
     return sorted(each for each in found if _CURRENCY.fullmatch(each))
-
-
-def series_for(currency: str) -> list[str]:
-    legacy = LEGACY_NOON_SERIES.get(currency)
-    return [fx_series(currency), *([legacy] if legacy else [])]
 
 
 def spec(uow: UnitOfWork) -> SinkSpec:
@@ -124,7 +125,7 @@ def spec(uow: UnitOfWork) -> SinkSpec:
         payload_policy_version=PAYLOAD_POLICY_VERSION,
         data_inputs=(
             ("currencies", ",".join(found)),
-            ("series", ",".join(sorted(s for c in found for s in series_for(c)))),
+            ("series", ",".join(sorted(s for c in found for s in series_ids(c)))),
         ),
     )
 
@@ -134,12 +135,14 @@ def spec(uow: UnitOfWork) -> SinkSpec:
 
 @dataclass(frozen=True)
 class Planned:
-    """One request: ``end`` None means up to the fetch day."""
+    """One request: ``end`` None means up to the fetch day. ``closed``: the series
+    publishes nothing more for the range (its window ends before the FX series)."""
 
     currency: str
     series: str
     start: dt.date
     end: dt.date | None
+    closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,20 +182,20 @@ def plan(
     """The requests a fetch would send, before the fetch day is known."""
     planned: list[Planned] = []
     for currency in currencies(uow):
-        observations = stored(uow, currency)
+        book = rate_book(uow, currency)
         days = _line_dates(uow, currency)
         for window in _windows(currency):
             needed = [
                 day
                 for day in days
-                if window.holds(day) and observations.on_or_before(day) is None
+                if window.holds(day) and book.on_or_before(day) is None
             ]
             if start is None and not needed:
                 continue
             first = (
                 start
                 if start is not None
-                else min(needed) - dt.timedelta(days=RATE_GAP_DAYS)
+                else min(needed) - dt.timedelta(days=LOOKBACK_DAYS)
             )
             if window.first is not None:
                 first = max(first, window.first)
@@ -201,7 +204,9 @@ def plan(
                 last = min(last, window.last)
             if last is not None and first > last:
                 continue
-            planned.append(Planned(currency, window.series, first, last))
+            planned.append(
+                Planned(currency, window.series, first, last, window.last is not None)
+            )
     return planned
 
 
@@ -365,6 +370,31 @@ def _store(
     return len(inserted.all())
 
 
+def _cover(
+    uow: UnitOfWork,
+    each: Planned,
+    end: dt.date,
+    latest: dt.date | None,
+    at: dt.datetime,
+) -> None:
+    """Record the range a reply covered: to ``end`` for a closed series, else to the
+    latest observation it returned (none returned: nothing is recorded)."""
+    last = end if each.closed else latest
+    if last is None:
+        return
+    uow.execute(
+        insert(rate_coverage)
+        .values(
+            series=each.series,
+            source=SOURCE_BOC,
+            covered_from=each.start,
+            covered_to=last,
+            fetched_at=at,
+        )
+        .on_conflict_do_nothing()
+    )
+
+
 def _fetch_one(
     uow: UnitOfWork, client: Client, each: Planned, end: dt.date, at: dt.datetime
 ) -> SeriesFetched:
@@ -392,12 +422,10 @@ def _fetch_one(
         ]
     except ValetReplyError:
         return failed.model_copy(update={"reason": "the reply was not understood"})
+    stored = _store(uow, each.currency, found, at)
+    _cover(uow, each, end, max((day for day, _ in found), default=None), at)
     return failed.model_copy(
-        update={
-            "outcome": "stored",
-            "received": len(found),
-            "stored": _store(uow, each.currency, found, at),
-        }
+        update={"outcome": "stored", "received": len(found), "stored": stored}
     )
 
 

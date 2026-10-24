@@ -91,10 +91,12 @@ REWRITTEN: Final = frozenset(
         "sink_spec",
     }
 )  # fmt: skip
-# State, never truncated (Key decision 3): the decisions and the stored rates. Each is
-# an input of a derive and feeds a part of the input fingerprint
-# (``fingerprint.STATE_PARTS``).
-STATE: Final = frozenset({"decision", "decision_item", "decision_target", "rate"})
+# State, never truncated (Key decision 3): the decisions, the stored rates and the
+# ranges fetches covered. Each is an input of a derive and feeds a part of the input
+# fingerprint (``fingerprint.STATE_PARTS``).
+STATE: Final = frozenset(
+    {"decision", "decision_item", "decision_target", "rate", "rate_coverage"}
+)
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 

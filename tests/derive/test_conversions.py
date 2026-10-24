@@ -608,3 +608,27 @@ def test_a_conversion_with_no_stored_rate_pairs_with_no_fee_until_a_rate_exists(
     ]
     assert fee_lines(ledger, DAY) == [("derived_fee", Decimal("-5.70"), "CAD")]
     assert cad_total(ledger.uow, [txn.c.transfer_like]).unconverted_count == 0
+
+
+def test_a_cad_to_usd_conversion_with_no_rate_counts_only_its_foreign_leg(
+    ledger: Ledger,
+) -> None:
+    # 200.00 CAD to 154.40 USD with no USD rate: the wording pairs the legs, no
+    # spread is measured and no fee line is made. The CAD out-leg is native, never
+    # unconverted (FR-14), so the unconverted count is the USD in-leg alone.
+    register(ledger, PAYPAL)
+    ledger.file(
+        "paypal/activity-2025-07-31.csv",
+        paypal_csv((DAY, CONVERSION, "CAD", "-200.00"),
+                   (DAY, CONVERSION, "USD", "154.40")),
+    )  # fmt: skip
+
+    ledger.derive()
+
+    assert legs(ledger) == [
+        paired(DAY, "-200.00", "CAD"),
+        paired(DAY, "154.40", "USD"),
+    ]
+    assert edges(ledger) == [(Decimal("-200.00"), Decimal("154.40"), True, None)]
+    assert fee_lines(ledger, DAY) == []
+    assert cad_total(ledger.uow, [txn.c.transfer_like]).unconverted_count == 1

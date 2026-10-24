@@ -85,7 +85,9 @@ out-leg's posting date. Lines on two accounts are never a conversion: the
   no edge, so the legs end ``unresolved`` unless another edge pairs them.
 - With a leg unmeasurable (the out-leg ``unconverted``, or no stored rate for the
   in-leg on the conversion date) the wording settles the pair: the edge is stored with
-  no spread, and stage 11 books no fee for it until a rate exists.
+  no spread, and stage 11 books no fee for it until a rate exists. Every foreign leg
+  with no rate stays in the unconverted count meanwhile; a CAD leg is native and never
+  unconverted (FR-14), so a CAD to USD conversion with no rate counts one line.
 - The issuer's printed fee is a fee line on the account, posted on a leg's date,
   whose wording is a leg's wording plus `` (fee)``, as the parsers print it. Stage 9
   names it (the earliest, when several match) as the edge's ``fee_txn_id``, so stage

@@ -35,10 +35,12 @@ Order of work, set by what each step reads:
    which reads the periods, the lines and ``document_periods.csv``; then stage 8, the
    reversals in both directions (``stage8``), which reads the lines' reversal wording
    and the ``reversal`` rows of ``transfer_hints.csv``; then stage 9, the fiat own
-   transfer candidate edges (``stage9``), which reads the lines' transfer wording, the
-   other rows of that file, the CAD values and the lines stage 8 paired; then stage
-   11, resolution (``stage11``): the mutually unique edges apply, every transfer-like
-   line gets its state, and an applied transfer's net becomes a derived fee line.
+   transfer and same-account conversion candidate edges (``stage9``), which reads the
+   lines' transfer and conversion wording, the other rows of that file, the CAD values,
+   the stored rates and the lines stage 8 paired; then stage 11, resolution
+   (``stage11``): the mutually unique edges apply, every transfer-like line gets its
+   state, and an applied transfer's net or conversion's spread becomes a derived fee
+   line.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -201,6 +203,10 @@ def run(
                 window_days=ctx.settings.get_int(stage9.WINDOW_KEY),
                 abs_cad=ctx.settings.get_decimal(stage9.ABS_KEY),
                 pct=ctx.settings.get_decimal(stage9.PCT_KEY),
+            ),
+            spread=stage9.Spread(
+                window_days=ctx.settings.get_int(stage9.CONVERSION_WINDOW_KEY),
+                pct=ctx.settings.get_decimal(stage9.SPREAD_KEY),
             ),
             hint_rows=manual.transfer_hints.rows,
         )

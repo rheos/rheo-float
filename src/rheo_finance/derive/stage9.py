@@ -1,9 +1,9 @@
-"""Derivation stage 9, fiat own transfers: the candidate edges (FR-15, Key decision 9,
-edge cases 4 and 5).
+"""Derivation stage 9, fiat own transfers and same-account currency conversions: the
+candidate edges (FR-15, FR-15(c), Key decision 9, edge cases 4, 5 and 69).
 
-Stage 9 stores every candidate ``own_transfer`` edge in ``pair_edge`` with ``applied``
-false; stage 11 decides which apply. On the lines it reads it also sets
-``txn.transfer_like`` and ``txn.hint_account_id``.
+Stage 9 stores every candidate ``own_transfer`` and ``conversion`` edge in
+``pair_edge`` with ``applied`` false; stage 11 decides which apply. On the lines it
+reads it also sets ``txn.transfer_like`` and ``txn.hint_account_id``.
 
 **Which lines.** Fiat txns with a nonzero amount, never a line stage 8 paired as a
 reversal (``pair_kind = reversal``), an excluded line, or a party line. Reading a line
@@ -57,6 +57,33 @@ a posting date, the edges thin to the date order: the k-th debit by posting date
 k-th credit. Each kept edge was a candidate, so it lies inside the window. Any other
 group keeps every edge. The result depends on the two date-sorted lists only, never on
 the order lines were read.
+
+**Conversions** (FR-15(c)). A ``conversion`` edge joins two lines on the SAME account,
+opposite in sign, in two currencies, both carrying conversion wording (the parser's
+``conversion_hint`` or a ``conversion`` row of ``transfer_hints.csv``; a fee line never
+is a leg), posted at most ``finance.conversions.window_days`` apart. ``a_txn_id`` is
+the out-leg (the debit), ``b_txn_id`` the in-leg, and the conversion date is the
+out-leg's posting date. Lines on two accounts are never a conversion: the
+``own_transfer`` rule above handles them, since conversion wording is transfer-like.
+
+- The spread (``spread_cad``) is the out-leg's CAD value (stage 4) minus the in-leg's
+  at the stored Bank of Canada rate of the conversion date (a CAD in-leg is its own
+  amount). The parsers that print a conversion fee (the money-transfer history and
+  statement CSV, the payment-service activity PDF and CSV) emit the out-leg NET of it
+  and the fee as its own line, so this spread is already the residual after the
+  printed fee; taking the fee off again would count it twice.
+- The edge exists only when the spread is inside
+  ``finance.conversions.spread_tolerance_pct`` percent of the out-leg's CAD value, in
+  either direction (the transfer tolerance is never used here). Outside it there is
+  no edge, so the legs end ``unresolved`` unless another edge pairs them.
+- With a leg unmeasurable (the out-leg ``unconverted``, or no stored rate for the
+  in-leg on the conversion date) the wording settles the pair: the edge is stored with
+  no spread, and stage 11 books no fee for it until a rate exists.
+- The issuer's printed fee is a fee line on the account, posted on a leg's date,
+  whose wording is a leg's wording plus `` (fee)``, as the parsers print it. Stage 9
+  names it as the edge's ``fee_txn_id``, so stage 11 books no second fee line for that
+  conversion. (Two conversions with the same wording on one day both name the earliest
+  such fee line.)
 """
 
 from __future__ import annotations
@@ -75,7 +102,9 @@ from sqlalchemy import bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
+from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.transfer_hints import TransferHintRow
+from rheo_finance.rates import QUOTE_CAD, RateBook, rate_book
 from rheo_finance.reference.patterns import row_hints
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
@@ -90,6 +119,11 @@ WINDOW_KEY: Final = "finance.transfers.window_days"
 ABS_KEY: Final = "finance.transfers.fee_tolerance_abs"
 PCT_KEY: Final = "finance.transfers.fee_tolerance_pct"
 KIND: Final = "own_transfer"
+CONVERSION_WINDOW_KEY: Final = "finance.conversions.window_days"
+SPREAD_KEY: Final = "finance.conversions.spread_tolerance_pct"
+CONVERSION: Final = "conversion"
+# A parser prints a fee under its transaction's wording plus this.
+FEE_SUFFIX: Final = " (fee)"
 CARD: Final = "credit_card"
 # The transfer kind of a ``transfer_hints.csv`` row: its counterpart is an account slug.
 MANUAL_PREFIX: Final = "manual_"
@@ -106,6 +140,14 @@ class Tolerance:
 
 
 @dataclass(frozen=True)
+class Spread:
+    """The conversion settings: the legs' window and the spread tolerance."""
+
+    window_days: int
+    pct: Decimal
+
+
+@dataclass(frozen=True)
 class _Line:
     id: uuid.UUID
     account_id: uuid.UUID
@@ -117,6 +159,12 @@ class _Line:
     transfer_like: bool
     # (transfer kind, counterpart) of the first source line naming one.
     hint: tuple[str, str] | None
+    # A conversion leg: a source line carries conversion wording, and it is no fee.
+    conversion: bool = False
+    # A fee line (``fee_type`` set), printed by its parser.
+    fee: bool = False
+    # The normalized wording of every source line.
+    wordings: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -125,7 +173,9 @@ class _Reading:
 
     line: _Line
     transfer_like: bool = False
+    conversion: bool = False
     hint: tuple[str, str] | None = None
+    wordings: set[str] = dataclasses.field(default_factory=set)
 
 
 def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]:
@@ -172,7 +222,12 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
         # A source with no document line has no parser hints (all null).
         parser_transfer = bool(row.transfer_hint)
         parser_conversion = bool(row.conversion_hint)
-        rows_say = row_hints(pairing.wording(row), hint_rows)
+        said = pairing.wording(row)
+        reading.wordings.add(said)
+        rows_say = row_hints(said, hint_rows)
+        reading.conversion = (
+            reading.conversion or parser_conversion or rows_say.conversion_hint
+        )
         reading.transfer_like = reading.transfer_like or any(
             (
                 parser_transfer,
@@ -194,6 +249,9 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             each.line,
             transfer_like=each.transfer_like and each.line.id not in fees,
             hint=each.hint,
+            conversion=each.conversion and each.line.id not in fees,
+            fee=each.line.id in fees,
+            wordings=frozenset(each.wordings),
         )
         for each in found.values()
     ]
@@ -302,14 +360,85 @@ def _thinned(group: list[_Edge]) -> list[_Edge]:
     return [_Edge(d, c) for d, c in zip(debits, credits, strict=True)]
 
 
+@dataclass(frozen=True)
+class _Conversion:
+    out: _Line
+    into: _Line
+    spread: Decimal | None
+    printed_fee: uuid.UUID | None
+
+
+def _in_cad(uow: UnitOfWork, books: dict[str, RateBook], leg: _Line, day: dt.date
+            ) -> Decimal | None:  # fmt: skip
+    """The in-leg's CAD value at the stored rate of the conversion date ``day``."""
+    if leg.currency == QUOTE_CAD:
+        return leg.amount
+    if leg.currency not in books:
+        books[leg.currency] = rate_book(uow, leg.currency)
+    found = books[leg.currency].on_or_before(day)
+    return None if found is None else cents(leg.amount * found[1])
+
+
+def _printed_fee(out: _Line, into: _Line, fees: Sequence[_Line]) -> uuid.UUID | None:
+    """The issuer's printed fee of a conversion: a fee line on its account, posted on
+    a leg's date, whose wording is a leg's wording plus `` (fee)``."""
+    wordings = {w + FEE_SUFFIX for w in out.wordings | into.wordings}
+    found = [
+        fee
+        for fee in fees
+        if fee.account_id == out.account_id
+        and fee.day in (out.day, into.day)
+        and fee.wordings & wordings
+    ]
+    return min(found, key=lambda fee: (fee.day, fee.id)).id if found else None
+
+
+def _conversions(
+    uow: UnitOfWork, lines: list[_Line], spread: Spread
+) -> list[_Conversion]:
+    """Every conversion candidate edge (module docstring)."""
+    legs: dict[uuid.UUID, list[_Line]] = defaultdict(list)
+    fees: list[_Line] = []
+    for line in lines:
+        if line.conversion:
+            legs[line.account_id].append(line)
+        elif line.fee:
+            fees.append(line)
+    books: dict[str, RateBook] = {}
+    window = dt.timedelta(days=spread.window_days)
+    found: list[_Conversion] = []
+    for on_account in legs.values():
+        for out in on_account:
+            if out.amount > 0:
+                continue
+            for into in on_account:
+                if (
+                    into.amount < 0
+                    or into.currency == out.currency
+                    or abs(into.day - out.day) > window
+                ):
+                    continue
+                into_cad = _in_cad(uow, books, into, out.day)
+                residual: Decimal | None = None
+                if out.cad is not None and into_cad is not None:
+                    residual = -out.cad - into_cad
+                    if abs(residual) > -out.cad * spread.pct / HUNDRED:
+                        continue
+                found.append(
+                    _Conversion(out, into, residual, _printed_fee(out, into, fees))
+                )
+    return found
+
+
 def pair_transfers(
     uow: UnitOfWork,
     *,
     tolerance: Tolerance,
+    spread: Spread,
     hint_rows: Sequence[TransferHintRow],
 ) -> None:
-    """Store every fiat ``own_transfer`` candidate edge and set ``transfer_like`` and
-    ``hint_account_id`` (module docstring)."""
+    """Store every fiat ``own_transfer`` and ``conversion`` candidate edge and set
+    ``transfer_like`` and ``hint_account_id`` (module docstring)."""
     lines = _lines(uow, hint_rows)
     resolved = _resolver(uow)
     named = {line.id: _accounts(line.hint, resolved) for line in lines}
@@ -337,6 +466,28 @@ def pair_transfers(
                     "applied": False,
                 }
                 for edge in edges
+            ],
+        )
+    conversions = sorted(
+        _conversions(uow, lines, spread),
+        key=lambda c: (c.out.day, c.out.id, c.into.id),
+    )
+    if conversions:
+        uow.execute(
+            insert(pair_edge),
+            [
+                {
+                    "id": derived_id(
+                        c.out.day, ("pair_edge", CONVERSION, c.out.id, c.into.id)
+                    ),
+                    "kind": CONVERSION,
+                    "a_txn_id": c.out.id,
+                    "b_txn_id": c.into.id,
+                    "applied": False,
+                    "spread_cad": c.spread,
+                    "fee_txn_id": c.printed_fee,
+                }
+                for c in conversions
             ],
         )
     marked = [

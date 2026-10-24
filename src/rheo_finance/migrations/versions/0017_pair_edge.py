@@ -9,8 +9,9 @@ with no out line; ``b_txn_id`` is null for ``own_one_sided``), ``loan_key`` a lo
 edge's loan, ``b_part_id`` an allocation part, ``b_account_id`` the registered account
 of an ``own_one_sided`` destination, ``group_id`` a group of edges decided together,
 ``applied`` whether the edge is in force, ``basis_ref`` the decision that applied or
-refused it, ``fee_txn_id`` the derived fee line of a pair and ``spread_cad`` a
-conversion's spread in CAD (restricted).
+refused it, ``fee_txn_id`` the fee line of a pair (the derived one, or a conversion's
+fee line as its issuer printed it) and ``spread_cad`` a conversion's spread in CAD
+(restricted).
 
 A ``reversal`` edge joins two distinct lines: ``a_txn_id`` the reversal line,
 ``b_txn_id`` the earlier line it undoes. No reader grant: report views grant SELECT in

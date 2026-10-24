@@ -39,6 +39,14 @@ Its id is ``derived_id`` over the edge, and its one source is a ``manual_ref`` n
 the edge (``FEE_REF``), since no document line prints it. A fee a parser already
 printed is its own line before this stage and is netted out of nothing here: a
 transfer whose legs balance after it makes no derived fee.
+
+**Conversion fees** (FR-15(c)). An applied ``conversion`` makes exactly one fee line
+on its date. When stage 9 named the issuer's printed fee line (``fee_txn_id``), that
+line is the one and the spread is booked nowhere. Otherwise a positive spread becomes
+one ``derived_fee`` txn of ``-spread_cad`` CAD on the conversion's account, dated and
+recognized as the out-leg, ``fee_type`` ``conversion_fee``, named by the edge's
+``fee_txn_id``. A spread of zero or below is a zero fee: no line, never income. A
+conversion with no spread (no stored rate) makes no fee line until a rate exists.
 """
 
 from __future__ import annotations
@@ -50,7 +58,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from sqlalchemy import bindparam, insert, select, update
+from sqlalchemy import bindparam, func, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive.stage4 import cents
@@ -68,6 +76,9 @@ AUTO_KINDS: Final = {
 # Stage 8's kind: counted, never decided here.
 SETTLED: Final = "reversal"
 FEE_KIND: Final = "own_transfer"
+CONVERSION: Final = "conversion"
+CONVERSION_FEE_TYPE: Final = "conversion_fee"
+CONVERSION_FEE_WORDING: Final = "derived conversion fee"
 FIAT: Final = "fiat"
 CAD: Final = "CAD"
 FEE_ORIGIN: Final = "derived_fee"
@@ -82,6 +93,8 @@ class _Edge:
     id: uuid.UUID
     kind: str
     ends: tuple[uuid.UUID, ...]
+    spread: Decimal | None = None
+    printed_fee: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -103,11 +116,15 @@ class _Leg:
 def _edges(uow: UnitOfWork) -> list[_Edge]:
     rows = uow.execute(
         select(pair_edge.c.id, pair_edge.c.kind, pair_edge.c.a_txn_id,
-               pair_edge.c.b_txn_id)
+               pair_edge.c.b_txn_id, pair_edge.c.spread_cad, pair_edge.c.fee_txn_id)
     )  # fmt: skip
     return [
         _Edge(
-            row.id, row.kind, tuple(end for end in (row.a_txn_id, row.b_txn_id) if end)
+            row.id,
+            row.kind,
+            tuple(end for end in (row.a_txn_id, row.b_txn_id) if end),
+            row.spread_cad,
+            row.fee_txn_id,
         )
         for row in rows
     ]
@@ -173,6 +190,30 @@ def _fee(edge: _Edge, a: _Leg, b: _Leg) -> dict[str, object] | None:
     }
 
 
+def _conversion_fee(edge: _Edge, out: _Leg) -> dict[str, object] | None:
+    """The derived fee txn of one applied ``conversion``: its positive spread, when
+    the issuer printed no fee (module docstring)."""
+    if edge.printed_fee is not None or edge.spread is None or edge.spread <= 0:
+        return None
+    return {
+        "id": derived_id(out.day, (FEE_ORIGIN, edge.id)),
+        "account_id": out.account_id,
+        "posting_date": out.day,
+        "recognition_date": out.recognized,
+        "amount": -edge.spread,
+        "currency": CAD,
+        "cad_amount": -edge.spread,
+        "cad_source": "native",
+        "rate": None,
+        "rate_date": None,
+        "conversion_state": "native",
+        "description_norm": CONVERSION_FEE_WORDING,
+        "origin": FEE_ORIGIN,
+        "movement_kind": FIAT,
+        "fee_type": CONVERSION_FEE_TYPE,
+    }
+
+
 def resolve(uow: UnitOfWork) -> None:
     """Apply the mutually unique edges, set the transfer states and book the derived
     fee lines (module docstring)."""
@@ -195,13 +236,19 @@ def resolve(uow: UnitOfWork) -> None:
 
     fees: dict[uuid.UUID, dict[str, object]] = {}
     paired_legs = [e for e in applied if e.kind == FEE_KIND and len(e.ends) == 2]
-    legs = _legs(uow, {end for edge in paired_legs for end in edge.ends})
+    converted = [e for e in applied if e.kind == CONVERSION]
+    legs = _legs(uow, {end for edge in paired_legs + converted for end in edge.ends})
     for edge in paired_legs:
         a, b = (legs[end] for end in edge.ends)
         if a.movement_kind == FIAT and b.movement_kind == FIAT:
             fee = _fee(edge, a, b)
             if fee is not None:
                 fees[edge.id] = fee
+    for edge in converted:
+        # ``a_txn_id`` is the out-leg (stage 9).
+        fee = _conversion_fee(edge, legs[edge.ends[0]])
+        if fee is not None:
+            fees[edge.id] = fee
     if fees:
         uow.execute(insert(txn), list(fees.values()))
         uow.execute(
@@ -221,7 +268,11 @@ def resolve(uow: UnitOfWork) -> None:
         uow.execute(
             update(pair_edge)
             .where(pair_edge.c.id == bindparam("b_id"))
-            .values(applied=True, fee_txn_id=bindparam("b_fee")),
+            # A conversion's printed fee line, named by stage 9, stays named.
+            .values(
+                applied=True,
+                fee_txn_id=func.coalesce(bindparam("b_fee"), pair_edge.c.fee_txn_id),
+            ),
             [
                 {
                     "b_id": edge.id,

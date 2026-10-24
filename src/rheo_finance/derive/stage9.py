@@ -38,6 +38,9 @@ apart, when:
 - on a card account (kind ``credit_card``, whose parsers mark the payment credits with
   a payment hint) the card-side line is itself transfer-like, so a purchase refund of
   the same amount is never offered as the other leg of a chequing debit;
+- a fee line (``fee_type`` set) is neither end: it never starts a pairing (above), and
+  it is never the other end either, so a printed fee is never paired away by a small
+  transfer-like line of about its size and always counts once as spending;
 - the two legs net to zero within the tolerance: the larger of
   ``finance.transfers.fee_tolerance_abs`` (CAD) and ``fee_tolerance_pct`` percent of
   the larger leg's CAD value (stage 4). A pair outside it gets no edge.
@@ -324,6 +327,7 @@ def _candidate_edges(
         return (
             other.account_id != start.account_id
             and (other.amount > 0) != (start.amount > 0)
+            and not other.fee
             and (not other.card or other.transfer_like)
             and within(start, other, tolerance)
         )

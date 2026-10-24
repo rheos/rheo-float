@@ -495,6 +495,33 @@ def test_a_printed_fee_is_never_a_leg_even_when_a_conversion_row_matches_it(
     assert counted(ledger, txn.c.amount < 0).sum == Decimal("-1.09")
 
 
+def test_a_printed_conversion_fee_is_never_paired_away_by_a_small_transfer_like_line(
+    ledger: Ledger,
+) -> None:
+    # A Wise conversion prints a fee of 0.80 USD (1.09 CAD at 1.3600). The same day a
+    # PayPal bank deposit of 1.00 CAD, transfer-like by its wording, sits inside the
+    # transfer tolerance of that fee. The fee line is no end of a transfer: it stays
+    # the date's one fee line and counts once, and the deposit is unresolved.
+    register(ledger, WISE, PAYPAL)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(*converted("BALANCE-999000210", DAY, "300.00", "USD", "405.00",
+                            "CAD", "0.80")),
+    )  # fmt: skip
+    ledger.file(
+        "paypal/activity-2025-07-31.csv",
+        paypal_csv((DAY, "Bank Deposit to PP Account", "CAD", "1.00")),
+    )
+
+    ledger.derive()
+
+    assert fee_lines(ledger, DAY) == [("document_line", Decimal("-0.80"), "USD")]
+    assert ledger.conn.scalars(select(pair_edge.c.kind)).all() == ["conversion"]
+    assert left(DAY, "1.00", "CAD", "unresolved") in legs(ledger)
+    assert counted(ledger, txn.c.amount < 0).sum == Decimal("-1.09")
+
+
 # --- no stored rate -------------------------------------------------------------------
 
 

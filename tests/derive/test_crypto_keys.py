@@ -100,9 +100,9 @@ def line_ref(txn_id: object) -> str:
 def test_a_quantity_printed_two_ways_is_one_line_and_one_id(
     crypto_ledger: Ledger,
 ) -> None:
-    # The same received line with no TXID, printed 1E-7 in one file and 0.0000001 in
-    # another: one key, one txn with two sources, and the same id whichever file is
-    # alone.
+    # The same received line with no TXID, printed 1E-7 in one file, 0.0000001 in
+    # another and 0.00000010000 in a third: one key, one txn with three sources, and
+    # the same id whichever file is alone.
     ledger = crypto_ledger
     move = f"MOVE at={NOON} asset=bitcoin type=Received from={FOREIGN}"
     file(ledger, "first.txt", WALLET, f"{move} qty=1E-7")
@@ -110,15 +110,17 @@ def test_a_quantity_printed_two_ways_is_one_line_and_one_id(
     [alone] = rows(ledger)
 
     file(ledger, "second.csv", WALLET, f"{move} qty=0.0000001")
+    file(ledger, "third.csv", WALLET, f"{move} qty=0.00000010000")
     ledger.derive()
 
     [both] = rows(ledger)
     assert both["id"] == alone["id"]
     assert both["amount"] == Decimal("1E-7")
-    assert sources(ledger, both["id"]) == ["additional", "primary"]
+    assert sources(ledger, both["id"]) == ["additional", "additional", "primary"]
     assert ledger.conn.scalars(select(source_discrepancy.c.kind)).all() == []
 
-    (ledger.archive / CRYPTO_ISSUER / "first.txt").unlink()
+    for name in ("first.txt", "second.csv"):
+        (ledger.archive / CRYPTO_ISSUER / name).unlink()
     ledger.derive()
     [other] = rows(ledger)
     assert other["id"] == alone["id"]

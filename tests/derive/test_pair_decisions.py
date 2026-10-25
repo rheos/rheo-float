@@ -369,8 +369,8 @@ def test_a_pair_decision_nets_a_same_day_reversal_stage_8_only_offered(
 
 @pytest.mark.parametrize(
     ("second", "fee"),
-    [("100.00", []), ("95.00", [Decimal("-5.00")])],
-    ids=["nets-to-zero", "short-by-5"],
+    [("100.00", []), ("95.00", [Decimal("-5.00")]), ("105.00", [])],
+    ids=["nets-to-zero", "short-by-5", "over-by-5-floors-at-zero"],
 )
 def test_a_pair_with_legs_nets_the_target_against_the_legs_once(
     ledger: Ledger, second: str, fee: list[Decimal]
@@ -775,10 +775,42 @@ def test_a_decision_holds_when_its_line_gets_a_new_primary_source(
 def test_a_pair_with_a_reversal_shaped_leg_nets_once_on_the_outbound_side(
     ledger: Ledger,
 ) -> None:
-    # A payment, a credit of its amount on the same account (a reversal shape, so
-    # stage 8 stores that edge) and a small card credit, paired as one movement: the
-    # target nets against both legs once, so the 10.00 left over is one fee line on
-    # the outbound account, not lost.
+    # A deposit paired with a payment of its amount on the same account (a reversal
+    # shape, so stage 8 stores that edge) and a small withdrawal, as one movement: the
+    # target nets against both legs once, so the 10.00 short is one fee line on the
+    # outbound side (the first debit among the legs), not lost.
+    chequing_and_card(
+        ledger,
+        [
+            (PAID, BILL_PAYMENT, "-200.00"),
+            (ARRIVED, "SAMPLE WITHDRAWAL 99974", "-10.00"),
+            (LATER, "SAMPLE DEPOSIT 99973", "200.00"),
+        ],
+        [],
+    )
+    ledger.derive()
+
+    decision_id = decide(
+        ledger,
+        "pair",
+        key_ref(ledger, LATER, "200.00"),
+        legs=(key_ref(ledger, PAID, "-200.00"), key_ref(ledger, ARRIVED, "-10.00")),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("own_transfer", True), ("reversal", True)]
+    assert edges(ledger, "reversal") == [(True, basis(decision_id))]
+    assert edges(ledger) == [(True, basis(decision_id))]
+    assert {state for state, _ in states(ledger).values()} == {"paired"}
+    assert fee_rows(ledger) == [(account_id("chequing"), Decimal("-10.00"))]
+
+
+def test_a_pair_with_a_reversal_shaped_leg_and_a_favourable_residual_books_no_fee(
+    ledger: Ledger,
+) -> None:
+    # A payment, a credit of its amount on the same account and a small card credit:
+    # the legs are worth 10.00 more than the payment. The net of a pair with legs is
+    # floored at zero, as a spread is, so no line is booked and nothing is income.
     chequing_and_card(
         ledger,
         [(PAID, BILL_PAYMENT, "-200.00"), (LATER, "SAMPLE DEPOSIT 99973", "200.00")],
@@ -786,7 +818,7 @@ def test_a_pair_with_a_reversal_shaped_leg_nets_once_on_the_outbound_side(
     )
     ledger.derive()
 
-    decision_id = decide(
+    decide(
         ledger,
         "pair",
         key_ref(ledger, PAID, "-200.00"),
@@ -795,10 +827,9 @@ def test_a_pair_with_a_reversal_shaped_leg_nets_once_on_the_outbound_side(
     ledger.derive()
 
     assert kinds(ledger) == [("own_transfer", True), ("reversal", True)]
-    assert edges(ledger, "reversal") == [(True, basis(decision_id))]
-    assert edges(ledger) == [(True, basis(decision_id))]
     assert {state for state, _ in states(ledger).values()} == {"paired"}
-    assert fee_rows(ledger) == [(account_id("chequing"), Decimal("10.00"))]
+    assert fee_rows(ledger) == []
+    assert income(ledger) == Decimal("0.00")
 
 
 def test_a_pair_with_a_conversion_leg_nets_once_and_books_no_spread(
@@ -897,6 +928,91 @@ def test_a_conversion_by_hand_names_the_printed_fee_and_books_no_spread(
     )
     assert kinds(ledger) == [("conversion", True)]
     assert ledger.conn.scalar(select(pair_edge.c.fee_txn_id)) == printed
+    assert fee_lines(ledger, CONVERTED) == [("document_line", Decimal("-1.00"), "USD")]
+
+
+def printed_fee_with_legs(ledger: Ledger, *ins: tuple[str, str, str]) -> None:
+    """A Wise transfer out of 101.00 USD with its printed fee of 1.00 (the out-leg is
+    100.00 USD plus a fee line) and the in-lines ``(ident, amount, currency)``, all
+    on one day with no conversion wording."""
+    register(ledger, WISE)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(
+            ("TRANSFER-999000301", CONVERTED, "-101.00", "USD",
+             "Sent money to Sample Payee", "", "", "1.00", ""),
+            *((ident, CONVERTED, amount, code, "Received money from Sample Payer",
+               "", "", "0.00", "") for ident, amount, code in ins),
+        ),
+    )  # fmt: skip
+    ledger.derive()
+
+
+def edge_fees(ledger: Ledger) -> dict[str, uuid.UUID | None]:
+    """Each edge's ``fee_txn_id`` by its kind (one edge of each kind)."""
+    rows = ledger.conn.execute(select(pair_edge.c.kind, pair_edge.c.fee_txn_id)).all()
+    assert len({kind for kind, _ in rows}) == len(rows)
+    return {kind: fee for kind, fee in rows}
+
+
+def test_a_pair_with_legs_keys_its_net_to_an_edge_that_names_no_printed_fee(
+    ledger: Ledger,
+) -> None:
+    # The first edge in the decision's line order is a conversion naming the issuer's
+    # printed fee; the second, to a small USD credit, is an own transfer. The net
+    # (136.00 out, 135.00 and 0.68 in, by CAD values) is one fee line named by the
+    # own transfer, and the conversion keeps naming its printed fee.
+    printed_fee_with_legs(
+        ledger, ("TRANSFER-999000302", "135.00", "CAD"),
+        ("TRANSFER-999000303", "0.50", "USD"),
+    )  # fmt: skip
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, CONVERTED, "-100.00"),
+        legs=(key_ref(ledger, CONVERTED, "135.00"), key_ref(ledger, CONVERTED, "0.50")),
+    )
+    ledger.derive()
+
+    printed = ledger.conn.scalar(
+        select(txn.c.id).where(
+            txn.c.fee_type.is_not(None), txn.c.origin != "derived_fee"
+        )
+    )
+    derived = ledger.conn.scalar(select(txn.c.id).where(txn.c.origin == "derived_fee"))
+    assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
+    assert edge_fees(ledger) == {"conversion": printed, "own_transfer": derived}
+    assert fees(ledger) == [Decimal("-0.32")]
+
+
+def test_a_pair_with_legs_whose_every_edge_names_a_printed_fee_books_no_net(
+    ledger: Ledger,
+) -> None:
+    # Both edges are conversions from the one out-leg, so both name its printed fee:
+    # the printed fee is the date's fee line and no net is booked beside it.
+    printed_fee_with_legs(
+        ledger, ("TRANSFER-999000302", "130.00", "CAD"),
+        ("TRANSFER-999000303", "3.00", "CAD"),
+    )  # fmt: skip
+    printed = ledger.conn.scalar(
+        select(txn.c.id).where(
+            txn.c.fee_type.is_not(None), txn.c.origin != "derived_fee"
+        )
+    )
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, CONVERTED, "-100.00"),
+        legs=(key_ref(ledger, CONVERTED, "130.00"), key_ref(ledger, CONVERTED, "3.00")),
+    )
+    ledger.derive()
+
+    named = ledger.conn.execute(select(pair_edge.c.kind, pair_edge.c.fee_txn_id)).all()
+    assert sorted(named, key=str) == [("conversion", printed)] * 2
+    assert fees(ledger) == []
     assert fee_lines(ledger, CONVERTED) == [("document_line", Decimal("-1.00"), "USD")]
 
 

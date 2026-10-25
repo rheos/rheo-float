@@ -9,8 +9,13 @@ calls ``book``.
   a ``conversion`` on one of its legs): the target against the sum of every other line
   it names, so a payment paid by two credits is one movement and at most one fee line,
   on the OUTBOUND side (the target when it is the debit, else the first debit among
-  the others), keyed to the decision's first edge. A conversion inside such a pair
-  books no spread of its own: the net already holds it. A two-line fiat ``pair``
+  the others), keyed to the decision's first edge (in the order of its lines) that
+  names no printed fee. A printed fee name on an edge is never replaced: when every
+  edge of the pair names one, the printed fees are its fee lines and no net is booked.
+  The net of a pair with legs is floored at zero, as a spread is (FR-15(c)): a
+  favourable residual (the credits worth more than the debits) books no line, never
+  income. A conversion inside such a pair books no spread of its own: the net already
+  holds it. A two-line fiat ``pair``
   nets the same way when its edge is an ``own_transfer``; a two-line ``reversal`` is
   of exactly opposite amounts, and a two-line ``conversion`` books its spread (below).
   A crypto ``pair`` books no fee.
@@ -105,10 +110,12 @@ def _legs(uow: UnitOfWork, ids: set[uuid.UUID]) -> dict[uuid.UUID, _Leg]:
     return {row.id: _Leg(*row) for row in rows}
 
 
-def _net(key: uuid.UUID, legs: list[_Leg]) -> dict[str, object] | None:
+def _net(
+    key: uuid.UUID, legs: list[_Leg], *, floor: bool = False
+) -> dict[str, object] | None:
     """The derived fee txn of one movement's lines, the target first; None when they
-    net to zero or cannot be measured (module docstring). ``key`` is the edge its id
-    derives from."""
+    net to zero or cannot be measured, and with ``floor`` when they net above zero
+    (module docstring). ``key`` is the edge its id derives from."""
     debit = next((leg for leg in legs if leg.amount < 0), legs[0])
     native: dict[str, object] = {
         "cad_source": "native", "rate": None, "rate_date": None,
@@ -135,7 +142,7 @@ def _net(key: uuid.UUID, legs: list[_Leg]) -> dict[str, object] | None:
         conversion = native
     else:
         return None
-    if net == 0:
+    if net == 0 or (floor and net > 0):
         return None
     return {
         "id": derived_id(debit.day, (FEE_ORIGIN, key)),
@@ -231,9 +238,12 @@ def book(
             fees[edge.id] = fee
     for each, found in netted:
         lines = [legs[line] for line in each.lines]
-        fee = _net(found[0].id, lines) if _fiat(lines) else None
+        key = next((edge for edge in found if edge.printed_fee is None), None)
+        if key is None or not _fiat(lines):
+            continue
+        fee = _net(key.id, lines, floor=len(found) > 1)
         if fee is not None:
-            fees[found[0].id] = fee
+            fees[key.id] = fee
     for edge in converted:
         # ``a_txn_id`` is the out-leg (stage 9).
         fee = _spread(edge, legs[edge.ends[0]])

@@ -10,14 +10,16 @@ states and the fee lines. Every date, amount, address and quantity is invented.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.derive import stage7
+from rheo_finance.derive import pair_decisions, stage7, stage11
+from rheo_finance.derive.pair_decisions import Decided, PairDecision
 from rheo_finance.manual.crypto_labels import CRYPTO_LABELS_FILE
 from rheo_finance.manual.own_addresses import OWN_ADDRESSES_FILE
 from rheo_finance.storage.refs import format_ref
@@ -331,3 +333,40 @@ def test_a_one_line_crypto_pair_without_an_own_address_is_inert(
 
     assert edges(ledger) == [(True, None)]
     assert set(states(ledger).values()) == {("paired", "own_transfer")}
+
+
+# --- the read and the stages agree, or stage 11 says which decision -------------------
+
+
+def test_a_decided_edge_no_stage_stored_raises_naming_the_decision(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Drift between ``pair_decisions`` and the stages: a ``pair`` the read lets apply
+    # although no stage can store its edge (its counterpart is no line the stages
+    # read). Stage 11 raises an explicit error naming the decision, not a bare
+    # ``ValueError``.
+    chequing_and_card(ledger, [(PAID, BILL_PAYMENT, "-200.00")], [(ARRIVED, "200.00")])
+    ledger.derive()
+    payment = ledger.conn.scalar(select(txn.c.id).where(txn.c.posting_date == PAID))
+    assert payment is not None
+    absent = uuid.UUID("99999999-0000-7000-8000-000000000002")
+    drifted = PairDecision(
+        id=uuid.UUID("99999999-0000-7000-8000-000000000001"), lines=(payment, absent)
+    )
+    read = pair_decisions.read
+
+    def with_drift(uow: UnitOfWork) -> Decided:
+        found = read(uow)
+        return dataclasses.replace(
+            found,
+            pairs=(drifted, *found.pairs),
+            taken=frozenset(drifted.lines) | found.taken,
+        )
+
+    monkeypatch.setattr(pair_decisions, "read", with_drift)
+
+    with pytest.raises(stage11.DecidedEdgeMissing) as raised:
+        ledger.derive()
+    reference = format_ref("finance", "decision", drifted.id)
+    assert raised.value.decision_ref == reference
+    assert reference in str(raised.value)

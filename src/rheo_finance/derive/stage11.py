@@ -12,7 +12,9 @@ target to each other line it names; with no other line, the target's
 ``own_one_sided`` edge), of any kind, in full: a ``pair`` some edge of which no stage
 would store (a mixed fiat and crypto pair, two lines of one sign, a labelled crypto
 leg, a one-line pair with no own address, and the rest ``pair_decisions`` lists) is
-inert there, so it reaches no stage, takes no line and leaves no edge of its own.
+inert there, so it reaches no stage, takes no line and leaves no edge of its own. A
+``pair`` that applies with an edge set no stage stored means the two disagree: stage
+11 raises ``DecidedEdgeMissing`` naming the decision, never a bare error.
 Every decided edge is ``applied`` with ``basis_ref`` the decision's reference
 (``finance.decision:<id>``, the owner's basis), and its lines are ``paired`` with the
 edge's kind as ``pair_kind``. Decisions key their lines by line key, so they hold
@@ -56,8 +58,9 @@ is never a stage 9 candidate, so its one edge is its reversal edge. A reversal e
 of the owner's ``pair`` is the one stage 11 applies (above).
 
 **Fee lines.** What applied books its fee lines through ``fees.book``: the net of a
-decided fiat ``pair`` (with legs, once, whatever its edges' kinds; or two lines joined
-by an ``own_transfer``), the net of an applied fiat ``own_transfer``, and the spread
+decided fiat ``pair`` (with legs, once, whatever its edges' kinds, keyed to its first
+edge that names no printed fee and floored at zero; or two lines joined by an
+``own_transfer``), the net of an applied fiat ``own_transfer``, and the spread
 of an applied ``conversion`` (``fees`` holds the rules).
 """
 
@@ -115,6 +118,18 @@ EVENT_MODELS: Final[Mapping[str, type[BaseModel]]] = MappingProxyType(
 )
 
 
+class DecidedEdgeMissing(RuntimeError):
+    """A ``pair`` decision that applies has an edge set no stage stored: the decisions
+    read and the stages disagree on what can be stored. A code fault, never data."""
+
+    def __init__(self, decision_ref: str) -> None:
+        super().__init__(
+            f"{decision_ref}: an applied pair decision names lines no stage joined;"
+            " pair_decisions and the pairing stages disagree on what can be stored"
+        )
+        self.decision_ref = decision_ref
+
+
 def _decide(
     stored: list[StoredEdge], decided: Decided
 ) -> list[tuple[PairDecision, list[StoredEdge]]]:
@@ -124,18 +139,25 @@ def _decide(
     for edge in stored:
         by_ends[frozenset(edge.ends)].append(edge)
     # ``pair_decisions`` holds inert every ``pair`` some edge of which no stage would
-    # store, so each edge set here was stored. One edge per kind joins two lines; two
-    # kinds is the kind order's.
-    return [
-        (
-            each,
-            [
-                min(by_ends[ends], key=lambda e: (e.kind, e.id))
-                for ends in each.edge_sets
-            ],
+    # store, so each edge set here was stored; if not, the two disagree, and that is
+    # raised naming the decision. One edge per kind joins two lines; two kinds is the
+    # kind order's.
+    found: list[tuple[PairDecision, list[StoredEdge]]] = []
+    for each in decided.pairs:
+        if any(not by_ends[ends] for ends in each.edge_sets):
+            raise DecidedEdgeMissing(
+                format_ref(FINANCE_SYSTEM, DECISION_REF_TYPE, each.id)
+            )
+        found.append(
+            (
+                each,
+                [
+                    min(by_ends[ends], key=lambda e: (e.kind, e.id))
+                    for ends in each.edge_sets
+                ],
+            )
         )
-        for each in decided.pairs
-    ]
+    return found
 
 
 def resolve(uow: UnitOfWork, decided: Decided) -> None:

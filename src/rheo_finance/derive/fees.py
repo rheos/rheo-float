@@ -7,13 +7,15 @@ calls ``book``.
 - **A decided ``pair`` that nets.** A fiat ``pair`` with legs (three lines or more)
   nets once: the target against the sum of every other line it names, so a payment
   paid by two credits is one movement and at most one fee line, on the OUTBOUND side
-  (the target when it is the debit, else the first debit among the others), keyed to
+  (the target when it is the debit, else the first debit among the others, counting
+  only the lines left once the isolated conversions' legs are taken out), keyed to
   the decision's first edge (in the order of its lines) that is no isolated conversion
   and names no printed fee. An ISOLATED conversion edge of the pair (neither of its
   ends is an end of another conversion edge of the pair) keeps its own rule (below):
   its printed fee is the only fee line of its date, else its spread is booked on the
   edge, and the net leaves its two legs out at their own CAD values (stage 4), so
-  neither its spread nor the rate of an in-leg posted another day reaches the net. A
+  neither its spread nor the rate of an in-leg posted another day reaches the net,
+  and neither its date nor its account places the net. A
   conversion that shares an end with another (one leg fanned out to two on the
   account, either way round) has no rule of its own: the whole pair nets once, as an
   own transfer would; and when any such fanned conversion names a printed fee (as
@@ -122,19 +124,25 @@ def _net(
     legs: list[_Leg],
     *,
     floor: bool = False,
-    offset: Decimal = Decimal(0),
+    aside: Sequence[_Leg] = (),
 ) -> dict[str, object] | None:
     """The derived fee txn of one movement's lines, the target first; None when they
     net to zero or cannot be measured, and with ``floor`` when they net above zero
-    (module docstring). ``key`` is the edge its id derives from; ``offset`` (CAD) is
-    added to a net of two currencies, taking out the isolated conversions' legs."""
-    debit = next((leg for leg in legs if leg.amount < 0), legs[0])
+    (module docstring). ``key`` is the edge its id derives from. ``aside`` names the
+    isolated conversions' legs among ``legs``: a net of two currencies leaves them
+    out at their own CAD values, and the fee is dated and placed by the first debit
+    among the lines left."""
+    out = {leg.id for leg in aside}
+    left = [leg for leg in legs if leg.id not in out]
+    if not left:
+        return None
+    debit = next((leg for leg in left if leg.amount < 0), left[0])
     native: dict[str, object] = {
         "cad_source": "native", "rate": None, "rate_date": None,
         "conversion_state": "native",
     }  # fmt: skip
     if len({leg.currency for leg in legs}) == 1:
-        net = sum((leg.amount for leg in legs), Decimal(0))
+        net = sum((leg.amount for leg in left), Decimal(0))
         currency = debit.currency
         if currency == CAD:
             cad: Decimal | None = net
@@ -149,9 +157,7 @@ def _net(
             conversion = {"cad_source": None, "rate": None, "rate_date": None,
                           "conversion_state": "unconverted"}  # fmt: skip
     elif all(leg.cad is not None for leg in legs):
-        net = cad = offset + sum(
-            (leg.cad for leg in legs if leg.cad is not None), Decimal(0)
-        )
+        net = cad = sum((leg.cad for leg in left if leg.cad is not None), Decimal(0))
         currency = CAD
         conversion = native
     else:
@@ -273,16 +279,10 @@ def book(
         )
         if key is None or not _fiat(lines):
             continue
-        # An isolated conversion's two legs leave the net at their own CAD values.
-        cads = [legs[end].cad for e in found if e.id in own for end in e.ends]
-        if any(cad is None for cad in cads):
-            continue
-        fee = _net(
-            key.id,
-            lines,
-            floor=len(found) > 1,
-            offset=-sum((cad for cad in cads if cad is not None), Decimal(0)),
-        )
+        # An isolated conversion's two legs leave the net at their own CAD values, and
+        # the net is dated and placed by the debit among the lines left.
+        aside = [legs[end] for e in found if e.id in own for end in e.ends]
+        fee = _net(key.id, lines, floor=len(found) > 1, aside=aside)
         if fee is not None:
             fees[key.id] = fee
     for edge in converted:

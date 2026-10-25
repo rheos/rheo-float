@@ -1010,7 +1010,8 @@ def test_a_conversion_leg_posted_a_day_later_leaves_no_rate_drift_in_the_net(
     # of 2 Jun it converts (spread 4.00 at the 2 Jun rate) and a USD debit of 2.00
     # (2.76 CAD). The conversion books its spread; the net takes both its legs out at
     # their own CAD values, so it is the 2.76 alone, not the 0.76 a spread taken out
-    # instead would leave.
+    # instead would leave, and it is dated by the debit left (3 Jun), not by the
+    # conversion's own out-leg of 2 Jun.
     ledger = fx_ledger
     paid, converted = D(2025, 6, 2), D(2025, 6, 3)
     store_rates(ledger, "USD", (paid, "1.3600"), (converted, "1.3800"))
@@ -1042,6 +1043,8 @@ def test_a_conversion_leg_posted_a_day_later_leaves_no_rate_drift_in_the_net(
         (account_id("fx"), Decimal("-2.76")),
         (account_id("fx"), Decimal("-4.00")),
     ]
+    assert fee_lines(ledger, paid) == [("derived_fee", Decimal("-4.00"), "CAD")]
+    assert fee_lines(ledger, converted) == [("derived_fee", Decimal("-2.76"), "CAD")]
 
 
 # --- the candidate stages honour the decisions ----------------------------------------
@@ -1169,6 +1172,45 @@ def test_a_pair_with_legs_keeps_the_printed_fee_and_nets_the_other_legs(
     assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
     assert edge_fees(ledger) == {"conversion": printed, "own_transfer": derived}
     assert fees(ledger) == [Decimal("-0.50")]
+
+
+def test_the_net_of_a_pair_with_legs_sits_on_the_debit_left_once_a_conversion_is_out(
+    ledger: Ledger,
+) -> None:
+    # The same shape with the small CAD debit on chequing, named after the conversion
+    # leg. The conversion's own out-leg is the first debit among the lines, but its
+    # legs leave the net, so the 0.50 short is dated and placed by the debit left: on
+    # chequing, not on the transfer service.
+    register(ledger, WISE, CHEQUING)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(
+            ("TRANSFER-999000301", CONVERTED, "-101.00", "USD",
+             "Sent money to Sample Payee", "", "", "1.00", ""),
+            ("TRANSFER-999000302", CONVERTED, "135.00", "CAD",
+             "Received money from Sample Payer", "", "", "0.00", ""),
+        ),
+    )  # fmt: skip
+    ledger.file(
+        "vancity/export.csv",
+        export((CSV_IDENTIFIER, CONVERTED, BILL_PAYMENT, Decimal("-0.50"))),
+    )
+    ledger.derive()
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, CONVERTED, "135.00"),
+        legs=(
+            key_ref(ledger, CONVERTED, "-100.00"),
+            key_ref(ledger, CONVERTED, "-0.50"),
+        ),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
+    assert fee_rows(ledger) == [(account_id("chequing"), Decimal("-0.50"))]
 
 
 def test_a_pair_with_legs_whose_every_edge_names_a_printed_fee_books_no_net(

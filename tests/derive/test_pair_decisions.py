@@ -1200,6 +1200,57 @@ def test_a_pair_with_legs_whose_every_edge_names_a_printed_fee_books_no_net(
     assert fee_lines(ledger, CONVERTED) == [("document_line", Decimal("-1.00"), "USD")]
 
 
+def test_a_fan_one_conversion_of_which_names_a_printed_fee_books_no_net(
+    ledger: Ledger,
+) -> None:
+    # Two USD out-legs fanned into one CAD credit: two conversion edges sharing the
+    # in-leg, one naming the issuer's printed fee (its own wording plus "(fee)"), the
+    # other, under other wording, naming none. The printed fee is the date's one fee
+    # line (FR-15(c)), so the pair books no net beside it: the 6.80 short (170.00 -
+    # 136.00 - 40.80) is booked nowhere, as it is when every edge names the fee.
+    register(ledger, WISE)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(
+            ("TRANSFER-999000301", CONVERTED, "-101.00", "USD",
+             "Sent money to Sample Payee", "", "", "1.00", ""),
+            ("TRANSFER-999000303", CONVERTED, "-30.00", "USD",
+             "Sent money to Sample Other Payee", "", "", "0.00", ""),
+            ("TRANSFER-999000302", CONVERTED, "170.00", "CAD",
+             "Received money from Sample Payer", "", "", "0.00", ""),
+        ),
+    )  # fmt: skip
+    ledger.derive()
+    printed = ledger.conn.scalar(
+        select(txn.c.id).where(
+            txn.c.fee_type.is_not(None), txn.c.origin != "derived_fee"
+        )
+    )
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, CONVERTED, "170.00"),
+        legs=(
+            key_ref(ledger, CONVERTED, "-100.00"),
+            key_ref(ledger, CONVERTED, "-30.00"),
+        ),
+    )
+    ledger.derive()
+
+    named = ledger.conn.execute(select(pair_edge.c.kind, pair_edge.c.fee_txn_id)).all()
+    assert sorted(named, key=str) == [("conversion", None), ("conversion", printed)]
+    assert states(ledger) == {
+        (CONVERTED, Decimal("170.00")): ("paired", "conversion"),
+        (CONVERTED, Decimal("-100.00")): ("paired", "conversion"),
+        (CONVERTED, Decimal("-30.00")): ("paired", "conversion"),
+        (CONVERTED, Decimal("-1.00")): (None, None),
+    }
+    assert fees(ledger) == []
+    assert fee_lines(ledger, CONVERTED) == [("document_line", Decimal("-1.00"), "USD")]
+
+
 def test_a_pair_of_a_withdrawal_to_an_own_address_and_another_deposit_is_two_sided(
     crypto_ledger: Ledger,
 ) -> None:

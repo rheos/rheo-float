@@ -16,8 +16,11 @@ calls ``book``.
   neither its spread nor the rate of an in-leg posted another day reaches the net. A
   conversion that shares an end with another (one leg fanned out to two on the
   account, either way round) has no rule of its own: the whole pair nets once, as an
-  own transfer would. With no key edge there is no net; with a leg of an isolated
-  conversion unconverted the net is unmeasured. The net of a pair with legs is
+  own transfer would; and when any such fanned conversion names a printed fee (as
+  stored, before the shared ones are cleared), that fee is the only fee line of its
+  date and the pair books no net beside it (FR-15(c)), the residual booked nowhere,
+  as when every edge names one. With no key edge there is no net; with a leg of an
+  isolated conversion unconverted the net is unmeasured. The net of a pair with legs is
   floored at zero, as a spread is (FR-15(c)): a favourable residual (the credits
   worth more than the debits) books no line, never income. A two-line fiat ``pair``
   nets the same way when its edge is an ``own_transfer``, with the signed net of
@@ -258,6 +261,13 @@ def book(
     for each, found in netted:
         lines = [legs[line] for line in each.lines]
         own = isolated[each.id]
+        # A fanned conversion that names a printed fee (as stored, before unsharing)
+        # makes that fee the date's one fee line: the pair books no net beside it.
+        if any(
+            e.kind == CONVERSION and e.id not in own and e.printed_fee is not None
+            for e in found
+        ):
+            continue
         key = next(
             (e for e in found if e.id not in own and e.printed_fee is None), None
         )

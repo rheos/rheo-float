@@ -222,6 +222,16 @@ def csv_row(day: str, description: str, *, out: str = "", into: str = "",
     return f'{CSV_IDENTIFIER},{day},"{description}",,{out},{into},{balance}'
 
 
+# The pairing parameters of the design spec's worked examples (a 5.00 CAD floor, a
+# 7-day transfer window, a 5 percent conversion spread), so the rule tests read as the
+# spec does. The shipped defaults are tuned (settings.py, ADR-0012) and pinned by
+# ``test_tuned_defaults``, which drops these.
+RULE_SETTINGS = (
+    "[finance.transfers]\nwindow_days = 7\nfee_tolerance_abs = 5.00\n"
+    "[finance.conversions]\nspread_tolerance_pct = 5.0\n"
+)
+
+
 class Ledger:
     """One account registry, one archive, one derive over them."""
 
@@ -235,7 +245,7 @@ class Ledger:
             ctx,
             settings=parse_settings(
                 f'[finance.paths]\narchive = "{self.archive}"\n'
-                f'downloads = "{tmp_path / "downloads-unset"}"\n'
+                f'downloads = "{tmp_path / "downloads-unset"}"\n' + RULE_SETTINGS
             ),
             paths=FinancePaths(data=self.data),
         )

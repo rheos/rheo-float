@@ -48,11 +48,12 @@ def test_a_missing_file_means_every_default(tmp_path: Path) -> None:
     assert settings.get_date("finance.reminders.min_due_date") is None
     assert settings.get_int("finance.payments.early_days") == 10
     assert settings.get_decimal("finance.transfers.fee_tolerance_abs") == Decimal(
-        "5.00"
+        "0.00"
     )
+    assert settings.get_int("finance.transfers.window_days") == 5
     assert settings.get_decimal("finance.transfers.fee_tolerance_pct") == Decimal("1.5")
     assert settings.get_decimal("finance.conversions.spread_tolerance_pct") == Decimal(
-        "5.0"
+        "6.0"
     )
     assert settings.get_int("finance.receipts.match_days") == 3
     assert settings.get_int("finance.invoices.match_days") == 30
@@ -157,7 +158,7 @@ def test_settings_hash_is_stable_and_follows_effective_values(tmp_path: Path) ->
     defaults = settings_hash(load_settings(write(tmp_path, "")))
     assert defaults == settings_hash(load_settings(tmp_path / "missing.toml"))
     # The same effective value written another way hashes the same.
-    same = "finance.transfers.fee_tolerance_abs = 5\n"
+    same = "finance.transfers.fee_tolerance_abs = 0\n"
     assert settings_hash(load_settings(write(tmp_path, same))) == defaults
     changed = "finance.transfers.fee_tolerance_abs = 6\n"
     assert settings_hash(load_settings(write(tmp_path, changed))) != defaults

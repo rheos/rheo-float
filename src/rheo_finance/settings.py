@@ -207,12 +207,17 @@ SPECS: Final[tuple[KeySpec, ...]] = (
               " from `finance sink approve`.")
         for sink in SINKS
     ),
-    # ledger
+    # ledger. The pairing defaults were tuned on a real archive at the Phase 3b gate
+    # (ADR-0012): same-currency own transfers net exactly once a parser prints the fee
+    # as its own line, so an absolute CAD floor only paired small distinct lines
+    # (0.00 leaves the percent alone); legs more than 5 days apart were mostly rival
+    # candidates, not pairs; and the payment-service conversion spreads run to just
+    # over 5 percent.
     _spec("finance.import.overlap_day_tolerance", INT, 3,
           "Days apart two documents may date one purchase and still match."),
-    _spec("finance.transfers.window_days", INT, 7,
+    _spec("finance.transfers.window_days", INT, 5,
           "Days between the two legs of a transfer."),
-    _spec("finance.transfers.fee_tolerance_abs", DEC, Decimal("5.00"),
+    _spec("finance.transfers.fee_tolerance_abs", DEC, Decimal("0.00"),
           "Transfer tolerance in CAD; the larger of this and the percent applies."),
     _spec("finance.transfers.fee_tolerance_pct", DEC, Decimal("1.5"),
           "Transfer tolerance as a percent of the larger leg's CAD value."),
@@ -220,7 +225,7 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           "Days between a line and its reversal."),
     _spec("finance.conversions.window_days", INT, 1,
           "Days between the two legs of a currency conversion."),
-    _spec("finance.conversions.spread_tolerance_pct", DEC, Decimal("5.0"),
+    _spec("finance.conversions.spread_tolerance_pct", DEC, Decimal("6.0"),
           "Conversion spread tolerance in percent."),
     # payments
     _spec("finance.payments.match_tolerance", DEC, Decimal("0.01"),

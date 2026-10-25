@@ -20,11 +20,11 @@ archive needed.
 
 Every kind of "belongs together" is an edge kind in one table, `pair_edge`. Stage 9
 stores the fiat own-transfer and same-account conversion candidates without applying
-them. The crypto edge stage does the same for crypto transfers. Stage 8 is the exception: it stores
-the reversal candidates and itself applies a reversal that is its lines' only one.
-Stage 11 never auto-applies a reversal edge; it counts them for uniqueness and applies
-one only when the owner's `pair` names it. For every other kind stage 11 decides, from
-the stored edge set and the owner's decisions alone:
+them. The crypto edge stage does the same for crypto transfers. Stage 8 is the
+exception: it stores the reversal candidates and itself applies a reversal that is its
+lines' only one. Stage 11 never auto-applies a reversal edge; it counts them for
+uniqueness and applies one only when the owner's `pair` names it. For every other kind
+stage 11 decides, from the stored edge set and the owner's decisions alone:
 
 - An edge applies on its own only when it is the only edge on each of its ends,
   counting every kind together, and its kind is one that may auto-apply. One tie-break
@@ -68,15 +68,19 @@ Clarifications made while building it:
    isolated: neither of its ends is an end of another conversion edge of the pair. Its
    printed fee is then the only fee line of its date, else its spread is booked on the
    edge, and the net takes its two legs out at their own CAD values, so neither its
-   spread nor the rate of an in-leg posted another day reaches the net. The net is keyed
-   to the first edge that is not such a conversion and names no printed fee. A
-   conversion that shares an end with another (one leg fanned out to two on the
-   account, either way round) has no rule of its own, because a spread measured against
-   the whole shared leg would be wrong: the whole pair nets once. The net of a pair with
-   legs is floored at zero, as a conversion spread is: a favourable residual books
-   nothing, never income. The floor is for pairs with legs only: a two-line pair,
-   decided or applied on its own, keeps the signed net of FR-15. Tests pin both, so
-   flooring a two-line pair fails one.
+   spread nor the rate of an in-leg posted another day reaches the net; the net is
+   dated and placed by the first debit among the lines left, never by the conversion's
+   own out-leg. The net is keyed to the first edge that is not such a conversion and
+   names no printed fee. A conversion that shares an end with another (one leg fanned
+   out to two on the account, either way round) has no rule of its own, because a
+   spread measured against the whole shared leg would be wrong: the whole pair nets
+   once. When any such fanned conversion names a printed fee (as stored, before the
+   shared ones are cleared), that fee is the only fee line of its date and the pair
+   books no net beside it, the residual booked nowhere, as when every edge names one.
+   The net of a pair with legs is floored at zero, as a conversion spread is: a
+   favourable residual books nothing, never income. The floor is for pairs with legs
+   only: a two-line pair, decided or applied on its own, keeps the signed net of FR-15.
+   Tests pin both, so flooring a two-line pair fails one.
 
 The pairing defaults (transfer window and tolerance, conversion window and spread
 tolerance, reversal window, import overlap tolerance) were tuned at the Phase 3b gate on

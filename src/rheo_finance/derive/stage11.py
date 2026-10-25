@@ -56,9 +56,9 @@ is never a stage 9 candidate, so its one edge is its reversal edge. A reversal e
 of the owner's ``pair`` is the one stage 11 applies (above).
 
 **Fee lines.** What applied books its fee lines through ``fees.book``: the net of a
-decided fiat ``pair`` whose edges are all ``own_transfer`` edges, the net of an
-applied fiat ``own_transfer``, and the spread of an applied ``conversion`` (``fees``
-holds the rules).
+decided fiat ``pair`` (with legs, once, whatever its edges' kinds; or two lines joined
+by an ``own_transfer``), the net of an applied fiat ``own_transfer``, and the spread
+of an applied ``conversion`` (``fees`` holds the rules).
 """
 
 from __future__ import annotations

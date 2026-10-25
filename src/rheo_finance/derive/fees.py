@@ -4,14 +4,19 @@ calls ``book``.
 
 **Three ways a movement books a fee**, each at most one line:
 
-- **A decided ``pair`` that nets.** A fiat ``pair`` whose edges are all
-  ``own_transfer`` edges nets once: the target against the sum of every other line it
-  names, so a payment paid by two credits is one movement and at most one fee line,
+- **A decided ``pair`` that nets.** A fiat ``pair`` with legs (three lines or more)
+  nets once, whatever its edges' kinds (an ``own_transfer``, a reversal-shaped edge or
+  a ``conversion`` on one of its legs): the target against the sum of every other line
+  it names, so a payment paid by two credits is one movement and at most one fee line,
   on the OUTBOUND side (the target when it is the debit, else the first debit among
-  the others), keyed to the decision's first edge. A crypto ``pair`` books no fee.
+  the others), keyed to the decision's first edge. A conversion inside such a pair
+  books no spread of its own: the net already holds it. A two-line fiat ``pair``
+  nets the same way when its edge is an ``own_transfer``; a two-line ``reversal`` is
+  of exactly opposite amounts, and a two-line ``conversion`` books its spread (below).
+  A crypto ``pair`` books no fee.
 - **An applied fiat ``own_transfer``** no decision touched, whose legs do not net to
-  zero (inside the tolerance, or stage 9 gave no edge), books the net.
-- **An applied ``conversion``**, decided or not, books its spread (below).
+  zero (inside the tolerance), books the net.
+- **An applied ``conversion``** books its spread (below).
 
 **A net** is one txn of origin ``derived_fee`` on the OUTBOUND account (the debit's),
 dated and recognized as the debit, ``fee_type`` ``fee``, with no transfer state, so it
@@ -204,13 +209,14 @@ def book(
     netted = [
         (each, found)
         for each, found in pairs
-        if all(e.kind == OWN_TRANSFER and len(e.ends) == 2 for e in found)
+        if len(found) > 1 or found[0].kind == OWN_TRANSFER
     ]
+    inside = {edge.id for _, found in netted for edge in found}
     transfers = [e for e in applied if e.kind == OWN_TRANSFER and len(e.ends) == 2]
     converted = [
         edge
         for edge in [*applied, *(e for _, found in pairs for e in found)]
-        if edge.kind == CONVERSION
+        if edge.kind == CONVERSION and edge.id not in inside
     ]
     legs = _legs(
         uow,

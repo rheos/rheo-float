@@ -27,6 +27,7 @@ from rheo_finance.decision import RecordOut
 from rheo_finance.derive.ops import RebuildOut
 from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.manual.own_addresses import OWN_ADDRESSES_FILE
+from rheo_finance.manual.stage2 import account_id
 from rheo_finance.operations import dispatch
 from rheo_finance.storage.refs import format_ref
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
@@ -135,6 +136,14 @@ def fees(ledger: Ledger) -> list[Decimal]:
     return sorted(
         ledger.conn.scalars(select(txn.c.amount).where(txn.c.origin == "derived_fee"))
     )
+
+
+def fee_rows(ledger: Ledger) -> list[tuple[uuid.UUID, Decimal]]:
+    """Each derived fee line as (account, amount), sorted."""
+    rows = ledger.conn.execute(
+        select(txn.c.account_id, txn.c.amount).where(txn.c.origin == "derived_fee")
+    )
+    return sorted((tuple(row) for row in rows), key=str)
 
 
 def basis(decision_id: uuid.UUID) -> str:
@@ -729,3 +738,69 @@ def test_a_decision_holds_when_its_line_gets_a_new_primary_source(
     assert not card_line.provisional
     assert card_line.transfer_state == "paired"
     assert edges(ledger) == [(True, basis(decision_id))]
+
+
+# --- a pair with legs nets once, whatever its edges' kinds ----------------------------
+
+
+def test_a_pair_with_a_reversal_shaped_leg_nets_once_on_the_outbound_side(
+    ledger: Ledger,
+) -> None:
+    # A payment, a credit of its amount on the same account (a reversal shape, so
+    # stage 8 stores that edge) and a small card credit, paired as one movement: the
+    # target nets against both legs once, so the 10.00 left over is one fee line on
+    # the outbound account, not lost.
+    chequing_and_card(
+        ledger,
+        [(PAID, BILL_PAYMENT, "-200.00"), (LATER, "SAMPLE DEPOSIT 99973", "200.00")],
+        [(ARRIVED, "10.00")],
+    )
+    ledger.derive()
+
+    decision_id = decide(
+        ledger,
+        "pair",
+        key_ref(ledger, PAID, "-200.00"),
+        legs=(key_ref(ledger, LATER, "200.00"), key_ref(ledger, ARRIVED, "10.00")),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("own_transfer", True), ("reversal", True)]
+    assert edges(ledger, "reversal") == [(True, basis(decision_id))]
+    assert edges(ledger) == [(True, basis(decision_id))]
+    assert {state for state, _ in states(ledger).values()} == {"paired"}
+    assert fee_rows(ledger) == [(account_id("chequing"), Decimal("10.00"))]
+
+
+def test_a_pair_with_a_conversion_leg_nets_once_and_books_no_spread(
+    fx_ledger: Ledger,
+) -> None:
+    # The target converts to USD on its own account (a conversion by hand, whose
+    # spread alone would be 4.00) and a CAD credit of 2.00 comes back: one movement,
+    # netted by CAD values once, so one fee line of 2.00 and no spread line.
+    ledger = fx_ledger
+    ledger.file(
+        f"{FX_DIR}/cad.txt",
+        fx_lines(
+            "CAD",
+            "2025-06-02 -140.00 - - SAMPLE OUT 99961",
+            "2025-06-02 2.00 - - SAMPLE BACK 99970",
+        ),
+    )
+    ledger.file(
+        f"{FX_DIR}/usd.txt",
+        fx_lines("USD", "2025-06-02 100.00 136.00 - SAMPLE IN 99962"),
+    )
+    ledger.derive()
+
+    decision_id = decide(
+        ledger,
+        "pair",
+        key_ref(ledger, PAID, "-140.00"),
+        legs=(key_ref(ledger, PAID, "100.00"), key_ref(ledger, PAID, "2.00")),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
+    assert edges(ledger, "conversion") == [(True, basis(decision_id))]
+    assert fee_rows(ledger) == [(account_id("fx"), Decimal("-2.00"))]

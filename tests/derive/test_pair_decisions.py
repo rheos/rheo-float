@@ -40,6 +40,7 @@ from .support import (
     fx_lines,
 )
 from .support import FX_ISSUER as FX_DIR
+from .test_conversion import cover, store_rates
 from .test_conversions import DAY as CONVERTED
 from .test_conversions import WISE, converted, fee_lines, usd_rate, wise_csv
 from .test_crypto_edges import (
@@ -916,6 +917,129 @@ def test_a_pair_with_a_conversion_leg_nets_the_other_legs_without_its_spread(
     assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
     assert fee_rows(ledger) == [
         (account_id("fx"), Decimal("-2.72")),
+        (account_id("fx"), Decimal("-4.00")),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ins", "fee"),
+    [(("81.60", "54.40"), [Decimal("-4.00")]), (("81.60", "60.00"), [])],
+    ids=["short-by-4", "favourable"],
+)
+def test_one_out_leg_fanned_to_two_in_legs_nets_the_whole_pair_once(
+    fx_ledger: Ledger, ins: tuple[str, str], fee: list[Decimal]
+) -> None:
+    # A CAD debit converted into two USD credits on its account: two conversion edges
+    # sharing the out-leg, so neither keeps a rule of its own (each spread against
+    # the whole out-leg would book far too much). The pair nets once by CAD values,
+    # with its floor.
+    ledger = fx_ledger
+    first, second = ins
+    ledger.file(
+        f"{FX_DIR}/cad.txt", fx_lines("CAD", "2025-06-02 -140.00 - - SAMPLE OUT 99961")
+    )
+    ledger.file(
+        f"{FX_DIR}/usd.txt",
+        fx_lines(
+            "USD",
+            f"2025-06-02 60.00 {first} - SAMPLE IN 99962",
+            f"2025-06-02 40.00 {second} - SAMPLE IN 99963",
+        ),
+    )
+    ledger.derive()
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, PAID, "-140.00"),
+        legs=(key_ref(ledger, PAID, "60.00"), key_ref(ledger, PAID, "40.00")),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("conversion", True), ("conversion", True)]
+    assert fees(ledger) == fee
+    assert {state for state, _ in states(ledger).values()} == {"paired"}
+
+
+@pytest.mark.parametrize(
+    ("outs", "fee"),
+    [(("-70.00", "-70.00"), [Decimal("-4.00")]), (("-70.00", "-60.00"), [])],
+    ids=["short-by-4", "favourable"],
+)
+def test_two_out_legs_fanned_into_one_in_leg_net_the_whole_pair_once(
+    fx_ledger: Ledger, outs: tuple[str, str], fee: list[Decimal]
+) -> None:
+    # Two CAD debits converted into one USD credit (136.00 CAD stated): two conversion
+    # edges sharing the in-leg. The pair nets once, on the outbound side.
+    ledger = fx_ledger
+    first, second = outs
+    ledger.file(
+        f"{FX_DIR}/cad.txt",
+        fx_lines(
+            "CAD",
+            f"2025-06-02 {first} - - SAMPLE OUT 99961",
+            f"2025-06-03 {second} - - SAMPLE OUT 99964",
+        ),
+    )
+    ledger.file(
+        f"{FX_DIR}/usd.txt",
+        fx_lines("USD", "2025-06-02 100.00 136.00 - SAMPLE IN 99962"),
+    )
+    ledger.derive()
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, PAID, "100.00"),
+        legs=(
+            key_ref(ledger, PAID, first),
+            key_ref(ledger, D(2025, 6, 3), second),
+        ),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("conversion", True), ("conversion", True)]
+    expected = [(account_id("fx"), each) for each in fee]
+    assert fee_rows(ledger) == expected
+
+
+def test_a_conversion_leg_posted_a_day_later_leaves_no_rate_drift_in_the_net(
+    fx_ledger: Ledger,
+) -> None:
+    # A USD credit on 3 Jun (138.00 CAD at that day's rate) paired with the CAD debit
+    # of 2 Jun it converts (spread 4.00 at the 2 Jun rate) and a USD debit of 2.00
+    # (2.76 CAD). The conversion books its spread; the net takes both its legs out at
+    # their own CAD values, so it is the 2.76 alone, not the 0.76 a spread taken out
+    # instead would leave.
+    ledger = fx_ledger
+    paid, converted = D(2025, 6, 2), D(2025, 6, 3)
+    store_rates(ledger, "USD", (paid, "1.3600"), (converted, "1.3800"))
+    cover(ledger, "FXUSDCAD", (paid, paid + dt.timedelta(days=30)))
+    ledger.file(
+        f"{FX_DIR}/cad.txt", fx_lines("CAD", "2025-06-02 -140.00 - - SAMPLE OUT 99961")
+    )
+    ledger.file(
+        f"{FX_DIR}/usd.txt",
+        fx_lines(
+            "USD",
+            "2025-06-03 100.00 - - SAMPLE IN 99962",
+            "2025-06-03 -2.00 - - SAMPLE OUT 99963",
+        ),
+    )
+    ledger.derive()
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, converted, "100.00"),
+        legs=(key_ref(ledger, paid, "-140.00"), key_ref(ledger, converted, "-2.00")),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
+    assert ledger.conn.scalar(select(pair_edge.c.spread_cad)) == Decimal("4.00")
+    assert fee_rows(ledger) == [
+        (account_id("fx"), Decimal("-2.76")),
         (account_id("fx"), Decimal("-4.00")),
     ]
 

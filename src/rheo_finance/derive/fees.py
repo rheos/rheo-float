@@ -5,22 +5,24 @@ calls ``book``.
 **Three ways a movement books a fee**, each at most one line:
 
 - **A decided ``pair`` that nets.** A fiat ``pair`` with legs (three lines or more)
-  nets once, whatever its other edges' kinds (an ``own_transfer`` or a reversal-shaped
-  edge on one of its legs): the target against the sum of every other line it names,
-  so a payment paid by two credits is one movement and at most one fee line, on the
-  OUTBOUND side (the target when it is the debit, else the first debit among the
-  others), keyed to the decision's first edge (in the order of its lines) that is no
-  ``conversion``. A ``conversion`` edge inside such a pair keeps its own rule (below):
+  nets once: the target against the sum of every other line it names, so a payment
+  paid by two credits is one movement and at most one fee line, on the OUTBOUND side
+  (the target when it is the debit, else the first debit among the others), keyed to
+  the decision's first edge (in the order of its lines) that is no isolated conversion
+  and names no printed fee. An ISOLATED conversion edge of the pair (neither of its
+  ends is an end of another conversion edge of the pair) keeps its own rule (below):
   its printed fee is the only fee line of its date, else its spread is booked on the
-  edge, and the net leaves the conversion out by adding its spread back, so the
-  issuer's price against the Bank of Canada's is booked once or, beside a printed fee,
-  nowhere. A conversion with no spread (no stored rate) leaves the net unmeasured. With
-  no edge but conversions there is no net. The net of a pair with legs is floored at
-  zero, as a spread is (FR-15(c)): a favourable residual (the credits worth more than
-  the debits) books no line, never income. A two-line fiat ``pair`` nets the same way
-  when its edge is an ``own_transfer``, with the signed net of FR-15 and no floor; a
-  two-line ``reversal`` is of exactly opposite amounts, and a two-line ``conversion``
-  books its spread (below). A crypto ``pair`` books no fee.
+  edge, and the net leaves its two legs out at their own CAD values (stage 4), so
+  neither its spread nor the rate of an in-leg posted another day reaches the net. A
+  conversion that shares an end with another (one leg fanned out to two on the
+  account, either way round) has no rule of its own: the whole pair nets once, as an
+  own transfer would. With no key edge there is no net; with a leg of an isolated
+  conversion unconverted the net is unmeasured. The net of a pair with legs is
+  floored at zero, as a spread is (FR-15(c)): a favourable residual (the credits
+  worth more than the debits) books no line, never income. A two-line fiat ``pair``
+  nets the same way when its edge is an ``own_transfer``, with the signed net of
+  FR-15 and no floor; a two-line ``reversal`` is of exactly opposite amounts, and a
+  two-line ``conversion`` books its spread (below). A crypto ``pair`` books no fee.
 - **An applied fiat ``own_transfer``** no decision touched, whose legs do not net to
   zero (inside the tolerance), books the net.
 - **An applied ``conversion``** books its spread (below).
@@ -55,7 +57,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -117,12 +119,12 @@ def _net(
     legs: list[_Leg],
     *,
     floor: bool = False,
-    spreads: Decimal = Decimal(0),
+    offset: Decimal = Decimal(0),
 ) -> dict[str, object] | None:
     """The derived fee txn of one movement's lines, the target first; None when they
     net to zero or cannot be measured, and with ``floor`` when they net above zero
-    (module docstring). ``key`` is the edge its id derives from; ``spreads`` (CAD) is
-    added back to a net of two currencies, so the conversions inside it stay out."""
+    (module docstring). ``key`` is the edge its id derives from; ``offset`` (CAD) is
+    added to a net of two currencies, taking out the isolated conversions' legs."""
     debit = next((leg for leg in legs if leg.amount < 0), legs[0])
     native: dict[str, object] = {
         "cad_source": "native", "rate": None, "rate_date": None,
@@ -144,7 +146,7 @@ def _net(
             conversion = {"cad_source": None, "rate": None, "rate_date": None,
                           "conversion_state": "unconverted"}  # fmt: skip
     elif all(leg.cad is not None for leg in legs):
-        net = cad = spreads + sum(
+        net = cad = offset + sum(
             (leg.cad for leg in legs if leg.cad is not None), Decimal(0)
         )
         currency = CAD
@@ -227,12 +229,20 @@ def book(
         for each, found in pairs
         if len(found) > 1 or found[0].kind == OWN_TRANSFER
     ]
+    isolated = {each.id: _isolated(found) for each, found in netted}
+    # A conversion of a pair with legs that shares an end with another conversion of
+    # it (a fan-out) has no fee rule of its own: the pair's net holds it.
+    fanned = {
+        edge.id
+        for each, found in netted
+        for edge in found
+        if edge.kind == CONVERSION and edge.id not in isolated[each.id]
+    }
     transfers = [e for e in applied if e.kind == OWN_TRANSFER and len(e.ends) == 2]
-    # Every applied conversion keeps its own fee rule, inside a pair with legs too.
     converted = [
         edge
         for edge in [*applied, *(e for _, found in pairs for e in found)]
-        if edge.kind == CONVERSION
+        if edge.kind == CONVERSION and edge.id not in fanned
     ]
     legs = _legs(
         uow,
@@ -247,19 +257,21 @@ def book(
             fees[edge.id] = fee
     for each, found in netted:
         lines = [legs[line] for line in each.lines]
-        conversions = [edge for edge in found if edge.kind == CONVERSION]
+        own = isolated[each.id]
         key = next(
-            (e for e in found if e.kind != CONVERSION and e.printed_fee is None), None
+            (e for e in found if e.id not in own and e.printed_fee is None), None
         )
         if key is None or not _fiat(lines):
             continue
-        if any(edge.spread is None for edge in conversions):
+        # An isolated conversion's two legs leave the net at their own CAD values.
+        cads = [legs[end].cad for e in found if e.id in own for end in e.ends]
+        if any(cad is None for cad in cads):
             continue
         fee = _net(
             key.id,
             lines,
             floor=len(found) > 1,
-            spreads=sum((e.spread for e in conversions if e.spread), Decimal(0)),
+            offset=-sum((cad for cad in cads if cad is not None), Decimal(0)),
         )
         if fee is not None:
             fees[key.id] = fee
@@ -284,6 +296,16 @@ def book(
             ],
         )
     return {edge_id: cast(uuid.UUID, fee["id"]) for edge_id, fee in fees.items()}
+
+
+def _isolated(found: Sequence[StoredEdge]) -> set[uuid.UUID]:
+    """The ids of the conversion edges of a pair with legs that share neither end with
+    another conversion edge of it (module docstring); none in a two-line pair."""
+    if len(found) < 2:
+        return set()
+    conversions = [edge for edge in found if edge.kind == CONVERSION]
+    ends = Counter(end for edge in conversions for end in edge.ends)
+    return {edge.id for edge in conversions if all(ends[end] == 1 for end in edge.ends)}
 
 
 def _fiat(legs: list[_Leg]) -> bool:

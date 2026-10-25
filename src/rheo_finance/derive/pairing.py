@@ -1,6 +1,7 @@
-"""What the pairing stages share (stage 8 reversals, stage 9 candidate edges): which
-sources are a txn's own lines, the read of those lines with their wording, and the
-split of a set of edges into the groups of lines they connect.
+"""What the pairing stages share (stage 8 reversals, stage 9 candidate edges, stage
+11): which sources are a txn's own lines, the read of those lines with their wording,
+the stored edges, and the split of a set of edges into the groups of lines they
+connect.
 
 A txn's own lines are its primary and additional sources (``LINE_ROLES``); an
 evidence source, such as a receipt, is not a line of it. A manual cash line has no
@@ -12,14 +13,46 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import ColumnElement, Row, Select, and_, select
 
-from rheo_finance.storage.schema import document_line, txn, txn_source
+from rheo_finance.context import UnitOfWork
+from rheo_finance.storage.schema import document_line, pair_edge, txn, txn_source
 
 # The source roles whose line is the txn itself; an evidence source is not.
 LINE_ROLES: Final = ("primary", "additional")
+
+
+@dataclass(frozen=True)
+class StoredEdge:
+    """One ``pair_edge`` row as stage 11 reads it."""
+
+    id: uuid.UUID
+    kind: str
+    # ``a_txn_id`` first, then ``b_txn_id`` when there is one.
+    ends: tuple[uuid.UUID, ...]
+    spread: Decimal | None = None
+    printed_fee: uuid.UUID | None = None
+
+
+def stored_edges(uow: UnitOfWork) -> list[StoredEdge]:
+    rows = uow.execute(
+        select(pair_edge.c.id, pair_edge.c.kind, pair_edge.c.a_txn_id,
+               pair_edge.c.b_txn_id, pair_edge.c.spread_cad, pair_edge.c.fee_txn_id)
+    )  # fmt: skip
+    return [
+        StoredEdge(
+            row.id,
+            row.kind,
+            tuple(end for end in (row.a_txn_id, row.b_txn_id) if end),
+            row.spread_cad,
+            row.fee_txn_id,
+        )
+        for row in rows
+    ]
 
 
 def source_lines(*columns: ColumnElement[Any]) -> Select[Any]:

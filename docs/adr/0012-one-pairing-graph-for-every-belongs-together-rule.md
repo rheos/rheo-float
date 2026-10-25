@@ -18,11 +18,13 @@ archive needed.
 
 ## Decision
 
-Every kind of "belongs together" is an edge kind in one table, `pair_edge`. The
-candidate stages store edges and never apply them: stage 8 the reversals, stage 9 the
-fiat own transfers and same-account conversions, the crypto edge stage the crypto
-transfers. Stage 11 then decides, from the stored edge set and the owner's decisions
-alone:
+Every kind of "belongs together" is an edge kind in one table, `pair_edge`. Stage 9
+stores the fiat own-transfer and same-account conversion candidates and the crypto edge
+stage the crypto transfers, without applying them. Stage 8 is the exception: it stores
+the reversal candidates and itself applies a reversal that is its lines' only one.
+Stage 11 never auto-applies a reversal edge; it counts them for uniqueness and applies
+one only when the owner's `pair` names it. For every other kind stage 11 decides, from
+the stored edge set and the owner's decisions alone:
 
 - An edge applies on its own only when it is the only edge on each of its ends,
   counting every kind together, and its kind is one that may auto-apply. One tie-break
@@ -60,21 +62,45 @@ Clarifications made while building it:
    once before stage 8, and the stages build the graph around them. If stage 11 ever
    finds an applied decision whose edge was not stored, it raises naming the decision
    instead of guessing.
-7. **A decided pair with legs nets once.** A payment settled by several lines nets the
-   target against all of them once, whatever its edges' kinds, and books at most one
-   fee line on the outbound side. That fee is keyed to the first edge that names no
-   printed fee, so an issuer's printed fee stays named on its conversion edge; when
-   every edge names one, the printed fees are the fee lines. The net is floored at
-   zero, as a conversion spread is: a favourable residual books nothing, never income.
+7. **A decided pair with legs nets once, without its conversions.** A payment settled
+   by several lines nets the target against all of them once and books at most one fee
+   line on the outbound side, keyed to the first edge that is no conversion. A
+   conversion edge inside the pair keeps its own rule (FR-15(c)): its printed fee is
+   the only fee line of its date, else its spread is booked on the edge. The net leaves
+   the conversion out by adding its spread back, so the issuer's price against the Bank
+   of Canada's is booked once, or beside a printed fee nowhere. The net of a pair with
+   legs is floored at zero, as a conversion spread is: a favourable residual books
+   nothing, never income. The floor is for pairs with legs only: a two-line pair,
+   decided or applied on its own, keeps the signed net of FR-15. Tests pin both, so
+   flooring a two-line pair fails one.
 
 The pairing defaults (transfer window and tolerance, conversion window and spread
 tolerance, reversal window, import overlap tolerance) were tuned at the Phase 3b gate on
-a real archive, in the settings declarations only. Same-currency own transfers there
-net exactly once a parser prints the fee as its own line, so an absolute CAD floor on
-the transfer tolerance only joined small lines of different amounts; it defaults to
-0.00, leaving the percent. Legs more than five days apart were mostly rival candidates
-that made real pairs ambiguous, so the transfer window is five days. Payment-service
-conversion spreads run to just over five percent, so the spread tolerance is six.
+a real archive, in the settings declarations only. The spec's 5.00 CAD absolute
+transfer tolerance and 5.0 percent conversion spread (FR-15, FR-15(c), AC-16, AC-85 and
+the Settings section) are superseded as initial values; the spec's 7-day transfer
+window likewise.
+
+- **Transfer tolerance floor, 5.00 to 0.00 CAD** (the 1.5 percent alone). Same-currency
+  own transfers net exactly once a parser prints the fee as its own line: 76 of 87
+  applied own transfers had equal legs. Of the 11 unequal ones, 10 were inside only the
+  5.00 floor, and 9 of those joined small lines (larger leg under 20.00) whose amounts
+  differed by 20 to 100 percent, two movements rather than one with a fee. 222 of 417
+  candidate edges existed only by the floor. Every floor from 0.50 up still applied such
+  a pair; at 0.00 paired lines rose from 241 to 324 and ambiguous fell from 240 to 131.
+- **Transfer window, 7 to 5 days.** Applied pairs more than 5 days apart: 2; rival
+  candidates 6 or 7 days apart: 23. At 5 days paired lines were 348 (324 at 7) and
+  ambiguous 103 (131 at 7).
+- **Conversion spread, 5.0 to 6.0 percent.** The real payment-service spreads ran from
+  3.0 to just over 5 percent; 6.0 pairs all 44 conversions with no worded leg left
+  unresolved (2 at 5.0) and no rival edge (10.0 added 6).
+- The conversion window (1 day), reversal window (35 days), transfer percent (1.5) and
+  import overlap tolerance (3 days) keep their values: the counts did not move or got
+  worse.
+
+AC-16 and AC-85 are proven at the spec's worked values in the rule tests (the derive
+test ledger pins them as `RULE_SETTINGS`) and at the shipped values in
+`test_tuned_defaults`.
 
 ## Consequences
 

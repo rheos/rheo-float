@@ -1,0 +1,17 @@
+{
+  "about": [
+    "Asset codes (SPEC 'Data Models' > Asset codes). Reference data only: no holding, address or quantity.",
+    "Each canonical code lists the source identifiers that name it, matched exactly and with case:",
+    "the portfolio tracker's coin identifiers (lower-case slugs) and the exchanges' tickers.",
+    "An identifier not listed here gets the code 'cs:<identifier>', so a token that prints a real",
+    "asset's symbol never pairs with, prices as or nets against the real asset."
+  ],
+  "codes": {
+    "BTC": ["bitcoin", "BTC"],
+    "ETH": ["ethereum", "ETH"],
+    "USDT": ["tether", "USDT"],
+    "USDC": ["usd-coin", "USDC"],
+    "LTC": ["litecoin", "LTC"],
+    "SOL": ["solana", "SOL"]
+  }
+}

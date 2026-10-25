@@ -38,6 +38,7 @@ from typing import Final, Literal
 from sqlalchemy import select, update
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.parsers.base import CRYPTO_LINE_KINDS
 from rheo_finance.storage.schema import document, document_line, statement_period
 from rheo_finance.text import normalize_description
 
@@ -53,6 +54,9 @@ BASIS: Final[Mapping[int, Basis]] = {
 }
 
 Period = tuple[str, dt.date, dt.date]
+# The line kinds that become txns by the line rules of stage 3, so give a document a
+# standing on their account even where it states no period there.
+LINE_KINDS: Final = ("transaction", *CRYPTO_LINE_KINDS)
 
 
 @dataclass(frozen=True)
@@ -119,8 +123,8 @@ def ranked(standings: Iterable[Standing]) -> list[Standing]:
 
 
 def standings(uow: UnitOfWork) -> dict[uuid.UUID, list[Standing]]:
-    """Every parsed document's standing on each account it has periods or transaction
-    lines on, by account, in precedence order."""
+    """Every parsed document's standing on each account it has periods or lines of a
+    ``LINE_KINDS`` kind on, by account, in precedence order."""
     facts: dict[uuid.UUID, _Facts] = {}
 
     def fact(document_id: uuid.UUID, sha256: str, fmt: str) -> _Facts:
@@ -163,7 +167,7 @@ def standings(uow: UnitOfWork) -> dict[uuid.UUID, list[Standing]]:
         .join(document, document.c.id == document_line.c.document_id)
         .where(
             document.c.status == "parsed",
-            document_line.c.line_kind == "transaction",
+            document_line.c.line_kind.in_(LINE_KINDS),
             document_line.c.account_id.is_not(None),
         )
     )

@@ -79,19 +79,20 @@ def digest_now(uow: UnitOfWork, provider: TestSink) -> str:
     return spec_digest(provider(uow))
 
 
-# --- production registers nothing; defaults are all off (AC-78a) ----------------------
+# --- production registers only the rates provider; defaults are all off (AC-78a) ------
 
 
-def test_no_provider_is_registered_and_every_sink_is_disabled(
+def test_only_the_rates_provider_is_registered_and_every_sink_is_disabled(
     uow: UnitOfWork,
     sink_settings: Callable[..., None],
     record_sink_approval: Callable[..., uuid.UUID],
 ) -> None:
     catalogue.load_all()
-    assert spec.SINK_SPECS == {}
+    assert set(spec.SINK_SPECS) == {"rates"}
     for sink in SINKS:
         assert gate.is_enabled(uow, sink) is False
-    # Every setting true and an approval for each: still no provider, still off.
+    # Every setting true and an approval for each, none for the current spec: no
+    # provider, or a stale approval, so still off.
     sink_settings(**dict.fromkeys(SINKS, True))
     for sink in SINKS:
         record_sink_approval(sink, "0" * 64, at=T0)

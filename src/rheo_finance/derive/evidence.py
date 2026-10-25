@@ -68,6 +68,7 @@ from sqlalchemy import bindparam, insert, select, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
 from rheo_finance.manual.stage2 import account_id
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import document, document_line, txn, txn_source
 from rheo_finance.text import normalize_description
@@ -370,7 +371,7 @@ def link(uow: UnitOfWork, *, receipt_days: int, invoice_days: int) -> Evidence:
                 "counterparty": first.payee or None,
                 "origin": RECEIPT_ORIGIN,
                 "basis": RECEIPT_BASIS,
-                "movement_kind": "fiat",
+                "movement_kind": FIAT,
             }
         )
         sources.append(_source(key, first, "primary"))

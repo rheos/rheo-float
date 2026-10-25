@@ -55,6 +55,7 @@ from rheo_finance.documents.issuers import ISSUER_DIRS
 from rheo_finance.documents.registry import WITHHELD_PATH, DocumentStatus
 from rheo_finance.events import record_event
 from rheo_finance.parsers.base import (
+    CRYPTO_LINE_KINDS,
     AccountLookup,
     ManualReason,
     NoTextLayer,
@@ -218,6 +219,8 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
 
 # Line kinds a document states as evidence of a payment, with no account of their own.
 EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt"})
+# Crypto movement and fee lines carry a quantity of an asset, not money in a currency.
+QUANTITY_KINDS: Final = frozenset(CRYPTO_LINE_KINDS)
 
 
 def summary_ties_out(result: ParseResult) -> bool:
@@ -226,7 +229,9 @@ def summary_ties_out(result: ParseResult) -> bool:
 
     An ``invoice`` or ``receipt`` line belongs to no account and no period: it is
     evidence of a payment, read against the payment lines in stage 3, so it is
-    outside this check.
+    outside this check. So is a crypto movement or fee line: its ``amount`` is a
+    quantity of the asset it names, not money in a period's currency, and no crypto
+    source states a summary to tie it to (its control is ``none``).
 
     A period's lines are its account's and currency's lines that carry an amount:
     opening plus their sum is closing, and where the period states them, the debits
@@ -235,7 +240,7 @@ def summary_ties_out(result: ParseResult) -> bool:
     """
     sums: dict[tuple[uuid.UUID, str], list[Decimal]] = defaultdict(list)
     for line in result.lines:
-        if line.amount is None or line.line_kind in EVIDENCE_KINDS:
+        if line.amount is None or line.line_kind in EVIDENCE_KINDS | QUANTITY_KINDS:
             continue
         if line.account is None or line.currency is None:
             return False

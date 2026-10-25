@@ -76,6 +76,18 @@ PINNED = {
     "0015_receipt_ref_digest.py": (
         "45a2d6547d37f13f7e71ad5d8e7b4ffafa53b927c41beb80f5a4fa60441a07ee"
     ),
+    "0016_rates.py": (
+        "d7e8a2208f9e393a68e9cc8699550b306e2629bdbe323d8840d645dcd1172790"
+    ),
+    "0017_pair_edge.py": (
+        "0f57a45971ef9f67345c71332a271cd2fa66a2e83a00399a21f77d1fd311e1c4"
+    ),
+    "0018_crypto_core.py": (
+        "01cb3523437ceebff6bdabf9ad272e45bfe2517d2d82b173abb2ecdcb780fb48"
+    ),
+    "0019_crypto_label.py": (
+        "952db656af5c1befbe106ad720d52f560d25c176a4855bbc67488dbac4cdfe5c"
+    ),
 }
 
 

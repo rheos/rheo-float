@@ -17,10 +17,10 @@ a currency, from documents with status ``parsed``, decided by ``overlap.match_li
 over the documents in ``precedence`` order: a txn (with its basis and provisional
 flag), an additional source of a txn, or a ``source_discrepancy`` row. A transaction
 line missing one of the three is left out and counted (``Lines.incomplete_lines``).
+Crypto movement and fee lines have their own keys and matching (``crypto_lines``).
 Receipt and invoice lines are part two (``evidence``), matched against every txn part
 one wrote, the manual lines included. Other line kinds belong to stages and features
-that are not built yet (crypto lines, trading results, holdings, notices) and are left
-alone.
+that are not built yet (trading results, holdings, notices) and are left alone.
 
 **Manual lines.** The currency of a line must be one its account takes
 (``account.currencies``). A line in another currency is not loaded: it is reported as a
@@ -36,15 +36,17 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Row, bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.derive import evidence, overlap
+from rheo_finance.derive import crypto_lines, evidence, overlap
 from rheo_finance.derive.precedence import standings
 from rheo_finance.manual.cash_lines import TRANSACTIONS_FILE, CashLines
 from rheo_finance.manual.loader import RowError
 from rheo_finance.manual.stage2 import account_id, error_id
+from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
@@ -198,7 +200,7 @@ def _document_lines(uow: UnitOfWork, overlap_days: int) -> Lines:
                 "origin": "document_line",
                 "basis": commit.basis,
                 "provisional": commit.provisional,
-                "movement_kind": "fiat",
+                "movement_kind": FIAT,
                 "fee_type": row.fee_type,
                 "trade_ref": row.trade_ref,
             }
@@ -283,7 +285,7 @@ def _manual_lines(
                 "description_norm": norm,
                 "origin": "manual",
                 "basis": "manual",
-                "movement_kind": "fiat",
+                "movement_kind": FIAT,
             }
         )
         sources.append(
@@ -319,23 +321,33 @@ def build_lines(
     cash: CashLines,
     account_currencies: dict[str, set[str]],
     *,
+    zone: ZoneInfo,
     overlap_days: int,
     receipt_days: int,
     invoice_days: int,
+    qty_epsilon: Decimal,
 ) -> Lines:
     """Write the txns, their sources and the source discrepancies, then link the
     receipts and invoices (``evidence``). ``account_currencies`` maps each loaded
-    account's slug to the currencies it takes; ``overlap_days`` is
+    account's slug to the currencies it takes; ``zone`` is
+    ``finance.locale.timezone``, which a crypto txn's posting date follows;
+    ``overlap_days`` is
     ``finance.import.overlap_day_tolerance``, ``receipt_days`` and ``invoice_days``
-    the receipt and invoice matching windows."""
+    the receipt and invoice matching windows, ``qty_epsilon``
+    ``finance.crypto.qty_epsilon``."""
     documents = _document_lines(uow, overlap_days)
+    crypto = crypto_lines.build_crypto_lines(uow, zone, qty_epsilon=qty_epsilon)
     manual = _manual_lines(uow, cash, account_currencies)
     linked = evidence.link(uow, receipt_days=receipt_days, invoice_days=invoice_days)
     return Lines(
-        from_documents=documents.from_documents,
-        additional_sources=documents.additional_sources,
-        discrepancies=documents.discrepancies,
-        incomplete_lines=documents.incomplete_lines + linked.incomplete_lines,
+        from_documents=documents.from_documents + crypto.txns,
+        additional_sources=documents.additional_sources + crypto.additional_sources,
+        discrepancies=documents.discrepancies + crypto.discrepancies,
+        incomplete_lines=(
+            documents.incomplete_lines
+            + crypto.incomplete_lines
+            + linked.incomplete_lines
+        ),
         from_manual=manual.from_manual,
         manual_currency_refused=manual.manual_currency_refused,
         evidence_links=linked.links,

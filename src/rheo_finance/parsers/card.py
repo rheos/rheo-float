@@ -11,8 +11,10 @@ statement's date is its period end.
 
 A card is matched to the registry by the last four digits of its masked number at the
 card's institution (``AccountLookup.by_last_four``: identifiers of kinds ``number``
-and ``masked_card``, the same scope in which the loader refuses two accounts sharing a
-last four), never by the cardholder's printed name, which no card parser stores.
+and ``masked_card``), never by the cardholder's printed name, which no card parser
+stores. The loader refuses the last-four match for an (institution, last four) group
+unless every cross-account pair in it is two distinct full numbers (ADR-0011), and a
+match that still finds two accounts is ``ambiguous_account``.
 """
 
 from __future__ import annotations

@@ -11,7 +11,8 @@ either way.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   coverage matrix, the ``txn`` tables, the source discrepancies and the events. The
+   coverage matrix, the pairing graph, the ``txn`` tables, the source discrepancies and
+   the events. The
    parse cache (``PARSE_CACHE``: lines, periods, rejected periods and the rejection
    events) is cleared whole with ``reparse``; otherwise stage 1 clears and rewrites a
    document's rows when it parses that document, and the columns stage 3 writes on a
@@ -29,8 +30,24 @@ Order of work, set by what each step reads:
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
    source discrepancies (``stage3``, ``precedence``, ``overlap``), then the receipts
    and invoices linked to the txns as evidence (``evidence``).
-5. Stage 5, recognition dates (``stage5``), then stage 6, the coverage matrix
-   (``coverage``), which reads the periods, the lines and ``document_periods.csv``.
+5. Stage 4, conversion to CAD from the stored rates (``stage4``); stage 5,
+   recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
+   which reads the periods, the lines and ``document_periods.csv``; then stage 7, the
+   exclusions and the crypto movement kinds (``stage7``), which reads the own
+   addresses stage 2 stored and the ``include`` decisions; then the owner's ``pair``
+   and ``unpair`` decisions are read once (``pair_decisions``) for stages 8, 9 and
+   11, which build and resolve the candidate graph around them; then stage 8, the
+   reversals in both directions (``stage8``), which reads the lines' reversal wording
+   and the ``reversal`` rows of ``transfer_hints.csv``; then stage 9, the fiat own
+   transfer and same-account conversion candidate edges (``stage9``), which reads the
+   lines' transfer and conversion wording, the other rows of that file, the CAD values,
+   the stored rates and the lines stage 8 paired, and the crypto own-wallet transfer
+   edges (``crypto_edges``), which read the crypto kinds stage 7 set, the own
+   addresses and the crypto labels; then stage 11, resolution (``stage11``): the
+   owner's ``pair`` and ``unpair`` decisions apply first, then the
+   mutually unique edges apply, every transfer-like line gets its state, a labelled
+   crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
+   transfer's net or conversion's spread becomes a derived fee line.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -52,7 +69,20 @@ from sqlalchemy import delete, text, update
 
 from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
-from rheo_finance.derive import coverage, stage1, stage2, stage3, stage5
+from rheo_finance.derive import (
+    coverage,
+    crypto_edges,
+    pair_decisions,
+    stage1,
+    stage2,
+    stage3,
+    stage4,
+    stage5,
+    stage7,
+    stage8,
+    stage9,
+    stage11,
+)
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
 from rheo_finance.parsers.registry import DOCUMENT_REJECTED
@@ -63,6 +93,7 @@ from rheo_finance.storage.schema import (
 from rheo_finance.storage.schema import (
     document_line,
     event,
+    pair_edge,
     rejected_period,
     source_discrepancy,
     statement_period,
@@ -75,7 +106,7 @@ RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
-    coverage_table, txn_source, txn, source_discrepancy, document_line,
+    coverage_table, pair_edge, txn_source, txn, source_discrepancy, document_line,
     statement_period, rejected_period, event,
 )  # fmt: skip
 # Of CLEARED, what stage 1 stores per document: kept for documents a derive does not
@@ -87,11 +118,15 @@ STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id")
 REWRITTEN: Final = frozenset(
     {
         "account", "account_identifier", "manual_entry_error", "filed_year",
-        "sink_spec",
+        "own_address", "crypto_label", "sink_spec",
     }
 )  # fmt: skip
-# State, never truncated (Key decision 3).
-STATE: Final = frozenset({"decision", "decision_item", "decision_target"})
+# State, never truncated (Key decision 3): the decisions, the stored rates and the
+# ranges fetches covered. Each is an input of a derive and feeds a part of the input
+# fingerprint (``fingerprint.STATE_PARTS``).
+STATE: Final = frozenset(
+    {"decision", "decision_item", "decision_target", "rate", "rate_coverage"}
+)
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 
@@ -158,14 +193,49 @@ def run(
             uow,
             manual.cash_lines,
             currencies,
+            zone=ctx.settings.timezone,
             overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY),
             receipt_days=ctx.settings.get_int(RECEIPT_DAYS_KEY),
             invoice_days=ctx.settings.get_int(INVOICE_DAYS_KEY),
+            qty_epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
         )
 
+        stage4.convert(uow)
         stage5.recognize(uow)
         today = local_today(ctx.clock, ctx.settings.timezone)
         months = coverage.build_coverage(uow, manual.document_periods.periods, today)
+        stage7.attribute(uow)
+        decided = pair_decisions.read(uow)
+        stage8.pair_reversals(
+            uow,
+            window_days=ctx.settings.get_int(stage8.WINDOW_KEY),
+            hint_rows=manual.transfer_hints.rows,
+            decided=decided,
+        )
+        stage9.pair_transfers(
+            uow,
+            tolerance=stage9.Tolerance(
+                window_days=ctx.settings.get_int(stage9.WINDOW_KEY),
+                abs_cad=ctx.settings.get_decimal(stage9.ABS_KEY),
+                pct=ctx.settings.get_decimal(stage9.PCT_KEY),
+            ),
+            spread=stage9.Spread(
+                window_days=ctx.settings.get_int(stage9.CONVERSION_WINDOW_KEY),
+                pct=ctx.settings.get_decimal(stage9.SPREAD_KEY),
+            ),
+            hint_rows=manual.transfer_hints.rows,
+            decided=decided,
+        )
+        crypto_edges.pair_crypto(
+            uow,
+            tolerance=crypto_edges.Tolerance(
+                window_hours=ctx.settings.get_int(crypto_edges.WINDOW_KEY),
+                fee_pct=ctx.settings.get_decimal(crypto_edges.FEE_PCT_KEY),
+                epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
+            ),
+            decided=decided,
+        )
+        stage11.resolve(uow, decided)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

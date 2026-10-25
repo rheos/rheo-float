@@ -704,7 +704,8 @@ def test_a_decision_holds_when_its_line_gets_a_new_primary_source(
         ("card", CARD_INSTITUTION, "credit_card", CARD_IDENTIFIER),
         ("chequing", "Vancity", "chequing", CSV_IDENTIFIER),
     )
-    ledger.cash("chequing,2025-11-10,-22.00,CAD,SAMPLE CARD PAYMENT 99964,")
+    # A debit and a credit: a hand pair of two debits is inert.
+    ledger.cash("chequing,2025-11-10,22.00,CAD,SAMPLE CARD REFUND 99964,")
     for name in ("statement_oct", "statement_nov", "download_2025"):
         file_card(ledger, name)
     ledger.derive()
@@ -713,7 +714,7 @@ def test_a_decision_holds_when_its_line_gets_a_new_primary_source(
         ledger,
         "pair",
         provisional,
-        key_ref(ledger, D(2025, 11, 10), "-22.00"),
+        key_ref(ledger, D(2025, 11, 10), "22.00"),
     )
 
     file_card(ledger, "statement_dec")

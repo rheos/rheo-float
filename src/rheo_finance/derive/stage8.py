@@ -58,21 +58,29 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from sqlalchemy import bindparam, insert, update
+from sqlalchemy import ColumnElement, bindparam, insert, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
-from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.parsers.base import FIAT
 from rheo_finance.reference.patterns import reversal_row_matches
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import document_line, pair_edge, txn
 
+if TYPE_CHECKING:
+    from rheo_finance.derive.pair_decisions import Decided
+
 WINDOW_KEY: Final = "finance.reversals.window_days"
 KIND: Final = "reversal"
+# The lines stage 8 reads; ``pair_decisions`` reads a decided line through them too.
+LINES: Final[tuple[ColumnElement[bool], ...]] = (
+    txn.c.movement_kind == FIAT,
+    txn.c.amount != 0,
+    txn.c.exclusion.is_(None),
+)
 
 
 @dataclass(frozen=True)
@@ -106,11 +114,7 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             txn.c.amount,
             txn.c.posting_date,
             document_line.c.reversal_hint,
-        ).where(
-            txn.c.amount != 0,
-            txn.c.movement_kind == FIAT,
-            txn.c.exclusion.is_(None),
-        )
+        ).where(*LINES)
     )
     found: dict[uuid.UUID, _Line] = {}
     for row in rows:

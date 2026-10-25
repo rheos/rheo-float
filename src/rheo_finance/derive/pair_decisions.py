@@ -23,9 +23,24 @@ reversal included), newest first (``decided_at``, then id). Each edge set belong
 the newest decision naming it, so a later ``unpair`` undoes an earlier ``pair`` and the
 other way round. A ``pair`` applies only when none of its edge sets is a newer
 decision's and none of its lines is taken by a newer ``pair``; then it takes its
-lines. A ``pair`` is inert (recorded, applying nothing, taking nothing) when a line is
-excluded (stage 7), when it mixes fiat and crypto lines (no edge kind joins them),
-when two of its crypto lines are on one account, or when it names one fiat line.
+lines. A ``pair`` applies in full or not at all: it is inert (recorded, applying
+nothing, taking nothing, so its lines resolve as if it were absent) when any one of
+its edges is one no stage would store:
+
+- it mixes fiat and crypto lines (no edge kind joins them);
+- one fiat line: a fiat line has no one-sided edge;
+- two fiat lines of one sign (a hand pair needs a debit and a credit), or a fiat line
+  stage 8 does not read (zero, excluded) or, for an edge stage 8 would not store (not
+  of reversal shape: one account, one currency, exactly opposite amounts), a line
+  stage 9 does not read (a party's line);
+- one crypto line that is not a withdrawal to an own address (``crypto_edges`` stores
+  a one-sided edge for no other);
+- two crypto lines on one account, in two assets or of one direction, or a crypto line
+  ``crypto_edges`` does not read (a swap leg, a fee line, a labelled, excluded or zero
+  line).
+
+The line filters are the stages' own (each stage's ``LINES``), so this check and the
+stages agree on what can be stored.
 
 **What the stages do with it** (``Decided.allows``): an edge joining exactly an
 ``unpair``'s lines is never stored; a line a ``pair`` took is an end of no edge except
@@ -40,13 +55,15 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, ItemRole, reversed_clause
-from rheo_finance.derive import pairing
-from rheo_finance.parsers.base import FIAT
+from rheo_finance.derive import crypto_edges, pairing, stage8, stage9
+from rheo_finance.manual.own_addresses import normalize_address
+from rheo_finance.parsers.base import CRYPTO_TRANSFER, FIAT
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import decision, decision_item, txn, txn_source
 
@@ -104,7 +121,15 @@ class _Row:
 class _LineFacts:
     account_id: uuid.UUID
     fiat: bool
-    excluded: bool
+    amount: Decimal
+    currency: str
+    # Read by stage 8 and by stage 9 (each stage's ``LINES``).
+    reversal_line: bool
+    transfer_line: bool
+    # Read by ``crypto_edges`` (its ``LINES``, no label).
+    crypto_line: bool
+    # A crypto withdrawal ``crypto_edges`` reads whose destination is an own address.
+    one_sided: bool
 
 
 def _line_key(ref: str) -> uuid.UUID | None:
@@ -174,30 +199,79 @@ def _rows(uow: UnitOfWork) -> list[_Row]:
 def _facts(uow: UnitOfWork, ids: set[uuid.UUID]) -> dict[uuid.UUID, _LineFacts]:
     if not ids:
         return {}
-    return {
-        row.id: _LineFacts(
-            row.account_id, row.movement_kind == FIAT, row.exclusion is not None
+    labelled = crypto_edges.labelled(uow)
+    owners = crypto_edges.owners(uow)
+    found: dict[uuid.UUID, _LineFacts] = {}
+    for row in uow.execute(
+        select(
+            txn.c.id,
+            txn.c.account_id,
+            txn.c.movement_kind,
+            txn.c.amount,
+            txn.c.currency,
+            txn.c.to_address,
+            and_(*stage8.LINES).label("reversal_line"),
+            and_(*stage9.LINES).label("transfer_line"),
+            and_(*crypto_edges.LINES).label("crypto_line"),
+        ).where(txn.c.id.in_(ids))
+    ):
+        crypto_line = bool(row.crypto_line) and row.id not in labelled
+        found[row.id] = _LineFacts(
+            account_id=row.account_id,
+            fiat=row.movement_kind == FIAT,
+            amount=row.amount,
+            currency=row.currency,
+            reversal_line=bool(row.reversal_line),
+            transfer_line=bool(row.transfer_line),
+            crypto_line=crypto_line,
+            one_sided=crypto_line
+            and row.movement_kind == CRYPTO_TRANSFER
+            and row.amount < 0
+            and row.to_address is not None
+            and normalize_address(row.to_address) in owners,
         )
-        for row in uow.execute(
-            select(
-                txn.c.id, txn.c.account_id, txn.c.movement_kind, txn.c.exclusion
-            ).where(txn.c.id.in_(ids))
-        )
-    }
+    return found
+
+
+def _opposite(a: _LineFacts, b: _LineFacts) -> bool:
+    return (a.amount > 0) != (b.amount > 0)
+
+
+def _fiat_edge(a: _LineFacts, b: _LineFacts) -> bool:
+    """Whether stage 8 or stage 9 stores the edge of a ``pair`` joining ``a`` and
+    ``b``: stage 8 one of reversal shape, stage 9 any other of opposite signs."""
+    if not (a.reversal_line and b.reversal_line and _opposite(a, b)):
+        return False
+    reversal = (
+        a.account_id == b.account_id
+        and a.currency == b.currency
+        and a.amount == -b.amount
+    )
+    return reversal or (a.transfer_line and b.transfer_line)
+
+
+def _crypto_edge(a: _LineFacts, b: _LineFacts) -> bool:
+    """Whether ``crypto_edges`` stores the edge of a ``pair`` joining ``a`` and
+    ``b``: one asset, opposite directions."""
+    return (
+        a.crypto_line and b.crypto_line and _opposite(a, b) and a.currency == b.currency
+    )
 
 
 def _inert(lines: tuple[uuid.UUID, ...], facts: dict[uuid.UUID, _LineFacts]) -> bool:
-    """Whether a ``pair`` of ``lines`` can join nothing (module docstring)."""
-    found = [facts[line] for line in lines]
-    if any(each.excluded for each in found):
+    """Whether a ``pair`` of ``lines`` is inert: some edge of it no stage would store
+    (module docstring)."""
+    target, *others = (facts[line] for line in lines)
+    if any(each.fiat != target.fiat for each in others):
         return True
-    kinds = {each.fiat for each in found}
-    if len(kinds) == 2:
-        return True
-    if kinds == {True}:
-        return len(found) == 1
-    accounts = [each.account_id for each in found]
-    return len(set(accounts)) != len(accounts)
+    if not others:
+        return not target.one_sided
+    if target.fiat:
+        return not all(_fiat_edge(target, other) for other in others)
+    accounts = [target.account_id, *(each.account_id for each in others)]
+    return len(set(accounts)) != len(accounts) or not all(
+        _crypto_edge(target, other) for other in others
+    )
 
 
 def read(uow: UnitOfWork) -> Decided:

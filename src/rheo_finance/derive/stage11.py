@@ -9,14 +9,14 @@ gone, and a line it frees took part in the candidate search as an ordinary line)
 a line a ``pair`` took is an end of its decision's edges only, which the stages stored
 even when no ordinary candidate existed. Here each ``pair`` applies its edges (the
 target to each other line it names; with no other line, the target's
-``own_one_sided`` edge), of any kind; a ``pair`` one of whose edges was not stored (a
-crypto pair the crypto stage could not join, a one-line pair with no own address)
-applies nothing. A decided edge is ``applied`` with ``basis_ref`` the decision's
-reference (``finance.decision:<id>``, the owner's basis), and its lines are
-``paired`` with the edge's kind as ``pair_kind``. A ``pair`` that mixes fiat and
-crypto lines is inert: it stays recorded and applies nothing, since no edge kind
-joins the two (``pair_decisions``). Decisions key their lines by line key, so they
-hold through a rebuild; one whose key no line carries is the orphan stage's.
+``own_one_sided`` edge), of any kind, in full: a ``pair`` some edge of which no stage
+would store (a mixed fiat and crypto pair, two lines of one sign, a labelled crypto
+leg, a one-line pair with no own address, and the rest ``pair_decisions`` lists) is
+inert there, so it reaches no stage, takes no line and leaves no edge of its own.
+Every decided edge is ``applied`` with ``basis_ref`` the decision's reference
+(``finance.decision:<id>``, the owner's basis), and its lines are ``paired`` with the
+edge's kind as ``pair_kind``. Decisions key their lines by line key, so they hold
+through a rebuild; one whose key no line carries is the orphan stage's.
 
 **Mutual uniqueness.** On the edges no decision touched, an edge applies only when it
 is the only edge on both of its ends, counting the edges of every kind in
@@ -123,18 +123,19 @@ def _decide(
     by_ends: dict[frozenset[uuid.UUID], list[StoredEdge]] = defaultdict(list)
     for edge in stored:
         by_ends[frozenset(edge.ends)].append(edge)
-    found: list[tuple[PairDecision, list[StoredEdge]]] = []
-    for each in decided.pairs:
-        edges = []
-        for ends in each.edge_sets:
-            stored_here = by_ends.get(ends)
-            if not stored_here:
-                break
-            # One edge per kind joins two lines; two kinds is the kind order's.
-            edges.append(min(stored_here, key=lambda e: (e.kind, e.id)))
-        else:
-            found.append((each, edges))
-    return found
+    # ``pair_decisions`` holds inert every ``pair`` some edge of which no stage would
+    # store, so each edge set here was stored. One edge per kind joins two lines; two
+    # kinds is the kind order's.
+    return [
+        (
+            each,
+            [
+                min(by_ends[ends], key=lambda e: (e.kind, e.id))
+                for ends in each.edge_sets
+            ],
+        )
+        for each in decided.pairs
+    ]
 
 
 def resolve(uow: UnitOfWork, decided: Decided) -> None:

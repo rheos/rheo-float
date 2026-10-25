@@ -121,13 +121,12 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from sqlalchemy import bindparam, insert, select, update
+from sqlalchemy import ColumnElement, bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
-from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.parsers.base import FIAT
@@ -141,6 +140,9 @@ from rheo_finance.storage.schema import (
     pair_edge,
     txn,
 )
+
+if TYPE_CHECKING:
+    from rheo_finance.derive.pair_decisions import Decided
 
 WINDOW_KEY: Final = "finance.transfers.window_days"
 ABS_KEY: Final = "finance.transfers.fee_tolerance_abs"
@@ -157,6 +159,14 @@ MANUAL_PREFIX: Final = "manual_"
 # The kind recorded for a parser's hint, whose counterpart is an issuer key.
 PATTERN: Final = "pattern"
 HUNDRED: Final = Decimal(100)
+# The lines stage 9 reads (before it leaves out the lines stage 8 paired);
+# ``pair_decisions`` reads a decided line through them too.
+LINES: Final[tuple[ColumnElement[bool], ...]] = (
+    txn.c.movement_kind == FIAT,
+    txn.c.amount != 0,
+    txn.c.exclusion.is_(None),
+    txn.c.party_id.is_(None),
+)
 
 
 @dataclass(frozen=True)
@@ -218,13 +228,7 @@ def _lines(uow: UnitOfWork, hint_rows: Sequence[TransferHintRow]) -> list[_Line]
             document_line.c.transfer_hint,
             document_line.c.conversion_hint,
             document_line.c.hint_account_slug,
-        ).where(
-            txn.c.movement_kind == FIAT,
-            txn.c.amount != 0,
-            txn.c.exclusion.is_(None),
-            txn.c.party_id.is_(None),
-            txn.c.pair_kind.is_distinct_from("reversal"),
-        )
+        ).where(*LINES, txn.c.pair_kind.is_distinct_from("reversal"))
     )
     found: dict[uuid.UUID, _Reading] = {}
     fees: set[uuid.UUID] = set()

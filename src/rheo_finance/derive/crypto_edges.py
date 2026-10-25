@@ -44,9 +44,11 @@ sided, with no decision.
 **The owner's decisions** (``pair_decisions``, read before stage 8). No edge joining
 exactly an ``unpair``'s lines is stored, and a line a ``pair`` took is an end of no
 edge but its decision's. A one-line ``pair`` of a withdrawal to an own address keeps
-only its ``own_one_sided`` edge. When two crypto lines (on two accounts) a ``pair``
-joins have no candidate edge, an ``own_transfer`` joins them whatever the TXIDs,
-figures or times say, ``a_txn_id`` the smaller quantity.
+only its ``own_one_sided`` edge. When two crypto lines (on two accounts, in one asset,
+opposite in direction) a ``pair`` joins have no candidate edge, an ``own_transfer``
+joins them whatever the TXIDs, figures or times say, ``a_txn_id`` the smaller
+quantity. A ``pair`` no stage could store in full is inert (``pair_decisions``), so it
+reaches no stage.
 """
 
 from __future__ import annotations
@@ -55,14 +57,13 @@ import datetime as dt
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from sqlalchemy import and_, insert, select
+from sqlalchemy import ColumnElement, and_, insert, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import pairing
 from rheo_finance.derive.crypto_lines import txid_key
-from rheo_finance.derive.pair_decisions import Decided
 from rheo_finance.manual.own_addresses import normalize_address
 from rheo_finance.parsers.base import CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED, FIAT
 from rheo_finance.storage.ids import derived_id
@@ -75,12 +76,23 @@ from rheo_finance.storage.schema import (
     txn_source,
 )
 
+if TYPE_CHECKING:
+    from rheo_finance.derive.pair_decisions import Decided
+
 WINDOW_KEY: Final = "finance.crypto.transfer_window_hours"
 FEE_PCT_KEY: Final = "finance.crypto.fee_tolerance_pct"
 EPSILON_KEY: Final = "finance.crypto.qty_epsilon"
 KIND: Final = "own_transfer"
 ONE_SIDED: Final = "own_one_sided"
 HUNDRED: Final = Decimal(100)
+# The lines this stage reads, less the ``labelled`` ones; ``pair_decisions`` reads a
+# decided line through them too.
+LINES: Final[tuple[ColumnElement[bool], ...]] = (
+    txn.c.movement_kind.in_((CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED)),
+    txn.c.amount != 0,
+    txn.c.occurred_at.is_not(None),
+    txn.c.exclusion.is_(None),
+)
 
 
 @dataclass(frozen=True)
@@ -128,6 +140,16 @@ def labelled(uow: UnitOfWork) -> set[uuid.UUID]:
     )
 
 
+def owners(uow: UnitOfWork) -> dict[str, uuid.UUID]:
+    """Every ``own_address`` (held normalized) to its account."""
+    return {
+        address: account_id
+        for address, account_id in uow.execute(
+            select(own_address.c.address, own_address.c.account_id)
+        )
+    }
+
+
 def _lines(uow: UnitOfWork) -> list[_Line]:
     rows = uow.execute(
         pairing.source_lines(
@@ -139,12 +161,7 @@ def _lines(uow: UnitOfWork) -> list[_Line]:
             txn.c.to_address,
             txn.c.movement_kind,
             document_line.c.fee_stated,
-        ).where(
-            txn.c.movement_kind.in_((CRYPTO_TRANSFER, CRYPTO_UNCLASSIFIED)),
-            txn.c.amount != 0,
-            txn.c.occurred_at.is_not(None),
-            txn.c.exclusion.is_(None),
-        )
+        ).where(*LINES)
     )
     skip = labelled(uow)
     found: dict[uuid.UUID, _Line] = {}
@@ -185,12 +202,7 @@ def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance, decided: Decided) -> N
     """Store every crypto ``own_transfer`` and ``own_one_sided`` candidate edge
     (module docstring)."""
     lines = _lines(uow)
-    owners = {
-        address: account_id
-        for address, account_id in uow.execute(
-            select(own_address.c.address, own_address.c.account_id)
-        )
-    }
+    owned = owners(uow)
     deposits: dict[str, list[_Line]] = {}
     for line in lines:
         if line.amount > 0:
@@ -202,7 +214,7 @@ def pair_crypto(uow: UnitOfWork, *, tolerance: Tolerance, decided: Decided) -> N
         destination = (
             None
             if out.to_address is None
-            else owners.get(normalize_address(out.to_address))
+            else owned.get(normalize_address(out.to_address))
         )
         found = [
             into

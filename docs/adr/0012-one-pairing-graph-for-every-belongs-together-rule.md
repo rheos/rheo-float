@@ -19,8 +19,8 @@ archive needed.
 ## Decision
 
 Every kind of "belongs together" is an edge kind in one table, `pair_edge`. Stage 9
-stores the fiat own-transfer and same-account conversion candidates and the crypto edge
-stage the crypto transfers, without applying them. Stage 8 is the exception: it stores
+stores the fiat own-transfer and same-account conversion candidates without applying
+them. The crypto edge stage does the same for crypto transfers. Stage 8 is the exception: it stores
 the reversal candidates and itself applies a reversal that is its lines' only one.
 Stage 11 never auto-applies a reversal edge; it counts them for uniqueness and applies
 one only when the owner's `pair` names it. For every other kind stage 11 decides, from
@@ -62,13 +62,17 @@ Clarifications made while building it:
    once before stage 8, and the stages build the graph around them. If stage 11 ever
    finds an applied decision whose edge was not stored, it raises naming the decision
    instead of guessing.
-7. **A decided pair with legs nets once, without its conversions.** A payment settled
-   by several lines nets the target against all of them once and books at most one fee
-   line on the outbound side, keyed to the first edge that is no conversion. A
-   conversion edge inside the pair keeps its own rule (FR-15(c)): its printed fee is
-   the only fee line of its date, else its spread is booked on the edge. The net leaves
-   the conversion out by adding its spread back, so the issuer's price against the Bank
-   of Canada's is booked once, or beside a printed fee nowhere. The net of a pair with
+7. **A decided pair with legs nets once.** A payment settled by several lines nets the
+   target against all of them once and books at most one fee line on the outbound side.
+   A conversion edge inside the pair keeps its own rule (FR-15(c)) only when it is
+   isolated: neither of its ends is an end of another conversion edge of the pair. Its
+   printed fee is then the only fee line of its date, else its spread is booked on the
+   edge, and the net takes its two legs out at their own CAD values, so neither its
+   spread nor the rate of an in-leg posted another day reaches the net. The net is keyed
+   to the first edge that is not such a conversion and names no printed fee. A
+   conversion that shares an end with another (one leg fanned out to two on the
+   account, either way round) has no rule of its own, because a spread measured against
+   the whole shared leg would be wrong: the whole pair nets once. The net of a pair with
    legs is floored at zero, as a conversion spread is: a favourable residual books
    nothing, never income. The floor is for pairs with legs only: a two-line pair,
    decided or applied on its own, keeps the signed net of FR-15. Tests pin both, so

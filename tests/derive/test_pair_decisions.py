@@ -40,7 +40,17 @@ from .support import (
     fx_lines,
 )
 from .support import FX_ISSUER as FX_DIR
-from .test_crypto_edges import EXCHANGE, OWN_WALLET, WALLET, at, file
+from .test_conversions import DAY as CONVERTED
+from .test_conversions import WISE, converted, fee_lines, usd_rate, wise_csv
+from .test_crypto_edges import (
+    EXCHANGE,
+    OWN_WALLET,
+    VAULT,
+    WALLET,
+    at,
+    file,
+    three_accounts,
+)
 from .test_overlap import file as file_card
 from .test_resolution import CHEQUING, VISA, income, register, spending
 from .test_reversals import OUTGOING, export
@@ -77,6 +87,24 @@ def key_ref(ledger: Ledger, day: dt.date, amount: str) -> str:
             txn.c.posting_date == day,
             txn.c.amount == Decimal(amount),
             txn_source.c.role == "primary",
+        )
+    ).all()
+    assert len(keys) == 1
+    return format_ref("finance", "txn", keys[0])
+
+
+def added_ref(ledger: Ledger, day: dt.date, amount: str) -> str:
+    """The line reference of the one line of ``amount`` on ``day`` through the key of
+    an additional source that is not the txn's id: a line another source matched,
+    so the key and the txn id differ."""
+    keys = ledger.conn.scalars(
+        select(txn_source.c.line_key_id)
+        .join(txn, txn.c.id == txn_source.c.txn_id)
+        .where(
+            txn.c.posting_date == day,
+            txn.c.amount == Decimal(amount),
+            txn_source.c.role == "additional",
+            txn_source.c.line_key_id != txn.c.id,
         )
     ).all()
     assert len(keys) == 1
@@ -271,7 +299,8 @@ def test_a_pair_across_accounts_with_no_edge_books_the_difference_as_one_fee(
         (ARRIVED, Decimal("14.99")): ("paired", "own_transfer"),
     }
     assert edges(ledger) == [(True, basis(decision_id))]
-    assert fees(ledger) == [Decimal("-5.01")]
+    # On the outbound account (the debit's), though the target is the card credit.
+    assert fee_rows(ledger) == [(account_id("chequing"), Decimal("-5.01"))]
     assert spending(ledger) == Decimal("-5.01")
     assert income(ledger) == Decimal("0.00")
 
@@ -804,3 +833,198 @@ def test_a_pair_with_a_conversion_leg_nets_once_and_books_no_spread(
     assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
     assert edges(ledger, "conversion") == [(True, basis(decision_id))]
     assert fee_rows(ledger) == [(account_id("fx"), Decimal("-2.00"))]
+
+
+# --- the candidate stages honour the decisions ----------------------------------------
+
+
+def test_an_unpair_removes_a_conversion_candidate(ledger: Ledger) -> None:
+    register(ledger, WISE)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(*converted("BALANCE-999000201", CONVERTED, "300.00", "USD",
+                            "405.00", "CAD")),
+    )  # fmt: skip
+    ledger.derive()
+    assert kinds(ledger) == [("conversion", True)]
+
+    decide(
+        ledger,
+        "unpair",
+        key_ref(ledger, CONVERTED, "-300.00"),
+        key_ref(ledger, CONVERTED, "405.00"),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == []
+    assert set(states(ledger).values()) == {("unresolved", None)}
+    assert fees(ledger) == []
+
+
+def test_a_conversion_by_hand_names_the_printed_fee_and_books_no_spread(
+    ledger: Ledger,
+) -> None:
+    # A transfer out with its printed fee and a CAD credit, no conversion wording on
+    # either. Paired by hand on one account in two currencies, the conversion names
+    # the printed fee line, so that line is the date's one fee line.
+    register(ledger, WISE)
+    usd_rate(ledger, "1.3600")
+    ledger.file(
+        "wise/statement-2025-07-31.csv",
+        wise_csv(
+            ("TRANSFER-999000301", CONVERTED, "-101.00", "USD",
+             "Sent money to Sample Payee", "", "", "1.00", ""),
+            ("TRANSFER-999000302", CONVERTED, "135.00", "CAD",
+             "Received money from Sample Payer", "", "", "0.00", ""),
+        ),
+    )  # fmt: skip
+    ledger.derive()
+    assert kinds(ledger) == []
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, CONVERTED, "-100.00"),
+        key_ref(ledger, CONVERTED, "135.00"),
+    )
+    ledger.derive()
+
+    printed = ledger.conn.scalar(
+        select(txn.c.id).where(
+            txn.c.fee_type.is_not(None), txn.c.origin != "derived_fee"
+        )
+    )
+    assert kinds(ledger) == [("conversion", True)]
+    assert ledger.conn.scalar(select(pair_edge.c.fee_txn_id)) == printed
+    assert fee_lines(ledger, CONVERTED) == [("document_line", Decimal("-1.00"), "USD")]
+
+
+def test_a_pair_of_a_withdrawal_to_an_own_address_and_another_deposit_is_two_sided(
+    crypto_ledger: Ledger,
+) -> None:
+    # The withdrawal goes to the wallet's own address, but the owner pairs it with a
+    # deposit on another account: the decided edge is its only edge, with no
+    # one-sided edge beside it to apply on its own.
+    ledger = crypto_ledger
+    three_accounts(ledger)
+    ledger.manual(OWN_ADDRESSES_FILE, f"wallet,{OWN_WALLET}")
+    file(
+        ledger,
+        "exchange.txt",
+        EXCHANGE,
+        f"MOVE at={at()} asset=ETH qty=-0.5 type=Withdrawal to={OWN_WALLET}",
+    )
+    file(
+        ledger,
+        "vault.txt",
+        VAULT,
+        f"MOVE at={at(1)} asset=ethereum qty=0.3 type=Received hint=1",
+    )
+    ledger.derive()
+    assert kinds(ledger) == [("own_one_sided", True)]
+
+    decision_id = decide(
+        ledger,
+        "pair",
+        key_ref(ledger, D(2025, 6, 10), "-0.5"),
+        key_ref(ledger, D(2025, 6, 10), "0.3"),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == [("own_transfer", True)]
+    assert edges(ledger) == [(True, basis(decision_id))]
+
+
+# --- line keys: legs, one-line pairs, unpairs and hand conversions --------------------
+
+
+def card_copy(ledger: Ledger, day: dt.date, amount: str) -> None:
+    """A second card export printing one credit under other wording: it joins the
+    credit's txn as an additional source with a key of its own."""
+    ledger.file(
+        "vancity-visa/2025-06-30-copy.csv",
+        visa_export((day, "SAMPLE PAYMENT COPY 99968", Decimal(amount))),
+    )
+
+
+def test_a_leg_resolves_through_its_line_key(ledger: Ledger) -> None:
+    chequing_and_card(
+        ledger,
+        [(PAID, BILL_PAYMENT, "-200.00")],
+        [(ARRIVED, "100.00"), (LATER, "100.00")],
+    )
+    card_copy(ledger, ARRIVED, "100.00")
+    ledger.derive()
+
+    decision_id = decide(
+        ledger,
+        "pair",
+        key_ref(ledger, PAID, "-200.00"),
+        legs=(added_ref(ledger, ARRIVED, "100.00"), key_ref(ledger, LATER, "100.00")),
+    )
+    ledger.derive()
+
+    assert edges(ledger) == [(True, basis(decision_id))] * 2
+    assert fees(ledger) == []
+
+
+def test_an_unpair_resolves_through_its_line_key(ledger: Ledger) -> None:
+    chequing_and_card(ledger, [(PAID, BILL_PAYMENT, "-200.00")], [(ARRIVED, "200.00")])
+    card_copy(ledger, ARRIVED, "200.00")
+    ledger.derive()
+    assert edges(ledger) == [(True, None)]
+
+    decide(
+        ledger,
+        "unpair",
+        key_ref(ledger, PAID, "-200.00"),
+        added_ref(ledger, ARRIVED, "200.00"),
+    )
+    ledger.derive()
+
+    assert edges(ledger) == []
+
+
+def test_a_one_line_pair_resolves_through_its_line_key(crypto_ledger: Ledger) -> None:
+    # The export prints the withdrawal as one figure; the email prints it gross with
+    # its fee, and that fee line folds into the withdrawal as an additional source
+    # with its own key. A one-line pair naming that key is the withdrawal's.
+    ledger = crypto_ledger
+    ledger.manual(OWN_ADDRESSES_FILE, f"wallet,{OWN_WALLET}")
+    head = f"WITHDRAW at={at()} asset=ETH txid=999tx0bb22 to={OWN_WALLET}"
+    file(ledger, "export.csv", EXCHANGE, f"{head} qty=0.5")
+    file(ledger, "email.txt", EXCHANGE, f"{head} qty=0.5 fee=0.001 gross=1")
+    ledger.derive()
+    assert edges(ledger, "own_one_sided") == [(True, None)]
+
+    decision_id = decide(ledger, "pair", added_ref(ledger, D(2025, 6, 10), "-0.5"))
+    ledger.derive()
+
+    assert edges(ledger, "own_one_sided") == [(True, basis(decision_id))]
+
+
+def test_a_conversion_by_hand_resolves_through_its_line_key(fx_ledger: Ledger) -> None:
+    ledger = fx_ledger
+    ledger.file(
+        f"{FX_DIR}/cad.txt", fx_lines("CAD", "2025-06-02 -140.00 - - SAMPLE OUT 99961")
+    )
+    ledger.file(
+        f"{FX_DIR}/cad-copy.txt",
+        fx_lines("CAD", "2025-06-02 -140.00 - - SAMPLE OUT COPY 99969"),
+    )
+    ledger.file(
+        f"{FX_DIR}/usd.txt",
+        fx_lines("USD", "2025-06-02 100.00 136.00 - SAMPLE IN 99962"),
+    )
+    ledger.derive()
+
+    decision_id = decide(
+        ledger,
+        "pair",
+        added_ref(ledger, PAID, "-140.00"),
+        key_ref(ledger, PAID, "100.00"),
+    )
+    ledger.derive()
+
+    assert edges(ledger, "conversion") == [(True, basis(decision_id))]

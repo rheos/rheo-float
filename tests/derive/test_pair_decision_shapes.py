@@ -37,6 +37,7 @@ from .test_crypto_edges import (
     three_accounts,
     txn_id,
 )
+from .test_crypto_keys import accounts_with_placeholder
 from .test_pair_decisions import (
     ARRIVED,
     LATER,
@@ -196,6 +197,28 @@ def test_a_fiat_pair_with_a_party_leg_stage_9_skips_leaves_no_edge(
     assert kinds(ledger) == []
     assert fees(ledger) == []
     assert states(ledger)[(PAID, Decimal("-210.00"))] == ("unresolved", None)
+
+
+def test_a_fiat_pair_with_an_excluded_line_leaves_no_edge(ledger: Ledger) -> None:
+    # Cash lines on a placeholder account are excluded, so no stage reads them, not
+    # even as a pair of reversal shape.
+    accounts_with_placeholder(ledger)
+    ledger.cash(
+        "staking,2025-06-02,-50.00,CAD,SAMPLE OUT 99974,",
+        "staking,2025-06-04,50.00,CAD,SAMPLE IN 99975,",
+    )
+    ledger.derive()
+
+    decide(
+        ledger,
+        "pair",
+        key_ref(ledger, PAID, "-50.00"),
+        key_ref(ledger, ARRIVED, "50.00"),
+    )
+    ledger.derive()
+
+    assert kinds(ledger) == []
+    assert fees(ledger) == []
 
 
 def test_a_reversal_shaped_pair_with_a_party_line_applies(

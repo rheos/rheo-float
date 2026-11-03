@@ -80,10 +80,11 @@ Clarifications made while building it:
    stored, before the shared ones are cleared), that fee is the only fee line of its
    date and the pair books no net beside it, the residual booked nowhere, as when every
    edge names one. A printed-fee fan decided together with a transfer leg books no net
-   either: the transfer leg does not bring the net back. The net of a pair with legs is floored at zero, as a conversion spread is: a
-   favourable residual books nothing, never income. The floor is for pairs with legs
-   only: a two-line pair, decided or applied on its own, keeps the signed net of FR-15.
-   Tests pin both, so flooring a two-line pair fails one.
+   either: the transfer leg does not bring the net back. The net of a pair with legs is
+   floored at zero, as a conversion spread is: a favourable residual books nothing,
+   never income. The floor is for pairs with legs only: a two-line pair, decided or
+   applied on its own, keeps the signed net of FR-15. Tests pin both, so flooring a
+   two-line pair fails one.
 
 The pairing defaults (transfer window and tolerance, conversion window and spread
 tolerance, reversal window, import overlap tolerance) were tuned at the Phase 3b gate on

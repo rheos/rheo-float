@@ -57,7 +57,7 @@ def payees(conn: Connection, data: Path) -> UnitOfWork:
         data,
         PAYEES_FILE,
         [
-            "sample-isp,Sample Internet,vendor,SAMPLE ISP,,",
+            "sample-isp,Sample Internet,vendor,SAMPLE NET CO,,",
             "friend,A friend,person,SAMPLE FRIEND,,",
         ],
     )
@@ -177,6 +177,35 @@ def test_bad_obligation_rows_are_reported_by_line_and_the_rest_load(
     assert reasons[12].startswith("archive_path:")
     assert reasons[13].startswith("amount_due:")
     assert [each.line_no for each in found.obligations] == [2]
+
+
+def test_two_blank_labelled_bills_of_a_month_are_told_how_to_stay_apart(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    """Both rows are refused, and the reason names the suffix that keeps them apart;
+    with it, both load."""
+    first = "sample-isp,bill,,SP-0041,80.00,,2026-02-15,,2026-01-30"
+    found = obligations(
+        owner_conn,
+        tmp_path,
+        [first, "sample-isp,bill,,SP-0042,20.00,,2026-02-27,,2026-02-10"],
+    )
+
+    reasons = errors(owner_conn, OBLIGATIONS_FILE)
+    assert sorted(reasons) == [2, 3]
+    assert "bill-YYYY-MM-2" in reasons[2] and "bill-YYYY-MM-2" in reasons[3]
+    assert found.obligations == ()
+
+    found = obligations(
+        owner_conn,
+        tmp_path,
+        [first, "sample-isp,bill,bill-2026-02-2,SP-0042,20.00,,2026-02-27,,2026-02-10"],
+    )
+
+    assert errors(owner_conn, OBLIGATIONS_FILE) == {}
+    assert [each.row.period for each in found.obligations] == [
+        "bill-2026-02", "bill-2026-02-2",
+    ]  # fmt: skip
 
 
 # --- arrangements.csv -----------------------------------------------------------------

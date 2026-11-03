@@ -99,7 +99,7 @@ RESTRICTED_NAMES = frozenset(
         "amount", "note", "memo", "description", "counterparty", "merchant_key",
         "identifier", "alias", "address", "txid", "cad", "total_cad", "cad_total",
         "balance", "opening_balance", "quantity", "fee", "account_number", "payee",
-        "principal", "alias_norm", "owner",
+        "principal", "alias_norm", "owner", "patterns",
     }
 )  # fmt: skip
 RESTRICTED_PREFIXES = (
@@ -209,7 +209,7 @@ def test_a_planted_public_numeric_column_and_a_stale_exception_are_found(
     [
         "cad", "total_cad", "cad_total", "balance", "opening_balance", "quantity",
         "fee", "account_number", "payee", "principal", "alias_norm", "net_cad",
-        "card_fee", "closing_balance",
+        "card_fee", "closing_balance", "patterns",
     ],
 )  # fmt: skip
 def test_each_money_and_identity_shape_is_restricted_by_name(name: str) -> None:

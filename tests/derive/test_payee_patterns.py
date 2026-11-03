@@ -53,6 +53,24 @@ def test_a_receipt_matches_a_payment_only_by_a_payees_pattern(ledger: Ledger) ->
     assert spending(ledger) == Decimal("-45.00")
 
 
+def test_a_payees_pattern_matches_the_payment_line_folded(ledger: Ledger) -> None:
+    """Written with a hyphen and a dot, the patterns still name the receipt's payee and
+    the line the terminal printed: case, punctuation and whitespace fold."""
+    payments(ledger, ("15-Mar-2026", TERMINAL, "45.00"))
+    ledger.file(RECEIPT, debit_only_receipt())
+    ledger.manual(
+        PAYEES_FILE, "dentist,Dentist,vendor,Sample-Dental. Clinic;S.D.C Sampletown,,"
+    )
+    # ``S.D.C`` folds to three tokens the terminal does not print; the next row's does.
+    assert counts(ledger.derive()) == (2, 0, 1, 0)
+
+    ledger.manual(
+        PAYEES_FILE, "dentist,Dentist,vendor,Sample-Dental. Clinic;sdc-SAMPLETOWN,,"
+    )
+
+    assert counts(ledger.derive()) == (2, 1, 0, 0)
+
+
 def test_a_pattern_names_the_receipt_as_whole_words_only(ledger: Ledger) -> None:
     """A pattern that is only part of a word of the receipt's payee does not make the
     payee its own."""

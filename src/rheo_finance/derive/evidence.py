@@ -10,13 +10,13 @@ against payment lines:
   outflow, negative), a posting or transaction date of the txn within the window of
   the line's date (``finance.receipts.match_days`` for a receipt,
   ``finance.invoices.match_days`` for an invoice, either side of it), and the payee:
-  one of the line's payee patterns is a whole-token run of the txn's normalized
-  description. A line's payee patterns are its printed payee (its ``counterparty``,
-  normalized as descriptions are) and the patterns of every payee one of whose
-  patterns names that printed payee (``manual.payees``: the ``payees.csv`` rows and
-  the account-backed payees of ``accounts.csv`` ``payee_patterns``), so a receipt
-  whose payee prints one name and whose card line prints another matches once the
-  owner registers both as one payee. Only the txn of an unmatched receipt is also
+  one of the line's payee patterns is a whole-token run of the txn's description, both
+  folded (``manual.payees.compared``: case, punctuation and whitespace). A line's payee
+  patterns are its printed payee (its ``counterparty``) and the patterns of every payee
+  one of whose patterns names that printed payee (``manual.payees``: the ``payees.csv``
+  rows and the account-backed payees of ``accounts.csv`` ``payee_patterns``), so a
+  receipt whose payee prints one name and whose card line prints another matches once
+  the owner registers both as one payee. Only the txn of an unmatched receipt is also
   searched by its counterparty (the receipt's payee), so an invoice can attach to a
   receipt paid in cash; a statement or export line's counterparty is never read.
 - **Which pairs.** Within each kind the matching is maximal: as many lines as can be
@@ -69,7 +69,7 @@ from sqlalchemy import bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
-from rheo_finance.manual.payees import NO_PAYEES, Payees, names_any
+from rheo_finance.manual.payees import Payees, names_any
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
@@ -151,8 +151,8 @@ def evidence_key(
 
 
 def names_payee(patterns: Sequence[str], texts: Sequence[str]) -> bool:
-    """Whether one of ``patterns`` (normalized) is a whole-token run of one of
-    ``texts``. No pattern, or only empty ones, names nothing."""
+    """Whether one of ``patterns`` is a whole-token run of one of ``texts``, both
+    folded. No pattern, or only empty ones, names nothing."""
     return any(names_any(patterns, text) for text in texts)
 
 
@@ -352,7 +352,7 @@ def link(
     *,
     receipt_days: int,
     invoice_days: int,
-    payees: Payees = NO_PAYEES,
+    payees: Payees,
 ) -> Evidence:
     """Match every receipt and invoice line against the txns already written, and
     write the evidence sources and the unmatched receipts' txns. ``receipt_days`` is

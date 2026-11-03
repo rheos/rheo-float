@@ -44,6 +44,9 @@ ManualObligationKind = Literal["bill", "manual_debt"]
 
 BILL_PERIOD: Final = re.compile(r"bill-(\d{4})-(\d{2})(?:-[1-9]\d*)?")
 _CENTS_LIMIT: Final = Decimal(10) ** 18
+SECOND_BILL_HINT: Final = (
+    "; a second bill due in one month takes the label bill-YYYY-MM-2"
+)
 
 
 def _cents(value: Decimal) -> Decimal:
@@ -162,14 +165,16 @@ def build_obligations(
     bad = duplicate_lines(
         [(line, (row.payee, row.kind, row.period)) for line, row in rows]
     )
-    for line in sorted(bad):
-        errors.append(
-            RowError(
-                OBLIGATIONS_FILE,
-                line,
-                "period_label: another row has the same payee, kind and period",
+    for line, row in rows:
+        if line in bad:
+            errors.append(
+                RowError(
+                    OBLIGATIONS_FILE,
+                    line,
+                    "period_label: another row has the same payee, kind and period"
+                    + (SECOND_BILL_HINT if row.kind == "bill" else ""),
+                )
             )
-        )
     for line, row in rows:
         if row.payee not in payee_slugs:
             errors.append(

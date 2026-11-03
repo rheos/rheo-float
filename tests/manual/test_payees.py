@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import Connection, select
 
 from rheo_finance.context import UnitOfWork
@@ -114,7 +115,6 @@ def test_rows_load_with_their_patterns_party_and_paid_from(
     )  # fmt: skip
     held = {each.slug: each for each in found.payees}
     assert held["landlord"].paid_from == ("chequing",)
-    assert held["landlord"].line_no == 2
 
 
 def test_a_row_without_paid_from_loads_unchanged(
@@ -126,7 +126,7 @@ def test_a_row_without_paid_from_loads_unchanged(
     found = load(owner_conn, tmp_path, ["landlord,Landlord,person,SAMPLE LANDLORD,,"])
 
     assert errors(owner_conn) == {}
-    (listed,) = [each for each in found.payees if each.line_no is not None]
+    (listed,) = [each for each in found.payees if each.slug == "landlord"]
     assert (listed.slug, listed.label, listed.kind, listed.patterns) == (
         "landlord", "Landlord", "person", ("sample landlord",),
     )  # fmt: skip
@@ -158,7 +158,8 @@ def test_a_label_or_slug_equal_to_its_own_pattern_is_rejected(
     assert "SAMPLE" not in reasons[2] + reasons[3]  # a reason never holds the cell
     assert "plumber" in stored(owner_conn)
     assert {"landlord", "sample-isp"}.isdisjoint(stored(owner_conn))
-    assert {each.slug for each in found.payees if each.line_no} == {"plumber"}
+    assert "plumber" in found.slugs
+    assert {"landlord", "sample-isp"}.isdisjoint(found.slugs)
 
 
 def test_a_label_that_only_contains_a_pattern_loads(
@@ -250,3 +251,42 @@ def test_a_load_rewrites_the_table_and_its_own_errors_only(
         )
     ).all()
     assert other == []
+
+
+@pytest.mark.parametrize(
+    ("pattern", "printed", "named"),
+    [
+        ("Sample-ISP", "E-TRANSFER SAMPLE ISP 99901", True),
+        ("S. Landlord", "SENT S LANDLORD", True),
+        ("SAMPLE  ISP", "e-transfer sample-isp", True),
+        ("Sample-ISP", "E-TRANSFER SAMPLE ISPS 99901", False),
+        ("Sample-ISP", "E-TRANSFER SAMPLEISP 99901", False),
+        ("S. Landlord", "SENT MRS LANDLORD", False),
+    ],
+)
+def test_a_pattern_names_a_printed_name_folded_and_whole_token(
+    owner_conn: Connection, tmp_path: Path, pattern: str, printed: str, named: bool
+) -> None:
+    """Case, punctuation and whitespace fold on both sides (FR-57's alias rule); the
+    match is still a run of whole tokens."""
+    registry(tmp_path)
+    found = load(owner_conn, tmp_path, [f"somebody,Somebody,person,{pattern},,"])
+
+    assert errors(owner_conn) == {}
+    assert bool(found.patterns_naming(printed)) is named
+
+
+def test_a_pattern_with_nothing_to_match_is_rejected(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    registry(tmp_path)
+    found = load(
+        owner_conn,
+        tmp_path,
+        ["dashes,Dashes,vendor,---,,", "plumber,Plumber,vendor,SAMPLE PLUMBING,,"],
+    )
+
+    assert list(errors(owner_conn)) == [2]
+    assert errors(owner_conn)[2].startswith("patterns:")
+    assert "dashes" not in found.slugs
+    assert "plumber" in found.slugs

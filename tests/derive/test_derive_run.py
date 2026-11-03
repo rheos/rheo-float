@@ -286,7 +286,7 @@ def test_a_transaction_line_missing_a_field_is_counted_not_a_txn(
     lines = build_lines(
         ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
         overlap_days=3, receipt_days=3, invoice_days=30,
-        qty_epsilon=Decimal("1E-9"),
+        qty_epsilon=Decimal("1E-9"), payees=Payees((), ()),
     )  # fmt: skip
 
     assert (lines.from_documents, lines.incomplete_lines) == (3, 3)
@@ -352,7 +352,7 @@ def test_a_line_of_a_document_that_is_not_parsed_is_not_a_txn(ledger: Ledger) ->
     lines = build_lines(
         ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
         overlap_days=3, receipt_days=3, invoice_days=30,
-        qty_epsilon=Decimal("1E-9"),
+        qty_epsilon=Decimal("1E-9"), payees=Payees((), ()),
     )  # fmt: skip
 
     assert lines.txns == 0

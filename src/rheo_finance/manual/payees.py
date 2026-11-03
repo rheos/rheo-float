@@ -4,8 +4,9 @@ Models ``payee``).
 
 ``PayeeRow`` validates one ``payees.csv`` row: a slug and a label (the owner's own
 words), a kind from {vendor, person, account}, the printed-name patterns that mean
-this payee (``;``-separated, held normalized as a line's ``description_norm`` is and
-matched as whole-token runs), an optional party slug and an optional ``paid_from``
+this payee (``;``-separated, held normalized as a line's ``description_norm`` is, and
+matched folded, ``compared``, as a whole-token run: ``Sample-ISP`` names ``SAMPLE
+ISP 99901``), an optional party slug and an optional ``paid_from``
 (the account slugs the owner pays this payee from, which stage 14's presumed-paid test
 reads in place of the derived paying accounts). A label or slug that, compared
 (``compared``: casefolded, every run of punctuation and whitespace one space), equals
@@ -74,24 +75,26 @@ _NOT_WORD: Final = re.compile(r"[\W_]+")
 
 
 def compared(text: str) -> str:
-    """``text`` as a label or slug is compared with a pattern: normalized as a
-    description is, then every run of punctuation, underscores and whitespace one
-    space, ends trimmed."""
+    """``text`` folded as a party alias is (FR-57): normalized as a description is,
+    then every run of punctuation, underscores and whitespace one space, ends trimmed.
+    Patterns match in this form, and a label or slug meets its row's patterns in it."""
     return _NOT_WORD.sub(" ", normalize_description(text)).strip()
 
 
 def _normalized(patterns: tuple[str, ...]) -> tuple[str, ...]:
     """Each pattern normalized as a description is, repeats dropped, order kept."""
-    found: list[str] = []
-    for pattern in patterns:
-        normalized = normalize_description(pattern)
-        if normalized not in found:
-            found.append(normalized)
-    return tuple(found)
+    return tuple(dict.fromkeys(normalize_description(each) for each in patterns))
+
+
+def _matchable(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """A row's patterns, each with something left to match once folded."""
+    if not all(compared(each) for each in patterns):
+        raise ValueError("a pattern holds no letter or digit")
+    return _normalized(patterns)
 
 
 Patterns = Annotated[
-    tuple[Text, ...], BeforeValidator(split_list), AfterValidator(_normalized)
+    tuple[Text, ...], BeforeValidator(split_list), AfterValidator(_matchable)
 ]
 Slugs = Annotated[tuple[Slug, ...], BeforeValidator(split_list)]
 
@@ -122,8 +125,7 @@ class PayeeRow(BaseModel):
 
 @dataclass(frozen=True)
 class Payee:
-    """One payee. ``line_no`` is its ``payees.csv`` line, None for an account-backed
-    or bill-issuer payee; ``account`` the slug of the account it stands for (kind
+    """One payee. ``account`` is the slug of the account it stands for (kind
     ``account`` only)."""
 
     slug: str
@@ -133,22 +135,18 @@ class Payee:
     account: str | None = None
     party: str | None = None
     paid_from: tuple[str, ...] = ()
-    line_no: int | None = None
 
     def names(self, text: str) -> bool:
-        """Whether one of the patterns is a whole-token run of ``text`` (normalized
-        here as a description is)."""
+        """Whether one of the patterns is a whole-token run of ``text``, both folded."""
         return names_any(self.patterns, text)
 
 
 def names_any(patterns: Iterable[str], text: str) -> bool:
-    """Whether one of ``patterns`` (normalized) is a whole-token run of ``text``
-    (normalized here as a description is). No pattern names nothing."""
-    parts = sorted({re.escape(p) for p in patterns if p}, key=lambda p: (-len(p), p))
-    if not parts:
-        return False
-    expression = rf"(?<!\w)(?:{'|'.join(parts)})(?!\w)"
-    return re.search(expression, normalize_description(text)) is not None
+    """Whether one of ``patterns`` is a whole-token run of ``text``, both folded
+    (``compared``). A folded text is its tokens joined by single spaces, so a run is a
+    substring between spaces. A pattern that folds to nothing names nothing."""
+    tokens = f" {compared(text)} "
+    return any(f" {folded} " in tokens for folded in map(compared, patterns) if folded)
 
 
 @dataclass(frozen=True)
@@ -171,9 +169,6 @@ class Payees:
             if payee.names(printed):
                 found.extend(p for p in payee.patterns if p not in found)
         return tuple(found)
-
-
-NO_PAYEES: Final = Payees((), ())
 
 
 def bill_issuers() -> tuple[str, ...]:
@@ -237,7 +232,6 @@ def build_payees(result: LoadResult[PayeeRow], registry: Registry) -> Payees:
             account=row.slug if row.kind == "account" else None,
             party=row.party,
             paid_from=row.paid_from,
-            line_no=line,
         )
         for line, row in rows
         if line not in bad

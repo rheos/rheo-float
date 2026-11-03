@@ -1,5 +1,4 @@
-"""Fixtures for the rates tests: the derive ``ledger`` and ``fx_ledger``, and Valet
-pointed at a local stub server.
+"""Fixtures for the rates tests: Valet pointed at a local stub server.
 
 ``valet_stub`` swaps ``rates.valet.ENDPOINT`` for the stub's host over plain http and
 ``make_client`` for one that allows http, for one test; the provider then declares the
@@ -15,7 +14,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from derive.conftest import fx_ledger, ledger  # noqa: F401 (shared fixtures)
 from rheo_finance.context import UnitOfWork
 from rheo_finance.http import Client
 from rheo_finance.rates import valet

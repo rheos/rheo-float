@@ -1,22 +1,16 @@
-"""The ``ledger`` fixture for the derive tests; ``card_parsers``, which maps the
-test-only card issuer directory and registers its parser for one test; and
-``fx_ledger``, the same for the conversion fixtures; ``own``, the accounts of the
-transfer-edge tests; and ``crypto_ledger``, the same for the test-only crypto fixture
-parser (``crypto_support``).
-
-Every fixture more than one test module uses lives here, never in a test module that
-another one imports it from (``tests/guards/test_test_layout.py``).
+"""Fixtures of the derive tests alone: ``card_parsers``, which maps the test-only card
+issuer directory and registers its parser for one test; ``own``, the accounts of the
+transfer-edge tests; and ``crypto_ledger``, ``ledger`` with the test-only crypto fixture
+parser (``crypto_support``). ``ledger`` and ``fx_ledger`` are in ``tests/conftest.py``:
+other directories use them too (``tests/guards/test_test_layout.py``).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import MappingProxyType
 
 import pytest
-from sqlalchemy import Connection
 
-from rheo_finance.contracts import Role
 from rheo_finance.documents import issuers
 from rheo_finance.parsers import registry
 
@@ -34,22 +28,10 @@ from .support import (
     FX2_IDENTIFIER,
     FX_IDENTIFIER,
     FX_INSTITUTION,
-    FX_ISSUER,
-    FX_PARSER,
     SECOND,
     THIRD,
     Ledger,
-    MakeContext,
 )
-
-
-@pytest.fixture
-def ledger(
-    owner_conn: Connection,
-    rolled_back_context: MakeContext,
-    tmp_path: Path,
-) -> Ledger:
-    return Ledger(owner_conn, rolled_back_context(Role.OWNER), tmp_path)
 
 
 @pytest.fixture
@@ -69,23 +51,6 @@ def card_parsers(monkeypatch: pytest.MonkeyPatch) -> None:
     registry.load_parsers()
     for parser in CARD_PARSERS:
         monkeypatch.setitem(registry.PARSERS, parser.parser_id, parser)
-
-
-@pytest.fixture
-def fx_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
-    """``ledger`` with one chequing account at ``FX_INSTITUTION`` (slug ``fx``) and
-    the ``FX_ISSUER`` directory mapped to ``parse_fx``, for this test only."""
-    monkeypatch.setattr(
-        issuers,
-        "ISSUER_DIRS",
-        MappingProxyType(
-            {**issuers.ISSUER_DIRS, FX_ISSUER: issuers.IssuerDir("statement")}
-        ),
-    )
-    registry.load_parsers()
-    monkeypatch.setitem(registry.PARSERS, FX_PARSER.parser_id, FX_PARSER)
-    ledger.accounts(("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER))
-    return ledger
 
 
 @pytest.fixture

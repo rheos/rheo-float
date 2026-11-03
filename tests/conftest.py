@@ -1,6 +1,9 @@
 """Database fixtures: ``finance_test`` migrated once per session, a rolled-back owner
 connection per test, and a reader engine.
 
+The ``ledger`` and ``fx_ledger`` fixtures live here because more than one directory
+uses them (``derive.support`` holds what they build).
+
 Also the sink fixtures: a settings file under a temporary ``$FINANCE_DATA_DIR``, a
 direct approval record, and a local stub HTTP server; and ``scratch_database``, a
 throwaway database for the one kind of test that must commit rows (reading them back
@@ -25,6 +28,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -34,6 +38,13 @@ from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
+from derive.support import (
+    FX_IDENTIFIER,
+    FX_INSTITUTION,
+    FX_ISSUER,
+    FX_PARSER,
+    Ledger,
+)
 from rheo_finance import db, operations, settings
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import (
@@ -43,6 +54,8 @@ from rheo_finance.context import (
     UnitOfWork,
 )
 from rheo_finance.contracts import Role
+from rheo_finance.documents import issuers
+from rheo_finance.parsers import registry
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
@@ -578,3 +591,29 @@ def make_stub_server() -> Iterator[Callable[[], StubServer]]:
 @pytest.fixture
 def stub_server(make_stub_server: Callable[[], StubServer]) -> StubServer:
     return make_stub_server()
+
+
+@pytest.fixture
+def ledger(
+    owner_conn: Connection,
+    rolled_back_context: Callable[[Role], FinanceContext],
+    tmp_path: Path,
+) -> Ledger:
+    return Ledger(owner_conn, rolled_back_context(Role.OWNER), tmp_path)
+
+
+@pytest.fixture
+def fx_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
+    """``ledger`` with one chequing account at ``FX_INSTITUTION`` (slug ``fx``) and
+    the ``FX_ISSUER`` directory mapped to ``parse_fx``, for this test only."""
+    monkeypatch.setattr(
+        issuers,
+        "ISSUER_DIRS",
+        MappingProxyType(
+            {**issuers.ISSUER_DIRS, FX_ISSUER: issuers.IssuerDir("statement")}
+        ),
+    )
+    registry.load_parsers()
+    monkeypatch.setitem(registry.PARSERS, FX_PARSER.parser_id, FX_PARSER)
+    ledger.accounts(("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER))
+    return ledger

@@ -88,6 +88,9 @@ PINNED = {
     "0019_crypto_label.py": (
         "952db656af5c1befbe106ad720d52f560d25c176a4855bbc67488dbac4cdfe5c"
     ),
+    "0020_payee.py": (
+        "aa3612c5a2660e033a7535f90f3e43b53f85de3e4c33322c283e152a2be10be4"
+    ),
 }
 
 

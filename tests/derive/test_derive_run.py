@@ -24,6 +24,7 @@ from rheo_finance.derive import stage3
 from rheo_finance.derive.stage3 import CURRENCY_REFUSED, Lines, build_lines
 from rheo_finance.documents.registry import DocumentRefused
 from rheo_finance.manual.cash_lines import CashLines
+from rheo_finance.manual.payees import Payees
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.registry import DOCUMENT_REJECTED
 from rheo_finance.settings import parse_settings
@@ -328,6 +329,7 @@ def test_a_derive_that_fails_leaves_every_table_as_it_was(
         receipt_days: int,
         invoice_days: int,
         qty_epsilon: Decimal,
+        payees: Payees,
     ) -> Lines:
         raise RuntimeError("stage 3 failed")
 
@@ -373,11 +375,12 @@ def test_a_violated_constraint_fails_the_derive_itself(
         receipt_days: int,
         invoice_days: int,
         qty_epsilon: Decimal,
+        payees: Payees,
     ) -> Lines:
         lines = real(
             uow, cash, currencies, zone=zone, overlap_days=overlap_days,
             receipt_days=receipt_days, invoice_days=invoice_days,
-            qty_epsilon=qty_epsilon,
+            qty_epsilon=qty_epsilon, payees=payees,
         )  # fmt: skip
         ledger.conn.execute(
             insert(txn).values(

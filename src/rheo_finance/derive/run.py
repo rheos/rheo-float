@@ -29,7 +29,8 @@ Order of work, set by what each step reads:
    document are ``superseded`` (``precedence.supersede``).
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
    source discrepancies (``stage3``, ``precedence``, ``overlap``), then the receipts
-   and invoices linked to the txns as evidence (``evidence``).
+   and invoices linked to the txns as evidence (``evidence``), by the payee patterns
+   stage 2 loaded.
 5. Stage 4, conversion to CAD from the stored rates (``stage4``); stage 5,
    recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
    which reads the periods, the lines and ``document_periods.csv``; then stage 7, the
@@ -118,7 +119,7 @@ STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id")
 REWRITTEN: Final = frozenset(
     {
         "account", "account_identifier", "manual_entry_error", "filed_year",
-        "own_address", "crypto_label", "sink_spec",
+        "own_address", "crypto_label", "payee", "sink_spec",
     }
 )  # fmt: skip
 # State, never truncated (Key decision 3): the decisions, the stored rates and the
@@ -198,6 +199,7 @@ def run(
             receipt_days=ctx.settings.get_int(RECEIPT_DAYS_KEY),
             invoice_days=ctx.settings.get_int(INVOICE_DAYS_KEY),
             qty_epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
+            payees=manual.payees,
         )
 
         stage4.convert(uow)

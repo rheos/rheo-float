@@ -10,12 +10,15 @@ against payment lines:
   outflow, negative), a posting or transaction date of the txn within the window of
   the line's date (``finance.receipts.match_days`` for a receipt,
   ``finance.invoices.match_days`` for an invoice, either side of it), and the payee:
-  the line's ``counterparty``, normalized as descriptions are, appears as whole words
-  in the txn's normalized description. Only the txn of an unmatched receipt is also
+  one of the line's payee patterns is a whole-token run of the txn's normalized
+  description. A line's payee patterns are its printed payee (its ``counterparty``,
+  normalized as descriptions are) and the patterns of every payee one of whose
+  patterns names that printed payee (``manual.payees``: the ``payees.csv`` rows and
+  the account-backed payees of ``accounts.csv`` ``payee_patterns``), so a receipt
+  whose payee prints one name and whose card line prints another matches once the
+  owner registers both as one payee. Only the txn of an unmatched receipt is also
   searched by its counterparty (the receipt's payee), so an invoice can attach to a
   receipt paid in cash; a statement or export line's counterparty is never read.
-  Prompt 48 replaces the payee rule with the account ``payee_patterns`` and
-  ``payees.csv`` patterns.
 - **Which pairs.** Within each kind the matching is maximal: as many lines as can be
   matched one to one are, so a greedy choice never strands a receipt that had a
   payment of its own (that would count it twice). Among the maximal matchings the one
@@ -55,7 +58,6 @@ key and normalized description on ``document_line``, as part one does.
 from __future__ import annotations
 
 import datetime as dt
-import re
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -67,6 +69,7 @@ from sqlalchemy import bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
+from rheo_finance.manual.payees import NO_PAYEES, Payees, names_any
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
@@ -107,6 +110,9 @@ class Line:
     description_norm: str
     payee: str
     key: uuid.UUID
+    # The normalized names the payment's text must hold one of: the printed payee
+    # first, then the patterns of the registered payees that name it.
+    patterns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -144,14 +150,10 @@ def evidence_key(
     )  # fmt: skip
 
 
-def names_payee(payee: str, texts: Sequence[str]) -> bool:
-    """Whether the normalized ``payee`` appears as whole words in one of ``texts``
-    (normalized). An empty payee names nothing."""
-    norm = normalize_description(payee)
-    if not norm:
-        return False
-    pattern = re.compile(rf"(?<!\w){re.escape(norm)}(?!\w)")
-    return any(pattern.search(normalize_description(text)) for text in texts)
+def names_payee(patterns: Sequence[str], texts: Sequence[str]) -> bool:
+    """Whether one of ``patterns`` (normalized) is a whole-token run of one of
+    ``texts``. No pattern, or only empty ones, names nothing."""
+    return any(names_any(patterns, text) for text in texts)
 
 
 def _gap(day: dt.date, payment: Payment) -> int:
@@ -183,7 +185,7 @@ def match(
         for index in by_amount.get((item.currency, item.amount), ()):
             payment = candidates[index]
             gap = _gap(item.posting_date, payment)
-            if gap <= days and names_payee(item.payee, payment.texts):
+            if gap <= days and names_payee(item.patterns, payment.texts):
                 found.append((index, gap))
         edges.append(found)
     cost = [dict(each) for each in edges]
@@ -237,7 +239,7 @@ def match(
     }
 
 
-def _lines(uow: UnitOfWork) -> tuple[dict[uuid.UUID, list[Line]], int]:
+def _lines(uow: UnitOfWork, payees: Payees) -> tuple[dict[uuid.UUID, list[Line]], int]:
     """Every receipt and invoice line of a parsed document, grouped by key; within a
     group, the larger document sha256 first, then line order."""
     rows = uow.execute(
@@ -284,9 +286,18 @@ def _lines(uow: UnitOfWork) -> tuple[dict[uuid.UUID, list[Line]], int]:
             description_norm=norm,
             payee=payee,
             key=key,
+            patterns=_patterns(payee, payees),
         )
         groups.setdefault(key, []).append(line)
     return groups, incomplete
+
+
+def _patterns(payee: str, payees: Payees) -> tuple[str, ...]:
+    """The printed ``payee`` (normalized), then the patterns of the registered payees
+    that name it, without repeats or empties."""
+    found = [payee] if payee else []
+    found.extend(p for p in payees.patterns_naming(payee) if p not in found)
+    return tuple(found)
 
 
 def _payments(uow: UnitOfWork) -> list[Payment]:
@@ -336,12 +347,18 @@ def _evidence(
     ]
 
 
-def link(uow: UnitOfWork, *, receipt_days: int, invoice_days: int) -> Evidence:
+def link(
+    uow: UnitOfWork,
+    *,
+    receipt_days: int,
+    invoice_days: int,
+    payees: Payees = NO_PAYEES,
+) -> Evidence:
     """Match every receipt and invoice line against the txns already written, and
     write the evidence sources and the unmatched receipts' txns. ``receipt_days`` is
-    ``finance.receipts.match_days`` and ``invoice_days`` is
-    ``finance.invoices.match_days``."""
-    groups, incomplete = _lines(uow)
+    ``finance.receipts.match_days``, ``invoice_days`` is
+    ``finance.invoices.match_days``, and ``payees`` the payees stage 2 loaded."""
+    groups, incomplete = _lines(uow, payees)
     by_kind: dict[Kind, dict[uuid.UUID, list[Line]]] = {kind: {} for kind in KINDS}
     for key, lines in groups.items():
         by_kind[lines[0].kind][key] = lines

@@ -698,3 +698,26 @@ _tiers(
         "official": P, "extraction": P,
     },
 )  # fmt: skip
+
+# --- payees (stage 2; migration 0020) -------------------------------------------------
+# One row per payee (``manual.payees``). Slug and label are the owner's words; the
+# patterns are printed names.
+
+payee = Table(
+    "payee",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("slug", Text, nullable=False, unique=True),
+    Column("display_label", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("account_id", Uuid, _account_fk()),
+    Column("party_ref", Text),
+    Column("patterns", ARRAY(Text), nullable=False, server_default="{}"),
+)
+_tiers(
+    payee,
+    {
+        "id": P, "slug": P, "display_label": P, "kind": P, "account_id": P,
+        "party_ref": P, "patterns": R,
+    },
+)  # fmt: skip

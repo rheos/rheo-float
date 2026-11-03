@@ -45,6 +45,7 @@ from rheo_finance.derive import crypto_lines, evidence, overlap
 from rheo_finance.derive.precedence import standings
 from rheo_finance.manual.cash_lines import TRANSACTIONS_FILE, CashLines
 from rheo_finance.manual.loader import RowError
+from rheo_finance.manual.payees import NO_PAYEES, Payees
 from rheo_finance.manual.stage2 import account_id, error_id
 from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
@@ -326,6 +327,7 @@ def build_lines(
     receipt_days: int,
     invoice_days: int,
     qty_epsilon: Decimal,
+    payees: Payees = NO_PAYEES,
 ) -> Lines:
     """Write the txns, their sources and the source discrepancies, then link the
     receipts and invoices (``evidence``). ``account_currencies`` maps each loaded
@@ -334,11 +336,14 @@ def build_lines(
     ``overlap_days`` is
     ``finance.import.overlap_day_tolerance``, ``receipt_days`` and ``invoice_days``
     the receipt and invoice matching windows, ``qty_epsilon``
-    ``finance.crypto.qty_epsilon``."""
+    ``finance.crypto.qty_epsilon``, ``payees`` the payees whose patterns the receipts
+    and invoices match by."""
     documents = _document_lines(uow, overlap_days)
     crypto = crypto_lines.build_crypto_lines(uow, zone, qty_epsilon=qty_epsilon)
     manual = _manual_lines(uow, cash, account_currencies)
-    linked = evidence.link(uow, receipt_days=receipt_days, invoice_days=invoice_days)
+    linked = evidence.link(
+        uow, receipt_days=receipt_days, invoice_days=invoice_days, payees=payees
+    )
     return Lines(
         from_documents=documents.from_documents + crypto.txns,
         additional_sources=documents.additional_sources + crypto.additional_sources,

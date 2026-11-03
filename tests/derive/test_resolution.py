@@ -27,9 +27,9 @@ from rheo_finance.manual.stage2 import account_id
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
 
-from .support import CSV_IDENTIFIER, FIXTURES, Ledger
+from .support import CSV_IDENTIFIER, FIXTURES, SECOND, Ledger
 from .test_reversals import OUTGOING, export
-from .test_transfer_edges import BILL_PAYMENT, PAYMENT_RECEIVED, SECOND, visa_export
+from .test_transfer_edges import BILL_PAYMENT, PAYMENT_RECEIVED, visa_export
 
 D = dt.date
 CARD_ACCOUNT = "999000009991"

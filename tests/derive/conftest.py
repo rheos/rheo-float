@@ -1,7 +1,13 @@
 """The ``ledger`` fixture for the derive tests; ``card_parsers``, which maps the
 test-only card issuer directory and registers its parser for one test; and
-``fx_ledger``, the same for the conversion fixtures; and ``crypto_ledger``, the same
-for the test-only crypto fixture parser (``crypto_support``)."""
+``fx_ledger``, the same for the conversion fixtures; ``own``, the accounts of the
+transfer-edge tests; and ``crypto_ledger``, the same for the test-only crypto fixture
+parser (``crypto_support``).
+
+Every fixture more than one test module uses lives here, never in a test module that
+another one imports it from: a fixture imported across test modules is found or not
+depending on which file pytest collects first (``tests/guards/test_test_layout.py``).
+"""
 
 from __future__ import annotations
 
@@ -25,10 +31,14 @@ from .crypto_support import (
 from .support import (
     CARD_ISSUER,
     CARD_PARSERS,
+    CSV_IDENTIFIER,
+    FX2_IDENTIFIER,
     FX_IDENTIFIER,
     FX_INSTITUTION,
     FX_ISSUER,
     FX_PARSER,
+    SECOND,
+    THIRD,
     Ledger,
     MakeContext,
 )
@@ -77,6 +87,21 @@ def fx_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
     monkeypatch.setitem(registry.PARSERS, FX_PARSER.parser_id, FX_PARSER)
     ledger.accounts(("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER))
     return ledger
+
+
+@pytest.fixture
+def own(fx_ledger: Ledger) -> Ledger:
+    """Three chequing accounts and a Visa card at Vancity, and two accounts at the
+    synthetic FX institution (``FX_LINES`` documents under ``FX_ISSUER``)."""
+    fx_ledger.accounts(
+        ("chequing", "Vancity", "chequing", CSV_IDENTIFIER),
+        ("second", "Vancity", "chequing", SECOND),
+        ("third", "Vancity", "chequing", THIRD),
+        ("visa", "Vancity", "credit_card", "999000009991"),
+        ("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER),
+        ("fx2", FX_INSTITUTION, "chequing", FX2_IDENTIFIER),
+    )
+    return fx_ledger
 
 
 @pytest.fixture

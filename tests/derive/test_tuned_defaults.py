@@ -27,13 +27,10 @@ from .test_transfer_edges import (
     file_bank,
     file_card,
     on,
-    own,
 )
 from .test_transfer_edges import edges as transfer_edges
 
 D = dt.date
-# ``own`` is a shared fixture: re-exported so pytest finds it here.
-__all__ = ["own"]
 
 
 @pytest.fixture

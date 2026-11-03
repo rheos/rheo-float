@@ -43,6 +43,9 @@ from rheo_finance.storage.schema import txn
 NOW = dt.datetime(2026, 2, 20, 12, 0, tzinfo=dt.UTC)
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 CSV_IDENTIFIER = "999000000077-999-99901-99902"
+# Two more chequing identifiers at the same bank, for the ``own`` fixture.
+SECOND = "999000000088-999-99901-99902"
+THIRD = "999000000099-999-99901-99902"
 STATEMENT_IDENTIFIER = "999000000022"
 D = dt.date
 
@@ -137,6 +140,7 @@ CARD_PARSERS = tuple(
 FX_ISSUER = "synthetic-fx"
 FX_INSTITUTION = "Sample FX"
 FX_IDENTIFIER = "999000000044"
+FX2_IDENTIFIER = "999000000045"
 FX_LINES = "SYNTHETIC FX LINES"
 
 

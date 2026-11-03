@@ -5,8 +5,7 @@ transfer-edge tests; and ``crypto_ledger``, the same for the test-only crypto fi
 parser (``crypto_support``).
 
 Every fixture more than one test module uses lives here, never in a test module that
-another one imports it from: a fixture imported across test modules is found or not
-depending on which file pytest collects first (``tests/guards/test_test_layout.py``).
+another one imports it from (``tests/guards/test_test_layout.py``).
 """
 
 from __future__ import annotations

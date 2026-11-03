@@ -1,10 +1,11 @@
 """No test module imports a fixture from another test module.
 
-A fixture imported from ``test_a.py`` into ``test_b.py`` is registered in both, and
-which registration a test sees depends on which file pytest collects first: listing
-the files in another order once made a derive test report its ``ledger`` fixture as
-not found. A fixture more than one module uses lives in a ``conftest.py`` instead,
-where pytest finds it for every file under that directory in any order.
+A fixture imported from ``test_a.py`` into ``test_b.py`` is registered in both, so
+what a test finds rests on what its module imports rather than on its directory. A
+phase gate once saw a derive test report its ``ledger`` fixture as not found under one
+file order; that failure did not reproduce later, so this guard removes the arrangement
+instead of pinning the symptom. A fixture more than one module uses lives in a
+``conftest.py``, where pytest finds it for every file under that directory.
 
 Static: every ``tests/**/test_*.py`` is parsed, the functions it decorates with
 ``pytest.fixture`` are collected, and every relative or ``tests.``-rooted import of a

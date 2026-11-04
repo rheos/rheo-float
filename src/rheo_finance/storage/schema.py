@@ -796,3 +796,77 @@ _tiers(
         "invoice_ref": P, "payments_mismatch": R,
     },
 )  # fmt: skip
+
+# --- payments (derived, stage 15; migration 0026) -------------------------------------
+# A stream key names an account by id, or a notice's issuer and kind: restricted,
+# because mail intake's issuer may name a sender.
+
+payment = Table(
+    "payment",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column(
+        "payee_id",
+        Uuid,
+        ForeignKey("finance.payee.id", deferrable=True, initially="DEFERRED"),
+        nullable=False,
+    ),
+    Column("amount", Numeric, nullable=False),
+    Column("currency", Text, nullable=False),
+    Column("paid_on", Date, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("state", Text, nullable=False),
+)
+_tiers(
+    payment,
+    {
+        "id": P, "payee_id": P, "amount": R, "currency": P, "paid_on": P, "source": P,
+        "state": P,
+    },
+)  # fmt: skip
+
+payment_evidence = Table(
+    "payment_evidence",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("payment_id", Uuid, ForeignKey("finance.payment.id"), nullable=False),
+    Column("stream_key", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("txn_id", Uuid, ForeignKey("finance.txn.id"), unique=True),
+    Column(
+        "document_line_id", Uuid, ForeignKey("finance.document_line.id"), unique=True
+    ),
+    # No foreign key until the drop records arrive.
+    Column("drop_evidence_id", Uuid, unique=True),
+)
+_tiers(
+    payment_evidence,
+    {
+        "id": P, "payment_id": P, "stream_key": R, "role": P, "txn_id": P,
+        "document_line_id": P, "drop_evidence_id": P,
+    },
+)  # fmt: skip
+
+payment_application = Table(
+    "payment_application",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("payment_id", Uuid, ForeignKey("finance.payment.id"), nullable=False),
+    # Null is an unapplied credit, which alone has a reason.
+    Column(
+        "obligation_id",
+        Uuid,
+        ForeignKey("finance.obligation.id", deferrable=True, initially="DEFERRED"),
+    ),
+    Column("amount", Numeric(20, 2), nullable=False),
+    Column("reason", Text),
+    Column("basis_ref", Text),
+    Column("auto", Boolean, nullable=False),
+)
+_tiers(
+    payment_application,
+    {
+        "id": P, "payment_id": P, "obligation_id": P, "amount": R, "reason": P,
+        "basis_ref": P, "auto": P,
+    },
+)  # fmt: skip

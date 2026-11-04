@@ -106,6 +106,9 @@ PINNED = {
     "0025_invoice_amount_due.py": (
         "fc3d9f29792605e6252503d8ce1b0df6b29b00fbc76003c5b1512c1bed2814ad"
     ),
+    "0026_stage15.py": (
+        "7900ecf36ec288fef9d81ee4429b3f640bf6d73f78557870763e5b97e0d675cc"
+    ),
 }
 
 

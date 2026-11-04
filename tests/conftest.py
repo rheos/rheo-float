@@ -62,6 +62,8 @@ from derive.support import (
     FX_INSTITUTION,
     FX_ISSUER,
     FX_PARSER,
+    NOTICE_ISSUER,
+    NOTICE_PARSER,
     SECOND,
     THIRD,
     Ledger,
@@ -660,6 +662,20 @@ def card_parsers(monkeypatch: pytest.MonkeyPatch) -> None:
     registry.load_parsers()
     for parser in CARD_PARSERS:
         monkeypatch.setitem(registry.PARSERS, parser.parser_id, parser)
+
+
+@pytest.fixture
+def notice_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map ``NOTICE_ISSUER`` as a directory of emails, one sub-directory per sender,
+    and register ``parse_notice``, for this test only."""
+    directories = MappingProxyType(
+        {**issuers.ISSUER_DIRS, NOTICE_ISSUER: issuers.IssuerDir("email", nested=True)}
+    )
+    monkeypatch.setattr(issuers, "ISSUER_DIRS", directories)
+    # The registry holds its own name for the map, to find a nested issuer's directory.
+    monkeypatch.setattr(registry, "ISSUER_DIRS", directories)
+    registry.load_parsers()
+    monkeypatch.setitem(registry.PARSERS, NOTICE_PARSER.parser_id, NOTICE_PARSER)
 
 
 @pytest.fixture

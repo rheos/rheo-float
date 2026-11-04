@@ -11,8 +11,8 @@ either way.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   coverage matrix, the pairing graph, the ``txn`` tables, the source discrepancies,
-   the obligations and the events. The
+   payments, the coverage matrix, the pairing graph, the ``txn`` tables, the source
+   discrepancies, the obligations and the events. The
    parse cache (``PARSE_CACHE``: lines, periods, rejected periods and the rejection
    events) is cleared whole with ``reparse``; otherwise stage 1 clears and rewrites a
    document's rows when it parses that document, and the columns stage 3 writes on a
@@ -51,7 +51,9 @@ Order of work, set by what each step reads:
    transfer's net or conversion's spread becomes a derived fee line; then stage 14, the
    obligations (``stage14``), which read the parsed periods and the payees stage 2
    stored, the manual obligations and arrangements it holds, and the invoices stage 3
-   found unpaid.
+   found unpaid; then stage 15, the payments (``stage15``), which read the applied
+   edges, the coverage matrix, the notice lines and the owner's decisions on them, and
+   no obligation.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -87,6 +89,7 @@ from rheo_finance.derive import (
     stage9,
     stage11,
     stage14,
+    stage15,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -100,6 +103,9 @@ from rheo_finance.storage.schema import (
     event,
     obligation,
     pair_edge,
+    payment,
+    payment_application,
+    payment_evidence,
     rejected_period,
     source_discrepancy,
     statement_period,
@@ -112,6 +118,7 @@ RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
+    payment_application, payment_evidence, payment,
     coverage_table, pair_edge, obligation, txn_source, txn, source_discrepancy,
     document_line, statement_period, rejected_period, event,
 )  # fmt: skip
@@ -249,6 +256,16 @@ def run(
             manual.arrangements.arrangements,
             manual.payees,
             lines.unpaid_invoices,
+        )
+        stage15.build_payments(
+            uow,
+            manual.payees,
+            manual.transfer_hints.rows,
+            stage15.Windows(
+                tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
+                evidence_days=ctx.settings.get_int(stage15.WINDOW_KEY),
+                hold_days=ctx.settings.get_int(stage15.HOLD_KEY),
+            ),
         )
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))

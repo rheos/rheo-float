@@ -218,7 +218,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
 # --- the summary check ----------------------------------------------------------------
 
 # Line kinds a document states as evidence of a payment, with no account of their own.
-EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt"})
+EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt", "payment_notice"})
 # Crypto movement and fee lines carry a quantity of an asset, not money in a currency.
 QUANTITY_KINDS: Final = frozenset(CRYPTO_LINE_KINDS)
 
@@ -227,11 +227,11 @@ def summary_ties_out(result: ParseResult) -> bool:
     """Whether every ``summary`` period reconciles to the cent with its own lines,
     and every money line belongs to a period.
 
-    An ``invoice`` or ``receipt`` line belongs to no account and no period: it is
-    evidence of a payment, read against the payment lines in stage 3, so it is
-    outside this check. So is a crypto movement or fee line: its ``amount`` is a
-    quantity of the asset it names, not money in a period's currency, and no crypto
-    source states a summary to tie it to (its control is ``none``).
+    An ``invoice``, ``receipt`` or ``payment_notice`` line belongs to no account and
+    no period: it is evidence of a payment, read against the payment lines in stage 3
+    or stage 15, so it is outside this check. So is a crypto movement or fee line: its
+    ``amount`` is a quantity of the asset it names, not money in a period's currency,
+    and no crypto source states a summary to tie it to (its control is ``none``).
 
     A period's lines are its account's and currency's lines that carry an amount:
     opening plus their sum is closing, and where the period states them, the debits

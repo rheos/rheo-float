@@ -230,6 +230,10 @@ class ParsedPeriod:
     due_date: dt.date | None = None
     # The date a bill prints; None for every other document.
     bill_date: dt.date | None = None
+    # What a bill prints as its current charges and on a line labelled arrears. Each is
+    # inside ``balance_due``; None when the bill prints no such line.
+    current_charges: Decimal | None = None
+    arrears: Decimal | None = None
     # Set by the parser for running_balance, bill_identity and none; a summary period
     # is tied out by the registry's own check.
     tied_out: bool = False

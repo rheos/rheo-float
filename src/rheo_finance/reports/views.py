@@ -42,6 +42,7 @@ from typing import Final
 
 from sqlalchemy import (
     BigInteger,
+    ColumnElement,
     DateTime,
     Select,
     Text,
@@ -78,6 +79,8 @@ ARCHIVE_SKIP_IDENTIFIER: Final = "archive_skip_identifier"
 ACCOUNT_NO_DATA: Final = "account_no_data"
 MISSING_MONTHS: Final = "missing_months"
 DUPLICATE_BILL_MONTH: Final = "duplicate_bill_month"
+MANUAL_MISMATCH: Final = "manual_mismatch"
+STATEMENT_CONFLICT: Final = "statement_conflict"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -98,6 +101,22 @@ def _one() -> Label[int]:
 
 def _no_time() -> Label[dt.datetime]:
     return cast(null(), DateTime(timezone=True)).label("at")
+
+
+def _obligations_per_payee(
+    name: str, *where: ColumnElement[bool]
+) -> Select[tuple[object, ...]]:
+    return (
+        select(
+            _fact(name),
+            payee.c.display_label.label("subject"),
+            func.count().label("count"),
+            _no_time(),
+        )
+        .select_from(obligation.join(payee, obligation.c.payee_id == payee.c.id))
+        .where(*where)
+        .group_by(payee.c.id, payee.c.display_label)
+    )
 
 
 def report_status_select() -> Select[tuple[object, ...]]:
@@ -148,16 +167,17 @@ def report_status_select() -> Select[tuple[object, ...]]:
         .select_from(coverage.join(account, coverage.c.account_id == account.c.id))
         .where(coverage.c.state == MISSING)
         .group_by(account.c.id, account.c.label),
-        select(
-            _fact(DUPLICATE_BILL_MONTH),
-            payee.c.display_label.label("subject"),
-            func.count().label("count"),
-            _no_time(),
-        )
-        .select_from(obligation.join(payee, obligation.c.payee_id == payee.c.id))
-        .where(obligation.c.kind == "bill")
-        .where(obligation.c.period_label.regexp_match(SUFFIXED_BILL))
-        .group_by(payee.c.id, payee.c.display_label),
+        _obligations_per_payee(
+            DUPLICATE_BILL_MONTH,
+            obligation.c.kind == "bill",
+            obligation.c.period_label.regexp_match(SUFFIXED_BILL),
+        ),
+        _obligations_per_payee(
+            MANUAL_MISMATCH, obligation.c.manual_mismatch.is_not(None)
+        ),
+        _obligations_per_payee(
+            STATEMENT_CONFLICT, obligation.c.statement_conflict.is_(True)
+        ),
     ]
     # A view's body is one select; the union is wrapped as its only source.
     unioned = union_all(*branches).subquery("facts")

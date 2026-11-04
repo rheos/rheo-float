@@ -111,7 +111,7 @@ SOURCES: dict[str, Source] = {
         "vancity.chequing_csv", "2", (CHEQUING,),
     ),
     "FortisBC bill PDF": Source(
-        "fortisbc/2026-01-15.pdf", "fortisbc_bill.txt", "fortisbc.bill", "2", (HYDRO,),
+        "fortisbc/2026-01-15.pdf", "fortisbc_bill.txt", "fortisbc.bill", "3", (HYDRO,),
     ),
     "Invoices received": Source(
         "invoices-received/sample-vendor/2025-12-01.pdf", "invoice_received.txt",

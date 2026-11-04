@@ -181,6 +181,27 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                     primary_source="fortisbc/bill.pdf",
                 )
             )
+            # A manual row that differs from its document, and two statements that
+            # differ from each other, on the same payee.
+            conn.execute(
+                insert(obligation).values(
+                    id=uuid7(NOW),
+                    payee_id=conn.scalar(
+                        select(payee.c.id).where(payee.c.slug == "fortisbc")
+                    ),
+                    kind="bill",
+                    period_label="bill-2026-03",
+                    amount_due=Decimal("1.00"),
+                    threshold_due=Decimal("1.00"),
+                    paid=Decimal("0.00"),
+                    remaining=Decimal("1.00"),
+                    threshold_remaining=Decimal("1.00"),
+                    status="open",
+                    primary_source="fortisbc/bill.pdf",
+                    manual_mismatch=Decimal("0.50"),
+                    statement_conflict=True,
+                )
+            )
             descriptions = conn.scalars(
                 select(document_line.c.description_raw).where(
                     document_line.c.description_raw.is_not(None)
@@ -335,6 +356,8 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
     # Only the identifier skip counts: the unmapped file is skipped for another reason.
     assert lines[9] == (
         "1 source discrepancy; 1 duplicate bill month (fortisbc 1);"
+        " 1 manual bill that differs from its document (fortisbc 1);"
+        " 1 card statement with conflicting copies (fortisbc 1);"
         " 1 account with no data: Spare;"
         " 1 archive file skipped: file name carries an identifier, rename them"
         " (vancity 1)"

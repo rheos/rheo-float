@@ -177,6 +177,15 @@ def _sinks(ctx: FinanceContext, uow: UnitOfWork) -> str:
     return text
 
 
+def _per_payee(facts: list[Fact], one: str, many: str) -> list[str]:
+    """``facts`` as one data-check part, its count and each payee's, or none."""
+    found = sorted((each.subject or "", each.count) for each in facts)
+    if not found:
+        return []
+    where = ", ".join(f"{label} {count}" for label, count in found)
+    return [_plural(sum(count for _, count in found), one, many) + f" ({where})"]
+
+
 def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
     parts: list[str] = []
     discrepancies = sum(each.count for each in facts[views.SOURCE_DISCREPANCY])
@@ -184,19 +193,21 @@ def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
         parts.append(
             _plural(discrepancies, "source discrepancy", "source discrepancies")
         )
-    second_bills = sorted(
-        (each.subject or "", each.count) for each in facts[views.DUPLICATE_BILL_MONTH]
+    parts += _per_payee(
+        facts[views.DUPLICATE_BILL_MONTH],
+        "duplicate bill month",
+        "duplicate bill months",
     )
-    if second_bills:
-        where = ", ".join(f"{label} {count}" for label, count in second_bills)
-        parts.append(
-            _plural(
-                sum(count for _, count in second_bills),
-                "duplicate bill month",
-                "duplicate bill months",
-            )
-            + f" ({where})"
-        )
+    parts += _per_payee(
+        facts[views.MANUAL_MISMATCH],
+        "manual bill that differs from its document",
+        "manual bills that differ from their documents",
+    )
+    parts += _per_payee(
+        facts[views.STATEMENT_CONFLICT],
+        "card statement with conflicting copies",
+        "card statements with conflicting copies",
+    )
     no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
     if no_data:
         parts.append(

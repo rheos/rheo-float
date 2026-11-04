@@ -94,6 +94,9 @@ PINNED = {
     "0021_obligation.py": (
         "8175a4001f58ccbe396b0bb55fe8c81d71830c156576858adb526617fe158a9a"
     ),
+    "0022_bill_figures.py": (
+        "10a9a46bcc724e22f1dfcf408b6563987c6b977b06c95db0578371267da046d1"
+    ),
 }
 
 

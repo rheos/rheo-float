@@ -1,10 +1,9 @@
 """Derivation stage 14: the obligations (FR-19, FR-21; Key decision 20; SPEC Data Models
 ``obligation``). Nothing outside this stage creates one, and a card charge from a
-subscription vendor is a spending line only.
+subscription vendor is a spending line only. The paths are in the table above
+``create_obligations``.
 
-Two of the five paths of FR-19 are built:
-
-- (1) A card statement: a parsed statement of a ``credit_card`` account gives
+- (1) A card statement: a parsed statement that states a balance owed gives
   ``card_statement``, period ``card-YYYY-MM-DD`` of its closing date, issued on it.
   ``threshold_due`` is the printed minimum, else the full balance.
 - (2) A parsed bill: a parsed document of kind ``bill`` gives ``bill``, period
@@ -12,21 +11,56 @@ Two of the five paths of FR-19 are built:
   one payee due in one month takes ``-2``, ``-3`` in (bill date, due date, path) order,
   which ``report_status`` counts for status line 9. A parsed bill that prints no total
   due has no amount to owe and makes no obligation.
+- (3) A manual bill: one ``bill`` per ``obligations.csv`` row, for a bill with no
+  parser. The document its row names, when one is registered at that path, is its
+  primary source and makes nothing of its own; otherwise the row is.
+- (4) An arrangement: one ``arrangement_instalment`` per ``arrangements.csv`` row,
+  period ``inst-<slug>-<n>``, issued on ``agreed_on``; and arrears, below.
+- (5) A manual debt: one ``manual_debt`` per ``obligations.csv`` row, period
+  ``debt-<slug>``, with the row's ``issued_on`` and due date, either of which may be
+  null.
 
 A document ``precedence.supersede`` marked as a copy is not parsed, so it makes nothing.
 Two different parsed statements of one card with one closing date have one natural key,
-so they are one obligation: the last in path order.
+so they are one obligation: the one ``precedence`` ranks first. When their balance,
+minimum or due date differ, the row's ``statement_conflict`` says so, for status line 9.
+
+**A manual row and a document.** A manual row with the key of a parsed document is one
+obligation with it: the document's figures win, the row stays in ``manual_source``, and
+the row's amount less the document's printed total is ``manual_mismatch``, null when
+they agree. A ``bill`` row's minimum is kept as written and is never its threshold: only
+a card's threshold is its minimum.
 
 **The payee.** The payee standing for the account (``payee.account_id``), else the
 payee named by the account's slug for a statement or the issuer's slug for a bill. Stage
 2 makes a card's and an issuer's exist (``manual.payees``). A statement that states an
 amount owed on an account not registered as a card has none: ``NoPayee`` fails the
-derive rather than dropping what is owed.
+derive rather than dropping what is owed. A manual row and an arrangement name their
+payee by slug, and the loaders refuse an unknown one.
 
-**Supersession (FR-21).** Per (payee, kind), in the order above, each newer row names
-the one before it in ``supersedes_id`` and the one before it is ``superseded``. A
-statement's balance and minimum already hold what the previous one carried, and a bill's
-total holds the unpaid balance before it, so only the newest is owed.
+**Supersession (FR-21).** Per (payee, account, kind), so two accounts of one issuer stay
+two chains, each newer document row names the one before it in ``supersedes_id`` and the
+one before it is ``superseded``. A statement's balance and minimum already hold what the
+previous one carried, and a bill's total holds the unpaid balance before it, so only the
+newest is owed.
+
+**Manual rows do not chain.** A manual invoice does not carry the one before it, so two
+manual bills of one payee are both owed, and neither a manual bill nor a manual debt
+supersedes anything or is superseded by a newer document. A manual row merged into a
+document is that document's row, which does chain.
+
+**Arrangements and arrears.** Every bill period an arrangement ``replaces`` is
+``superseded``, and names the arrangement in ``arrangement_ref``, from then on: when the
+last instalment is paid the arrangement stops being active, and the replaced periods
+must not come back as owed. While an arrangement of a payee is active, the newest bill
+of each of its accounts is owed for its printed current charges only, or for its total
+less its printed arrears when it prints no current charges. With none active, a bill
+that prints an arrears line is split: the bill is owed its total less the arrears, and
+an ``arrears`` row, period ``arrears-YYYY-MM`` of the bill date, holds the arrears, so
+the two add up to the total printed and instalments and arrears are never both owed.
+Only the newest bill of an account states arrears: an older figure is folded into it. A
+carried balance that is not labelled arrears (a bill's unpaid balance) stays in the
+bill's own total, which one payment can then match.
 
 No payment is applied yet: ``paid`` is zero, and a row with nothing remaining (a card
 at zero or in credit) is ``paid`` rather than open.
@@ -40,8 +74,8 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from itertools import pairwise
 from typing import Final, Literal
@@ -49,8 +83,10 @@ from typing import Final, Literal
 from sqlalchemy import Row, insert, select
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.derive import precedence
 from rheo_finance.derive.stage4 import cents
-from rheo_finance.manual.obligations import bill_period
+from rheo_finance.manual.arrangements import Arrangement
+from rheo_finance.manual.obligations import ManualObligation, bill_period
 from rheo_finance.manual.stage2 import REGISTRY_DATE
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
@@ -67,6 +103,8 @@ ObligationKind = Literal[
 
 CARD_STATEMENT: Final[ObligationKind] = "card_statement"
 BILL: Final[ObligationKind] = "bill"
+INSTALMENT: Final[ObligationKind] = "arrangement_instalment"
+ARREARS: Final[ObligationKind] = "arrears"
 CURRENCY: Final = "CAD"
 ZERO: Final = Decimal("0.00")
 
@@ -86,21 +124,36 @@ def obligation_id(
 
 @dataclass(frozen=True)
 class _Draft:
-    """One obligation before its place in its payee's chain is known."""
+    """One obligation before its place in its chain is known. ``account_id``, the
+    current charges and the arrears are a parsed document's; ``chained`` says it takes
+    part in supersession."""
 
     payee_id: uuid.UUID
     kind: ObligationKind
     period_label: str
     statement_date: dt.date | None
-    issued_on: dt.date
+    issued_on: dt.date | None
     amount_due: Decimal
     minimum_due: Decimal | None
     due_date: dt.date | None
     source: str
+    account_id: uuid.UUID | None = None
+    chained: bool = False
+    current_charges: Decimal | None = None
+    arrears: Decimal | None = None
+    manual_source: str | None = None
+    manual_mismatch: Decimal | None = None
+    statement_conflict: bool = False
+    arrangement_ref: str | None = None
 
     @property
     def id(self) -> uuid.UUID:
         return obligation_id(self.payee_id, self.kind, self.period_label)
+
+    @property
+    def replaced(self) -> bool:
+        """An arrangement names this bill's period as replaced."""
+        return self.kind == BILL and self.arrangement_ref is not None
 
 
 def _periods(uow: UnitOfWork) -> list[Row[tuple[object, ...]]]:
@@ -117,6 +170,9 @@ def _periods(uow: UnitOfWork) -> list[Row[tuple[object, ...]]]:
                 sp.minimum_due,
                 sp.due_date,
                 sp.bill_date,
+                sp.current_charges,
+                sp.arrears,
+                document.c.id.label("document_id"),
                 document.c.path,
                 document.c.sha256,
                 document.c.kind,
@@ -149,26 +205,54 @@ def _payees(
     )
 
 
+def _optional_cents(value: Decimal | None) -> Decimal | None:
+    return None if value is None else cents(value)
+
+
 def _card_drafts(
-    rows: Iterable[Row[tuple[object, ...]]], payee_of: _PayeeOf
+    uow: UnitOfWork, rows: Iterable[Row[tuple[object, ...]]], payee_of: _PayeeOf
 ) -> list[_Draft]:
-    """One draft per natural key, in ``rows`` order; the last row of a key holds it."""
-    drafts: dict[tuple[uuid.UUID, str], _Draft] = {}
+    """One draft per natural key, oldest closing date first: the document ``precedence``
+    ranks first holds it. A payee stands for one account, so a key's documents are all
+    on one account."""
+    groups: dict[tuple[uuid.UUID, dt.date], list[Row[tuple[object, ...]]]] = (
+        defaultdict(list)
+    )
     for row in rows:
-        payee_id = payee_of(row, row.account_slug)
-        label = f"card-{row.period_end:%Y-%m-%d}"
-        drafts[(payee_id, label)] = _Draft(
-            payee_id=payee_id,
-            kind=CARD_STATEMENT,
-            period_label=label,
-            statement_date=row.period_end,
-            issued_on=row.period_end,
-            amount_due=cents(row.balance_due),
-            minimum_due=None if row.minimum_due is None else cents(row.minimum_due),
-            due_date=row.due_date,
-            source=row.path,
+        groups[(payee_of(row, row.account_slug), row.period_end)].append(row)
+    ranks = (
+        precedence.standings(uow)
+        if any(len(group) > 1 for group in groups.values())
+        else {}
+    )
+    drafts = []
+    for (payee_id, closing), group in groups.items():
+        row = group[0]
+        if len(group) > 1:
+            place = {
+                each.document_id: n for n, each in enumerate(ranks[row.account_id])
+            }
+            row = min(group, key=lambda each: place[each.document_id])
+        figures = {
+            (each.balance_due, each.minimum_due, each.due_date) for each in group
+        }
+        drafts.append(
+            _Draft(
+                payee_id=payee_id,
+                kind=CARD_STATEMENT,
+                period_label=f"card-{closing:%Y-%m-%d}",
+                statement_date=closing,
+                issued_on=closing,
+                amount_due=cents(row.balance_due),
+                minimum_due=_optional_cents(row.minimum_due),
+                due_date=row.due_date,
+                source=row.path,
+                account_id=row.account_id,
+                chained=True,
+                statement_conflict=len(figures) > 1,
+            )
         )
-    return list(drafts.values())
+    return drafts
 
 
 def _bill_drafts(
@@ -196,15 +280,169 @@ def _bill_drafts(
                 minimum_due=None,
                 due_date=row.due_date,
                 source=row.path,
+                account_id=row.account_id,
+                chained=True,
+                current_charges=_optional_cents(row.current_charges),
+                arrears=_optional_cents(row.arrears),
             )
         )
     return drafts
 
 
+def _manual_drafts(
+    uow: UnitOfWork,
+    manual: Sequence[ManualObligation],
+    by_slug: Mapping[str, uuid.UUID],
+) -> list[_Draft]:
+    """A draft per ``obligations.csv`` row. Each row's source is the document it names,
+    if one is registered at that path, else the row itself."""
+    named = {each.row.archive_path for each in manual if each.row.archive_path}
+    registered = set(
+        uow.execute(select(document.c.path).where(document.c.path.in_(named))).scalars()
+    )
+
+    def source_of(each: ManualObligation) -> str:
+        path = each.row.archive_path
+        return path if path is not None and path in registered else each.source_ref
+
+    return [
+        _Draft(
+            payee_id=by_slug[each.row.payee],
+            kind=each.row.kind,
+            period_label=each.row.period,
+            statement_date=None,
+            issued_on=each.row.issued_on,
+            amount_due=each.row.amount_due,
+            minimum_due=each.row.minimum,
+            due_date=each.row.due_date,
+            source=source_of(each),
+            manual_source=each.source_ref,
+        )
+        for each in manual
+    ]
+
+
+def _merged(documents: Iterable[_Draft], manual: Iterable[_Draft]) -> list[_Draft]:
+    """``documents``, each holding the manual row of its key if there is one, then the
+    manual rows that stand alone."""
+    by_key = {draft.id: draft for draft in documents}
+    alone = []
+    for row in manual:
+        found = by_key.get(row.id)
+        if found is None:
+            alone.append(row)
+            continue
+        by_key[row.id] = replace(
+            found,
+            manual_source=row.manual_source,
+            manual_mismatch=(row.amount_due - found.amount_due) or None,
+        )
+    return [*by_key.values(), *alone]
+
+
+def _instalment_drafts(
+    arrangements: Iterable[Arrangement], by_slug: Mapping[str, uuid.UUID]
+) -> list[_Draft]:
+    return [
+        _Draft(
+            payee_id=by_slug[found.payee],
+            kind=INSTALMENT,
+            period_label=each.row.period,
+            statement_date=None,
+            issued_on=each.row.issued_on,
+            amount_due=each.row.amount,
+            minimum_due=None,
+            due_date=each.row.due_date,
+            source=each.source_ref,
+            arrangement_ref=found.slug,
+        )
+        for found in arrangements
+        for each in found.instalments
+    ]
+
+
+def _with_replaced(
+    drafts: Iterable[_Draft],
+    arrangements: Iterable[Arrangement],
+    by_slug: Mapping[str, uuid.UUID],
+) -> list[_Draft]:
+    """``drafts``, each bill an arrangement replaces naming the first that does."""
+    replacing: dict[uuid.UUID, str] = {}
+    for found in arrangements:
+        for period in found.replaces_periods:
+            key = obligation_id(by_slug[found.payee], BILL, period)
+            replacing.setdefault(key, found.slug)
+    return [
+        replace(draft, arrangement_ref=replacing[draft.id])
+        if draft.id in replacing
+        else draft
+        for draft in drafts
+    ]
+
+
+def _active_payees(
+    arrangements: Iterable[Arrangement], by_slug: Mapping[str, uuid.UUID]
+) -> set[uuid.UUID]:
+    """The payees with an arrangement that has an instalment not yet paid.
+
+    shortcut: nothing applies a payment before stage 15, so every instalment is unpaid
+    and every loaded arrangement counts; stage 15 narrows this when it lands.
+    """
+    return {by_slug[found.payee] for found in arrangements}
+
+
+def _owed_now(
+    drafts: Sequence[_Draft], active: set[uuid.UUID]
+) -> tuple[Mapping[uuid.UUID, _Draft], list[_Draft]]:
+    """What the arrangement rule changes: the bills owed less than their total, by id,
+    and the arrears rows. ``drafts`` comes oldest first, so the last parsed bill of a
+    (payee, account) is its newest; a replaced one is owed nothing either way."""
+    newest = {
+        (draft.payee_id, draft.account_id): draft
+        for draft in drafts
+        if draft.chained and draft.kind == BILL
+    }
+    changed: dict[uuid.UUID, _Draft] = {}
+    arrears: list[_Draft] = []
+    seen: Counter[tuple[uuid.UUID, str]] = Counter()
+    for bill in newest.values():
+        if bill.replaced:
+            continue
+        printed = max(bill.arrears or ZERO, ZERO)
+        if bill.payee_id in active:
+            owed = bill.amount_due - printed
+            if bill.current_charges is not None:
+                owed = bill.current_charges
+            changed[bill.id] = replace(bill, amount_due=owed)
+        elif printed:
+            assert bill.issued_on is not None  # the parsed bill's own date orders it
+            month = f"arrears-{bill.issued_on:%Y-%m}"
+            seen[(bill.payee_id, month)] += 1
+            place = seen[(bill.payee_id, month)]
+            changed[bill.id] = replace(bill, amount_due=bill.amount_due - printed)
+            arrears.append(
+                _Draft(
+                    payee_id=bill.payee_id,
+                    kind=ARREARS,
+                    period_label=month if place == 1 else f"{month}-{place}",
+                    statement_date=None,
+                    issued_on=bill.issued_on,
+                    amount_due=printed,
+                    minimum_due=None,
+                    due_date=bill.due_date,
+                    source=bill.source,
+                    account_id=bill.account_id,
+                )
+            )
+    return changed, arrears
+
+
 def _values(
     draft: _Draft, *, supersedes: _Draft | None, superseded: bool
 ) -> dict[str, object]:
-    threshold = draft.amount_due if draft.minimum_due is None else draft.minimum_due
+    threshold = draft.amount_due
+    if draft.kind == CARD_STATEMENT and draft.minimum_due is not None:
+        threshold = draft.minimum_due
     remaining = max(draft.amount_due, ZERO)
     status = "superseded" if superseded else "open" if remaining else "paid"
     return {
@@ -223,36 +461,60 @@ def _values(
         "due_date": draft.due_date,
         "status": status,
         "primary_source": draft.source,
-        "manual_mismatch": None,
+        "manual_source": draft.manual_source,
+        "manual_mismatch": draft.manual_mismatch,
+        "statement_conflict": draft.statement_conflict,
         "supersedes_id": None if supersedes is None else supersedes.id,
-        "arrangement_ref": None,
+        "arrangement_ref": draft.arrangement_ref,
         "invoice_ref": None,
         "payments_mismatch": None,
     }
 
 
-def _chained(drafts: Iterable[_Draft]) -> list[dict[str, object]]:
-    """Every draft's row: oldest to newest per (payee, kind), each newer one superseding
-    the one before it. ``drafts`` comes in that order."""
-    chains: dict[tuple[uuid.UUID, ObligationKind], list[_Draft]] = defaultdict(list)
-    for draft in drafts:
-        chains[(draft.payee_id, draft.kind)].append(draft)
+def _rows(drafts: Iterable[_Draft]) -> list[dict[str, object]]:
+    """Every draft's row. Oldest to newest per (payee, account, kind), each newer
+    chained one supersedes the one before it; ``drafts`` comes in that order."""
+    chains: dict[tuple[uuid.UUID, uuid.UUID | None, ObligationKind], list[_Draft]] = (
+        defaultdict(list)
+    )
     rows: list[dict[str, object]] = []
+    for draft in drafts:
+        if draft.chained:
+            chains[(draft.payee_id, draft.account_id, draft.kind)].append(draft)
+        else:
+            rows.append(_values(draft, supersedes=None, superseded=draft.replaced))
     for chain in chains.values():
         before: dict[uuid.UUID, _Draft] = {
             newer.id: older for older, newer in pairwise(chain)
         }
         newest = chain[-1].id
         rows.extend(
-            _values(each, supersedes=before.get(each.id), superseded=each.id != newest)
+            _values(
+                each,
+                supersedes=before.get(each.id),
+                superseded=each.replaced or each.id != newest,
+            )
             for each in chain
         )
     return rows
 
 
-def create_obligations(uow: UnitOfWork) -> int:
-    """Rebuild ``obligation`` from the parsed statements and bills; how many it made.
-    The caller cleared the table."""
+# The only creators of an obligation (FR-19; AC-87). A sixth is a spec change.
+#
+#   path  source                            kind                    period label
+#   (1)   a parsed statement                card_statement          card-YYYY-MM-DD
+#   (2)   a parsed bill                     bill                    bill-YYYY-MM[-n]
+#   (3)   an obligations.csv bill row       bill                    bill-YYYY-MM[-n]
+#   (4)   an arrangements.csv row           arrangement_instalment  inst-<slug>-<n>
+#   (4)   a parsed bill's arrears line      arrears                 arrears-YYYY-MM[-n]
+#   (5)   an obligations.csv debt row       manual_debt             debt-<slug>
+def create_obligations(
+    uow: UnitOfWork,
+    manual: Sequence[ManualObligation] = (),
+    arrangements: Sequence[Arrangement] = (),
+) -> int:
+    """Rebuild ``obligation`` from the parsed statements and bills and stage 2's manual
+    rows and arrangements; how many it made. The caller cleared the table."""
     by_account, by_slug = _payees(uow)
 
     def payee_of(row: Row[tuple[object, ...]], slug: str) -> uuid.UUID:
@@ -268,7 +530,20 @@ def create_obligations(uow: UnitOfWork) -> int:
     periods = _periods(uow)
     cards = [row for row in periods if row.kind == "statement"]
     bills = [row for row in periods if row.kind == "bill"]
-    rows = _chained([*_card_drafts(cards, payee_of), *_bill_drafts(bills, payee_of)])
+    documents = [*_card_drafts(uow, cards, payee_of), *_bill_drafts(bills, payee_of)]
+    drafts = _with_replaced(
+        _merged(documents, _manual_drafts(uow, manual, by_slug)),
+        arrangements,
+        by_slug,
+    )
+    changed, arrears = _owed_now(drafts, _active_payees(arrangements, by_slug))
+    rows = _rows(
+        [
+            *(changed.get(draft.id, draft) for draft in drafts),
+            *_instalment_drafts(arrangements, by_slug),
+            *arrears,
+        ]
+    )
     if rows:
         uow.execute(insert(obligation), rows)
     return len(rows)

@@ -400,6 +400,9 @@ statement_period = Table(
     Column("tied_out", Boolean, nullable=False),
     # The date a bill prints (migration 0021); null for every other document.
     Column("bill_date", Date),
+    # A bill's printed current charges and arrears line (migration 0022).
+    Column("current_charges", Numeric),
+    Column("arrears", Numeric),
 )
 _tiers(
     statement_period,
@@ -408,6 +411,7 @@ _tiers(
         "period_end": P, "opening": R, "closing": R, "total_debits": R,
         "total_credits": R, "total_payments": R, "balance_due": R, "minimum_due": R,
         "due_date": P, "control_kind": P, "tied_out": P, "bill_date": P,
+        "current_charges": R, "arrears": R,
     },
 )  # fmt: skip
 
@@ -753,7 +757,11 @@ obligation = Table(
     Column("due_date", Date),
     Column("status", Text, nullable=False),
     Column("primary_source", Text, nullable=False),
+    # The obligations.csv row of an obligation that has one (migration 0022).
+    Column("manual_source", Text),
     Column("manual_mismatch", Numeric(20, 2)),
+    # Two parsed statements of its closing date differ in their figures (0022).
+    Column("statement_conflict", Boolean, nullable=False, server_default="false"),
     Column(
         "supersedes_id",
         Uuid,
@@ -770,7 +778,8 @@ _tiers(
         "id": P, "payee_id": P, "kind": P, "period_label": P, "statement_date": P,
         "issued_on": P, "amount_due": R, "minimum_due": R, "threshold_due": R,
         "paid": R, "remaining": R, "threshold_remaining": R, "due_date": P,
-        "status": P, "primary_source": P, "manual_mismatch": R, "supersedes_id": P,
-        "arrangement_ref": P, "invoice_ref": P, "payments_mismatch": R,
+        "status": P, "primary_source": P, "manual_source": P, "manual_mismatch": R,
+        "statement_conflict": P, "supersedes_id": P, "arrangement_ref": P,
+        "invoice_ref": P, "payments_mismatch": R,
     },
 )  # fmt: skip

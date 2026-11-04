@@ -128,7 +128,7 @@ def test_the_bill_is_one_tied_out_period_over_its_billing_period(setup: Setup) -
 
     assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
     row = setup.document(doc)
-    assert (row.parser_id, row.parser_version) == ("fortisbc.bill", "2")
+    assert (row.parser_id, row.parser_version) == ("fortisbc.bill", "3")
     (period,) = setup.periods(doc)
     assert period.account_id == account_id("hydro")
     assert (period.control_kind, period.tied_out, period.currency) == (

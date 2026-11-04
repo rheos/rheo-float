@@ -39,28 +39,40 @@ derive rather than dropping what is owed. A manual row and an arrangement name t
 payee by slug, and the loaders refuse an unknown one.
 
 **Supersession (FR-21).** Per (payee, account, kind), so two accounts of one issuer stay
-two chains, each newer document row names the one before it in ``supersedes_id`` and the
-one before it is ``superseded``. A statement's balance and minimum already hold what the
-previous one carried, and a bill's total holds the unpaid balance before it, so only the
-newest is owed.
+two chains, oldest issue first, each newer row names the one before it in
+``supersedes_id`` and the one before it is ``superseded``. A statement's balance and
+minimum already hold what the previous one carried, and a bill's total holds the unpaid
+balance before it, so only the newest is owed.
 
-**Manual rows do not chain.** A manual invoice does not carry the one before it, so two
-manual bills of one payee are both owed, and neither a manual bill nor a manual debt
-supersedes anything or is superseded by a newer document. A manual row merged into a
-document is that document's row, which does chain.
+**Which manual bills chain.** A payee is a bill source when it has a parsed bill, is a
+bill issuer (``manual.payees.bill_issuers``), or stands for a ``bill_vendor`` account.
+Its bills are one running account, typed in or parsed: a manual bill joins the chain by
+``issued_on``, so a newer bill supersedes an older one in either direction and a bill
+typed from a photo is never owed beside the bill that carries it. Its account is the
+one the payee's parsed bills are on, else the one the payee stands for. Parsed bills on
+two accounts leave it no account to join: it then chains only with the payee's other
+manual bills. Any other payee is invoice-style: a manual invoice does not carry the one
+before it, so two of them are both owed. A manual debt never chains, and a manual row
+merged into a document is that document's row.
 
 **Arrangements and arrears.** Every bill period an arrangement ``replaces`` is
 ``superseded``, and names the arrangement in ``arrangement_ref``, from then on: when the
 last instalment is paid the arrangement stops being active, and the replaced periods
 must not come back as owed. While an arrangement of a payee is active, the newest bill
 of each of its accounts is owed for its printed current charges only, or for its total
-less its printed arrears when it prints no current charges. With none active, a bill
-that prints an arrears line is split: the bill is owed its total less the arrears, and
-an ``arrears`` row, period ``arrears-YYYY-MM`` of the bill date, holds the arrears, so
-the two add up to the total printed and instalments and arrears are never both owed.
-Only the newest bill of an account states arrears: an older figure is folded into it. A
-carried balance that is not labelled arrears (a bill's unpaid balance) stays in the
-bill's own total, which one payment can then match.
+less its printed arrears when it prints no current charges. A typed-in bill prints
+neither, so it is owed as typed. With none active, a bill that prints an arrears line
+is split: the bill is owed its total less the arrears, and an ``arrears`` row, period
+``arrears-YYYY-MM`` of the bill date, holds the arrears, so the two add up to the total
+printed and instalments and arrears are never both owed. Only the newest bill of an
+account states arrears: an older figure is folded into it. A carried balance that is
+not labelled arrears (a bill's unpaid balance) stays in the bill's own total, which one
+payment can then match.
+
+The total printed caps all of this. A credit carried on a bill can leave its total below
+its current charges or its arrears line, and nothing is owed above what the bill asks
+for: neither figure raises what is owed past the total, and neither takes a bill with a
+total of zero or more below zero.
 
 No payment is applied yet: ``paid`` is zero, and a row with nothing remaining (a card
 at zero or in credit) is ``paid`` rather than open.
@@ -87,6 +99,7 @@ from rheo_finance.derive import precedence
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.arrangements import Arrangement
 from rheo_finance.manual.obligations import ManualObligation, bill_period
+from rheo_finance.manual.payees import bill_issuers
 from rheo_finance.manual.stage2 import REGISTRY_DATE
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
@@ -105,6 +118,7 @@ CARD_STATEMENT: Final[ObligationKind] = "card_statement"
 BILL: Final[ObligationKind] = "bill"
 INSTALMENT: Final[ObligationKind] = "arrangement_instalment"
 ARREARS: Final[ObligationKind] = "arrears"
+BILL_VENDOR: Final = "bill_vendor"
 CURRENCY: Final = "CAD"
 ZERO: Final = Decimal("0.00")
 
@@ -340,6 +354,56 @@ def _merged(documents: Iterable[_Draft], manual: Iterable[_Draft]) -> list[_Draf
     return [*by_key.values(), *alone]
 
 
+def _bill_sources(
+    uow: UnitOfWork, documents: Iterable[_Draft], by_slug: Mapping[str, uuid.UUID]
+) -> Mapping[uuid.UUID, uuid.UUID | None]:
+    """Every bill-source payee, and the account its manual bills chain on: the one its
+    parsed bills are on, else the one it stands for, else none."""
+    parsed: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    for draft in documents:
+        if draft.kind == BILL and draft.account_id is not None:
+            parsed[draft.payee_id].add(draft.account_id)
+    stands_for: dict[uuid.UUID, uuid.UUID] = {
+        row.id: row.account_id
+        for row in uow.execute(
+            select(payee.c.id, payee.c.account_id)
+            .select_from(payee.join(account, payee.c.account_id == account.c.id))
+            .where(account.c.kind == BILL_VENDOR)
+        )
+    }
+    sources: dict[uuid.UUID, uuid.UUID | None] = {
+        by_slug[slug]: None for slug in bill_issuers()
+    }
+    sources.update(stands_for)
+    for payee_id, accounts in parsed.items():
+        sources[payee_id] = next(iter(accounts)) if len(accounts) == 1 else None
+    return sources
+
+
+def _with_manual_chained(
+    drafts: Iterable[_Draft], sources: Mapping[uuid.UUID, uuid.UUID | None]
+) -> list[_Draft]:
+    """``drafts``, each manual bill of a bill source in its chain."""
+    return [
+        replace(draft, chained=True, account_id=sources[draft.payee_id])
+        if draft.kind == BILL and not draft.chained and draft.payee_id in sources
+        else draft
+        for draft in drafts
+    ]
+
+
+def _in_issue_order(drafts: Iterable[_Draft]) -> list[_Draft]:
+    """``drafts`` oldest issue first; ties stay in the order they came, documents before
+    manual rows."""
+    return sorted(
+        drafts,
+        key=lambda draft: (
+            draft.issued_on or dt.date.min,
+            draft.due_date or dt.date.min,
+        ),
+    )
+
+
 def _instalment_drafts(
     arrangements: Iterable[Arrangement], by_slug: Mapping[str, uuid.UUID]
 ) -> list[_Draft]:
@@ -395,7 +459,7 @@ def _owed_now(
     drafts: Sequence[_Draft], active: set[uuid.UUID]
 ) -> tuple[Mapping[uuid.UUID, _Draft], list[_Draft]]:
     """What the arrangement rule changes: the bills owed less than their total, by id,
-    and the arrears rows. ``drafts`` comes oldest first, so the last parsed bill of a
+    and the arrears rows. ``drafts`` comes oldest first, so the last chained bill of a
     (payee, account) is its newest; a replaced one is owed nothing either way."""
     newest = {
         (draft.payee_id, draft.account_id): draft
@@ -408,18 +472,19 @@ def _owed_now(
     for bill in newest.values():
         if bill.replaced:
             continue
-        printed = max(bill.arrears or ZERO, ZERO)
+        total = bill.amount_due
+        printed = min(max(bill.arrears or ZERO, ZERO), max(total, ZERO))
         if bill.payee_id in active:
-            owed = bill.amount_due - printed
+            owed = total - printed
             if bill.current_charges is not None:
-                owed = bill.current_charges
+                owed = max(min(bill.current_charges, total), min(total, ZERO))
             changed[bill.id] = replace(bill, amount_due=owed)
         elif printed:
-            assert bill.issued_on is not None  # the parsed bill's own date orders it
+            assert bill.issued_on is not None  # a bill that prints arrears is parsed
             month = f"arrears-{bill.issued_on:%Y-%m}"
             seen[(bill.payee_id, month)] += 1
             place = seen[(bill.payee_id, month)]
-            changed[bill.id] = replace(bill, amount_due=bill.amount_due - printed)
+            changed[bill.id] = replace(bill, amount_due=total - printed)
             arrears.append(
                 _Draft(
                     payee_id=bill.payee_id,
@@ -510,8 +575,8 @@ def _rows(drafts: Iterable[_Draft]) -> list[dict[str, object]]:
 #   (5)   an obligations.csv debt row       manual_debt             debt-<slug>
 def create_obligations(
     uow: UnitOfWork,
-    manual: Sequence[ManualObligation] = (),
-    arrangements: Sequence[Arrangement] = (),
+    manual: Sequence[ManualObligation],
+    arrangements: Sequence[Arrangement],
 ) -> int:
     """Rebuild ``obligation`` from the parsed statements and bills and stage 2's manual
     rows and arrangements; how many it made. The caller cleared the table."""
@@ -531,11 +596,9 @@ def create_obligations(
     cards = [row for row in periods if row.kind == "statement"]
     bills = [row for row in periods if row.kind == "bill"]
     documents = [*_card_drafts(uow, cards, payee_of), *_bill_drafts(bills, payee_of)]
-    drafts = _with_replaced(
-        _merged(documents, _manual_drafts(uow, manual, by_slug)),
-        arrangements,
-        by_slug,
-    )
+    merged = _merged(documents, _manual_drafts(uow, manual, by_slug))
+    chained = _with_manual_chained(merged, _bill_sources(uow, documents, by_slug))
+    drafts = _in_issue_order(_with_replaced(chained, arrangements, by_slug))
     changed, arrears = _owed_now(drafts, _active_payees(arrangements, by_slug))
     rows = _rows(
         [

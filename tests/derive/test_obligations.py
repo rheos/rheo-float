@@ -771,11 +771,11 @@ def test_a_row_naming_a_path_with_no_document_keeps_the_row_as_its_source(
     assert row.primary_source == "manual:obligations.csv:2"
 
 
-def test_manual_bills_do_not_chain_so_two_of_one_payee_are_both_owed(
+def test_invoice_style_manual_bills_do_not_chain_so_two_of_one_payee_are_both_owed(
     ledger: Ledger,
 ) -> None:
-    """A manual invoice does not carry the one before it. This is how two live
-    obligations of one payee arise for the payment matrix (AC-25)."""
+    """A payee with no bill source: an invoice does not carry the one before it. This is
+    how two live obligations of one payee arise for the payment matrix (AC-25)."""
     sample_internet(ledger)
     ledger.manual(
         OBLIGATIONS_FILE,
@@ -791,9 +791,11 @@ def test_manual_bills_do_not_chain_so_two_of_one_payee_are_both_owed(
     assert owed_total(ledger) == Decimal("134.50")
 
 
-def test_a_newer_parsed_bill_does_not_supersede_a_manual_bill_of_another_period(
+def test_a_newer_parsed_bill_supersedes_an_older_manual_bill_of_a_bill_source(
     ledger: Ledger,
 ) -> None:
+    """A bill typed from a photo, then the next bill as a PDF: its total carries the
+    typed one, so it is owed once."""
     virgin_account(ledger)
     ledger.manual(
         OBLIGATIONS_FILE,
@@ -804,8 +806,100 @@ def test_a_newer_parsed_bill_does_not_supersede_a_manual_bill_of_another_period(
 
     manual, parsed = rows(ledger)
 
-    assert (manual.status, parsed.status) == ("open", "open")
-    assert parsed.supersedes_id is None
+    assert (manual.status, parsed.status) == ("superseded", "open")
+    assert parsed.supersedes_id == manual.id
+    assert owed_total(ledger) == Decimal("126.30")
+
+
+def test_a_newer_manual_bill_supersedes_an_older_parsed_bill_of_a_bill_source(
+    ledger: Ledger,
+) -> None:
+    virgin_account(ledger)
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,140.00,,2026-03-23,,2026-03-02",
+    )
+    ledger.derive()
+
+    parsed, manual = rows(ledger)
+
+    assert (parsed.status, manual.status) == ("superseded", "open")
+    assert manual.supersedes_id == parsed.id
+    assert owed_total(ledger) == Decimal("140.00")
+
+
+def test_a_manual_bill_takes_its_place_in_the_chain_by_issue_date(
+    ledger: Ledger,
+) -> None:
+    virgin_account(ledger)
+    ledger.file("virgin-plus/a.pdf", virgin_bill())
+    ledger.file(
+        "virgin-plus/c.pdf",
+        virgin_bill("April 2, 2026", "Apr 23, 2026", "April 23, 2026"),
+    )
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,140.00,,2026-03-23,,2026-03-02",
+    )
+    ledger.derive()
+
+    first, typed, last = rows(ledger)
+
+    assert (first.status, typed.status, last.status) == (
+        "superseded",
+        "superseded",
+        "open",
+    )
+    assert (typed.supersedes_id, last.supersedes_id) == (first.id, typed.id)
+
+
+def test_two_bills_typed_in_for_an_issuer_with_no_parsed_bill_owe_the_newer(
+    ledger: Ledger,
+) -> None:
+    """An issuer's photographed bills: 400 then 600, and the 600 holds the 400."""
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "fortisbc,bill,,,400.00,,2026-02-05,,2026-01-15",
+        "fortisbc,bill,,,600.00,,2026-03-05,,2026-02-15",
+    )
+    ledger.derive()
+
+    older, newer = rows(ledger)
+
+    assert (older.status, newer.status) == ("superseded", "open")
+    assert newer.supersedes_id == older.id
+    assert owed_total(ledger) == Decimal("600.00")
+
+
+def test_two_bills_typed_in_for_a_bill_vendor_account_owe_the_newer(
+    ledger: Ledger,
+) -> None:
+    virgin_account(ledger, "SAMPLE MOBILE CO")
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "mobile,bill,,,400.00,,2026-02-05,,2026-01-15",
+        "mobile,bill,,,600.00,,2026-03-05,,2026-02-15",
+    )
+    ledger.derive()
+
+    assert owed_total(ledger) == Decimal("600.00")
+
+
+def test_a_manual_bill_of_an_issuer_with_two_billed_accounts_joins_neither(
+    ledger: Ledger,
+) -> None:
+    """Nothing says which account it is on, so it supersedes neither."""
+    two_virgin_accounts(ledger)
+    ledger.file("virgin-plus/a.pdf", virgin_bill())
+    ledger.file("virgin-plus/b.pdf", second_account(virgin_bill()))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,140.00,,2026-03-23,,2026-03-02",
+    )
+    ledger.derive()
+
+    assert [row.status for row in rows(ledger)] == ["open", "open", "open"]
 
 
 # --- a manual row and a parsed document -----------------------------------------------
@@ -1117,6 +1211,186 @@ def test_arrears_of_two_accounts_of_one_issuer_are_two_rows(ledger: Ledger) -> N
 
     assert {"arrears-2026-02", "arrears-2026-02-2"} <= set(found)
     assert owed_total(ledger) == Decimal("252.60")
+
+
+def test_an_arrangement_owes_a_virgin_bill_its_printed_current_charges(
+    ledger: Ledger,
+) -> None:
+    virgin_account(ledger)
+    arrangement(ledger, "virgin-plus")
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.derive()
+
+    bill = by_label(ledger)["bill-2026-02"]
+
+    assert bill.amount_due == bill.remaining == Decimal("81.20")
+    assert owed_total(ledger) == Decimal("191.20")
+
+
+def test_a_typed_in_bill_beside_an_active_arrangement_is_owed_as_typed(
+    ledger: Ledger,
+) -> None:
+    """It supersedes the parsed bill before it, which the arrangement replaced, and it
+    prints no current charges to read."""
+    fortis_account(ledger)
+    arrangement(ledger, "fortisbc", "bill-2026-02")
+    ledger.file(FORTIS, fixture("fortisbc_bill.txt"))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "fortisbc,bill,,,90.00,,2026-03-05,,2026-02-15",
+    )
+    ledger.derive()
+
+    found = by_label(ledger)
+
+    assert (found["bill-2026-02"].status, found["bill-2026-03"].status) == (
+        "superseded",
+        "open",
+    )
+    assert found["bill-2026-03"].amount_due == Decimal("90.00")
+    assert found["bill-2026-03"].supersedes_id == found["bill-2026-02"].id
+    assert owed_total(ledger) == Decimal("200.00")
+
+
+def test_a_replaced_typed_in_bill_leaves_only_the_instalments_owed(
+    ledger: Ledger,
+) -> None:
+    fortis_account(ledger)
+    arrangement(ledger, "fortisbc", "bill-2026-02")
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "fortisbc,bill,,,400.00,,2026-02-05,,2026-01-15",
+    )
+    ledger.derive()
+
+    assert by_label(ledger)["bill-2026-02"].status == "superseded"
+    assert owed_total(ledger) == Decimal("110.00")
+
+
+def test_a_replaced_bill_keeps_its_printed_total(ledger: Ledger) -> None:
+    """The arrangement rule changes what a live bill is owed, and this one is not."""
+    fortis_account(ledger)
+    arrangement(ledger, "fortisbc", "bill-2026-02")
+    ledger.file(FORTIS, fixture("fortisbc_bill.txt"))
+    ledger.derive()
+
+    assert by_label(ledger)["bill-2026-02"].amount_due == Decimal("397.60")
+
+
+def fortis_credited(
+    payments: tuple[str, str], forward: str, total: str, arrears: str = ""
+) -> str:
+    """The FortisBC fixture with larger payments, so its total falls below its current
+    charges of $185.42. The identity still holds."""
+    return (
+        fixture("fortisbc_bill.txt")
+        .replace("-$150.00", payments[0])
+        .replace("-$50.00", payments[1])
+        .replace("Balance forward   $212.18", f"Balance forward   {forward}{arrears}")
+        .replace("$397.60", total)
+    )
+
+
+def test_current_charges_above_a_credited_total_owe_only_the_total(
+    ledger: Ledger,
+) -> None:
+    fortis_account(ledger)
+    arrangement(ledger, "fortisbc")
+    ledger.file(FORTIS, fortis_credited(("-$250.00", "-$300.00"), "-$137.82", "$47.60"))
+    ledger.derive()
+
+    bill = by_label(ledger)["bill-2026-02"]
+
+    assert bill.amount_due == bill.remaining == Decimal("47.60")
+
+
+def test_a_bill_in_credit_under_an_arrangement_stays_as_printed_and_owes_nothing(
+    ledger: Ledger,
+) -> None:
+    fortis_account(ledger)
+    arrangement(ledger, "fortisbc")
+    ledger.file(
+        FORTIS, fortis_credited(("-$400.00", "-$450.00"), "-$437.82", "-$252.40")
+    )
+    ledger.derive()
+
+    bill = by_label(ledger)["bill-2026-02"]
+
+    assert bill.amount_due == Decimal("-252.40")
+    assert (bill.remaining, bill.status) == (0, "paid")
+
+
+def test_credited_current_charges_never_make_a_positive_total_a_negative_bill(
+    ledger: Ledger,
+) -> None:
+    fortis_account(ledger)
+    arrangement(ledger, "fortisbc")
+    ledger.file(
+        FORTIS,
+        fixture("fortisbc_bill.txt")
+        .replace("Current charges   $185.42", "Current charges   -$5.00")
+        .replace("$397.60", "$207.18"),
+    )
+    ledger.derive()
+
+    bill = by_label(ledger)["bill-2026-02"]
+
+    assert bill.amount_due == 0
+    assert bill.status == "paid"
+
+
+def test_arrears_above_the_total_owe_only_the_total_and_no_negative_bill(
+    ledger: Ledger,
+) -> None:
+    fortis_account(ledger)
+    ledger.file(
+        FORTIS,
+        fortis_with_arrears(fixture("fortisbc_bill.txt")).replace(
+            "Arrears   $100.00", "Arrears   $500.00"
+        ),
+    )
+    ledger.derive()
+
+    found = by_label(ledger)
+
+    assert found["arrears-2026-01"].amount_due == Decimal("397.60")
+    assert found["bill-2026-02"].amount_due == 0
+    assert owed_total(ledger) == Decimal("397.60")
+
+
+def test_arrears_on_a_bill_in_credit_make_no_row(ledger: Ledger) -> None:
+    fortis_account(ledger)
+    ledger.file(
+        FORTIS,
+        fortis_credited(
+            ("-$400.00", "-$450.00"),
+            "-$437.82",
+            "-$252.40",
+            "\n   Arrears   $100.00",
+        ),
+    )
+    ledger.derive()
+
+    (bill,) = rows(ledger)
+
+    assert bill.kind == "bill"
+    assert bill.amount_due == Decimal("-252.40")
+
+
+def test_a_negative_arrears_line_is_no_arrears(ledger: Ledger) -> None:
+    fortis_account(ledger)
+    ledger.file(
+        FORTIS,
+        fortis_with_arrears(fixture("fortisbc_bill.txt")).replace(
+            "Arrears   $100.00", "Arrears   -$5.00"
+        ),
+    )
+    ledger.derive()
+
+    (bill,) = rows(ledger)
+
+    assert bill.kind == "bill"
+    assert bill.amount_due == Decimal("397.60")
 
 
 # --- path (5): manual debts -----------------------------------------------------------

@@ -109,6 +109,9 @@ PINNED = {
     "0026_stage15.py": (
         "a4a56bfd754dc3a19d24b5871f91d9c470a420a2595447ffe2853ebe29f05a8b"
     ),
+    "0027_arrangement_unsettled.py": (
+        "834a7b77578bb6e12c17590848776727911d59d44bc6ac09024deb93fbebdbc9"
+    ),
 }
 
 

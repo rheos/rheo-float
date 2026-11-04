@@ -782,6 +782,9 @@ obligation = Table(
     Column("arrangement_ref", Text),
     Column("invoice_ref", Text),
     Column("payments_mismatch", Numeric(20, 2)),
+    # An instalment of a paid-up arrangement the derive kept active because finishing
+    # it would not settle (migration 0027; ``derive.stage15_apply.mark_unsettled``).
+    Column("arrangement_unsettled", Boolean, nullable=False, server_default="false"),
     UniqueConstraint("payee_id", "kind", "period_label"),
 )
 _tiers(
@@ -793,7 +796,7 @@ _tiers(
         "status": P, "primary_source": P, "manual_source": P, "manual_mismatch": R,
         "statement_conflict": P, "unjoined": P, "supersedes_id": P,
         "arrangement_ref": P,
-        "invoice_ref": P, "payments_mismatch": R,
+        "invoice_ref": P, "payments_mismatch": R, "arrangement_unsettled": P,
     },
 )  # fmt: skip
 

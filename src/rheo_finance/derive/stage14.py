@@ -78,9 +78,11 @@ never chains, and a manual row merged into a document is that document's row.
 last instalment is paid the arrangement stops being active, and the replaced periods
 must not come back as owed. An arrangement is active until stage 15's application has
 paid every one of its instalments (``finished``, handed back by ``derive.run`` with the
-day the last one was paid). A bill issued up to that day stays governed by it for good,
-since its instalments covered that bill's arrears; only a bill issued after it is owed
-as with no arrangement. While an arrangement governs a payee's bill, the newest bill
+day the last one was paid). A bill issued up to that day plus
+``finance.payments.early_days`` stays governed by it for good, since its instalments
+covered that bill's arrears and a bill cut before the last payment posts still prints
+them; only a bill issued after that is owed as with no arrangement. While an
+arrangement governs a payee's bill, the newest bill
 of each of its accounts is owed for its printed current charges only, or for its total
 less its printed arrears when it prints no current charges. A typed-in bill prints
 neither, so it is owed as typed. With none governing it, a bill that prints arrears
@@ -541,14 +543,17 @@ def _arranged(
     arrangements: Iterable[Arrangement],
     by_slug: Mapping[str, uuid.UUID],
     finished: Mapping[str, dt.date],
+    early_days: int,
 ) -> _Arranged:
     """Whether an arrangement of a payee governs its bill issued on a date: one with an
     instalment still unpaid governs every bill, and a ``finished`` one (stage 15's
     application says when its last instalment was paid) governs the bills issued up to
-    that day, whose arrears its instalments covered."""
+    that day plus ``early_days``, whose arrears its instalments covered."""
+    slack = dt.timedelta(days=early_days)
     until: dict[uuid.UUID, list[dt.date | None]] = defaultdict(list)
     for found in arrangements:
-        until[by_slug[found.payee]].append(finished.get(found.slug))
+        last = finished.get(found.slug)
+        until[by_slug[found.payee]].append(None if last is None else last + slack)
 
     def governs(payee_id: uuid.UUID, issued_on: dt.date | None) -> bool:
         return any(
@@ -638,6 +643,7 @@ def _values(
         "arrangement_ref": draft.arrangement_ref,
         "invoice_ref": draft.invoice_ref,
         "payments_mismatch": None,
+        "arrangement_unsettled": False,
     }
 
 
@@ -686,12 +692,14 @@ def create_obligations(
     payees: Payees,
     unpaid_invoices: Iterable[UnpaidInvoice],
     finished: Mapping[str, dt.date] | None = None,
+    *,
+    early_days: int = 0,
 ) -> int:
     """Rebuild ``obligation`` from the parsed statements and bills, stage 2's manual
     rows and arrangements, and the invoices stage 3 found unpaid; how many it made.
     ``finished`` gives the arrangements whose instalments are all paid, with the day
-    the last was paid. The caller
-    cleared the table."""
+    the last was paid, and ``early_days`` (``finance.payments.early_days``) how many
+    days past that day a bill is still theirs. The caller cleared the table."""
     by_account, by_slug = _payees(uow)
 
     def payee_of(row: Row[tuple[object, ...]], slug: str) -> uuid.UUID:
@@ -719,7 +727,7 @@ def create_obligations(
     )
     drafts = _in_issue_order(_with_replaced(chained, arrangements, by_slug))
     changed, arrears = _owed_now(
-        drafts, _arranged(arrangements, by_slug, finished or {})
+        drafts, _arranged(arrangements, by_slug, finished or {}, early_days)
     )
     rows = _rows(
         [

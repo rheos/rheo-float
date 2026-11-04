@@ -25,6 +25,9 @@ row per fact as ``(fact, subject, count, at)``:
   month (a period label with a ``-<n>`` suffix), by label;
 - ``typed_bill_unjoined``: per payee with any, its typed bills that no account takes
   beside its parsed bills (``derive.stage14``), by label;
+- ``arrangement_unsettled``: one row per arrangement, by slug, whose instalments are
+  all paid but which the derive kept active because finishing it would not settle
+  (``derive.stage15_apply.mark_unsettled``);
 - ``invoice_decision_superseded``: per decision kind, the invoice decisions a matching
   payment took over from (``derive.evidence``);
 - ``invoice_decision_refused``: per decision kind, the invoice decisions stage 3 could
@@ -91,6 +94,7 @@ DUPLICATE_BILL_MONTH: Final = "duplicate_bill_month"
 MANUAL_MISMATCH: Final = "manual_mismatch"
 STATEMENT_CONFLICT: Final = "statement_conflict"
 TYPED_BILL_UNJOINED: Final = "typed_bill_unjoined"
+ARRANGEMENT_UNSETTLED: Final = "arrangement_unsettled"
 INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
 INVOICE_DECISION_REFUSED: Final = "invoice_decision_refused"
 
@@ -191,6 +195,14 @@ def report_status_select() -> Select[tuple[object, ...]]:
             STATEMENT_CONFLICT, obligation.c.statement_conflict.is_(True)
         ),
         _obligations_per_payee(TYPED_BILL_UNJOINED, obligation.c.unjoined.is_(True)),
+        select(
+            _fact(ARRANGEMENT_UNSETTLED),
+            obligation.c.arrangement_ref.label("subject"),
+            _one(),
+            _no_time(),
+        )
+        .where(obligation.c.arrangement_unsettled.is_(True))
+        .group_by(obligation.c.arrangement_ref),
         select(
             _fact(INVOICE_DECISION_SUPERSEDED),
             decision.c.kind.label("subject"),

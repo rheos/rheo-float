@@ -80,7 +80,14 @@ null when they agree.
 **Arrangements.** ``finished_arrangements`` reads, after an application, the
 arrangements whose every instalment is paid, each with the day the last one was paid;
 ``derive.run`` hands them back to stage 14, whose arrangement rule then no longer
-governs a bill issued after that day.
+governs a bill issued after that day plus ``early_days``, and applies again. A payment
+that finished an arrangement is dated on or before that day, so its bound never
+reaches a bill that finishing ungoverns, and the rules alone settle in one round; a
+``payment_apply`` naming an arrears row that exists only once the arrangement is
+finished moves the payment off it, and then no finished set holds. ``settled`` then
+keeps the arrangements every round finished on one day (the rest stay active, their
+bills governed, so nothing is owed twice) and ``mark_unsettled`` flags the instalments
+of the rest, which status line 9 names (``arrangement_unsettled``).
 
 **Events.** Each automatic application to an obligation registers one
 ``finance.payment.detected`` (``record_detected``): the payment, its payee and the
@@ -168,17 +175,6 @@ class PaymentDetected(BaseModel):
 EVENT_MODELS: Final[Mapping[str, type[BaseModel]]] = MappingProxyType(
     {PAYMENT_DETECTED: PaymentDetected}
 )
-
-
-class Unsettled(RuntimeError):
-    """The arrangements an application finishes kept changing as stage 14 reran: two
-    arrangements' bills and instalments move each other's payments. A fault to report,
-    never a ledger to keep."""
-
-    def __init__(self, slugs: Sequence[str]) -> None:
-        super().__init__(
-            f"{len(slugs)} finished arrangement(s) did not settle after stage 14 reran"
-        )
 
 
 @dataclass(frozen=True)
@@ -779,6 +775,33 @@ def finished_arrangements(uow: UnitOfWork) -> dict[str, dt.date]:
         for slug, found in statuses.items()
         if found == {PAID} and slug in last
     }
+
+
+def settled(rounds: Sequence[Mapping[str, dt.date]]) -> dict[str, dt.date]:
+    """The conservative reading of finished sets that would not settle: the
+    arrangements every round of ``rounds`` finished, on one day. One left out stays
+    active, so its bills stay governed and nothing is owed twice."""
+    first, *rest = rounds
+    return {
+        slug: day
+        for slug, day in first.items()
+        if all(each.get(slug) == day for each in rest)
+    }
+
+
+def mark_unsettled(uow: UnitOfWork, slugs: Collection[str]) -> int:
+    """Flag the instalments of the arrangements named, for status line 9; how many."""
+    if not slugs:
+        return 0
+    result = uow.execute(
+        update(obligation)
+        .where(
+            obligation.c.kind == INSTALMENT,
+            obligation.c.arrangement_ref.in_(list(slugs)),
+        )
+        .values(arrangement_unsettled=True)
+    )
+    return result.rowcount
 
 
 def record_detected(uow: UnitOfWork) -> int:

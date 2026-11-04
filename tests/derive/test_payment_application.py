@@ -27,6 +27,9 @@ from rheo_finance.manual.accounts import ACCOUNTS_FILE
 from rheo_finance.manual.arrangements import ARRANGEMENTS_FILE
 from rheo_finance.manual.obligations import OBLIGATIONS_FILE
 from rheo_finance.manual.payees import PAYEES_FILE
+from rheo_finance.reports import ops as report_ops
+from rheo_finance.reports.ops import StatusIn
+from rheo_finance.reports.views import ARRANGEMENT_UNSETTLED
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage.schema import (
     event,
@@ -38,7 +41,7 @@ from rheo_finance.storage.schema import (
 
 from .support import CSV_IDENTIFIER, RULE_SETTINGS, D, Ledger, read_as_text
 from .test_invoice_decisions import call, reverse
-from .test_obligations import accounts, fortis_bill, fortis_with_arrears
+from .test_obligations import accounts, facts, fortis_bill, fortis_with_arrears
 from .test_payments import bank, bank_line, notice, notice_key, set_cell
 from .test_transfer_edges import PAYMENT_RECEIVED, file_bank, on, visa_export
 
@@ -421,6 +424,25 @@ def test_instalments_are_paid_in_their_own_order_not_their_labels(
     paying.derive()
 
     assert applied(paying) == rows
+
+
+def test_instalments_due_on_one_day_are_paid_in_their_number_order(
+    paying: Ledger,
+) -> None:
+    """Ten instalments agreed and due on the same days: only the label's number says
+    which is older, and as text inst-plan-10 would come before inst-plan-2."""
+    paying.manual(
+        ARRANGEMENTS_FILE,
+        *(f"plan,isp,2025-05-01,{n},50.00,2025-06-01," for n in range(1, 11)),
+    )
+    bank(paying, (JUNE, ISP, Decimal("-75.00")))
+
+    paying.derive()
+
+    assert applied(paying) == [
+        Applied("inst-plan-1", Decimal("50.00"), True),
+        Applied("inst-plan-2", Decimal("25.00"), True),
+    ]
 
 
 def test_two_bills_issued_and_due_on_the_same_days_that_both_fit_are_a_question(
@@ -1001,12 +1023,19 @@ def test_a_payment_left_to_the_owner_is_not_counted_as_applied_for_fr_21(
 # --- arrangements: a finished one stops setting the bills -----------------------------
 
 
+LATER_ON = D(2026, 5, 14)
+
+
 def power(
-    ledger: Ledger, *payments: tuple[dt.date, str], later_bill: bool = False
+    ledger: Ledger,
+    *payments: tuple[dt.date, str],
+    later_bill: bool = False,
+    later_on: dt.date = LATER_ON,
 ) -> None:
     """Two FortisBC bills, the older replaced by a two-instalment arrangement and the
     newer printing an arrears line, the chequing payments of the instalments, and with
-    ``later_bill`` a third bill, issued 14 May, printing arrears too."""
+    ``later_bill`` a third bill, issued ``later_on`` (14 May) and due 5 June, printing
+    arrears too."""
     accounts(
         ledger,
         ("chequing", "Vancity", "chequing", CSV_IDENTIFIER, ""),
@@ -1026,7 +1055,11 @@ def power(
     if later_bill:
         ledger.file(
             "fortisbc/c.pdf",
-            fortis_with_arrears(fortis_bill("May 14, 2026", "June 5, 2026")),
+            fortis_with_arrears(
+                fortis_bill(
+                    f"{later_on:%B} {later_on.day}, {later_on.year}", "June 5, 2026"
+                )
+            ),
         )
     file_bank(
         ledger,
@@ -1075,6 +1108,118 @@ def test_a_bill_issued_after_the_last_instalment_owes_its_arrears_again(
     }
     assert found["bill-2026-06"].amount_due == Decimal("297.60")
     assert found["arrears-2026-05"].amount_due == Decimal("100.00")
+
+
+@pytest.mark.parametrize(
+    ("issued", "governed"),
+    [(D(2026, 5, 5), True), (D(2026, 5, 6), False)],
+    ids=["early_days after the last payment", "a day later"],
+)
+def test_a_bill_cut_within_early_days_of_the_last_instalment_stays_governed(
+    ledger: Ledger, issued: dt.date, governed: bool
+) -> None:
+    """The last instalment was paid 25 April; a bill cut before that payment posts
+    still prints the arrears the instalments paid, so the slack keeps it governed, to
+    the day."""
+    power(ledger, *PAID_UP, later_bill=True, later_on=issued)
+
+    ledger.derive()
+
+    found = owed(ledger)
+    if governed:
+        assert found["bill-2026-06"].amount_due == Decimal("185.42")
+        assert "arrears-2026-05" not in found
+    else:
+        assert found["bill-2026-06"].amount_due == Decimal("297.60")
+        assert found["arrears-2026-05"].status == "open"
+
+
+def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
+    ledger: Ledger,
+) -> None:
+    """The 7 May payment is the 14 May bill's current charges, and the 8 May 65.00
+    overpays the 60.00 last instalment by rule (b) and finishes the plan that day.
+    Cut within early_days of it, the bill stays governed, so the finished set holds
+    on the second round: the derive completes, and nothing is owed twice."""
+    power(
+        ledger,
+        (D(2026, 3, 25), "50.00"),
+        (D(2026, 5, 7), "185.42"),
+        (D(2026, 5, 8), "65.00"),
+        later_bill=True,
+    )
+
+    ledger.derive()
+
+    found = owed(ledger)
+    assert {label: found[label].status for label in found} == {
+        "bill-2026-02": "superseded",
+        "bill-2026-03": "superseded",
+        "bill-2026-06": "paid",
+        "inst-plan-1": "paid",
+        "inst-plan-2": "paid",
+    }
+    assert applied(ledger) == [
+        Applied("bill-2026-06", Decimal("185.42"), True),
+        Applied("excess", Decimal("5.00"), True),
+        Applied("inst-plan-1", Decimal("50.00"), True),
+        Applied("inst-plan-2", Decimal("60.00"), True),
+    ]
+    assert stage15_apply.finished_arrangements(ledger.uow) == {"plan": D(2026, 5, 8)}
+    assert not any(row.arrangement_unsettled for row in found.values())
+
+
+def test_a_finish_that_moves_a_payment_off_the_plan_keeps_it_active_and_says_so(
+    ledger: Ledger,
+) -> None:
+    """The owner says the 25 April 60.00 paid the arrears row, which exists only once
+    the plan is finished. Finished, the decision takes the payment off inst-plan-2 and
+    the plan is not finished; active, the row is gone and the decision names nothing.
+    Neither reading holds, so the plan stays active (its bills governed, no arrears
+    owed beside its paid instalments) and status line 9 names it."""
+    power(ledger, *PAID_UP, later_bill=True)
+    ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
+    ledger.derive()
+    assert owed(ledger)["arrears-2026-05"].status == "open"
+    decide(
+        ledger,
+        "payment_apply",
+        target_ref=line_ref(ledger, D(2026, 4, 25)),
+        obligation_ref=obligation_ref(ledger, "arrears-2026-05"),
+    )
+
+    ledger.derive()
+
+    found = owed(ledger)
+    assert {label: found[label].status for label in found} == {
+        "bill-2026-02": "superseded",
+        "bill-2026-03": "superseded",
+        "bill-2026-06": "open",
+        "inst-plan-1": "paid",
+        "inst-plan-2": "paid",
+    }
+    assert found["bill-2026-06"].amount_due == Decimal("185.42")
+    assert applied(ledger) == [
+        Applied("inst-plan-1", Decimal("50.00"), True),
+        Applied("inst-plan-2", Decimal("60.00"), True),
+    ]
+    assert {label for label, row in found.items() if row.arrangement_unsettled} == {
+        "inst-plan-1",
+        "inst-plan-2",
+    }
+    assert facts(ledger, ARRANGEMENT_UNSETTLED) == {"plan": 1}
+    out = report_ops.status(ledger.ctx, ledger.uow, StatusIn())
+    lines = {each.line_no: each.text for each in out.lines}
+    assert (
+        "1 paid-up arrangement kept active, its finish did not settle: plan"
+        in (lines[9])
+    )
+    rows = sorted(repr(tuple(row)) for row in ledger.conn.execute(select(obligation)))
+    ledger.derive()
+    assert (
+        sorted(repr(tuple(row)) for row in ledger.conn.execute(select(obligation)))
+        == rows
+    )
 
 
 def test_the_arrangements_an_application_finishes_are_settled_after_a_derive(

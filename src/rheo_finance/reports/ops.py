@@ -23,9 +23,11 @@ with later prompts, so a gap in the numbers is expected.
    approval is stale, or ``sinks: all enabled``. It is ``finance.sink.state``'s own
    reading: ``report_sink`` and ``report_sink_spec``, and the ``enabled`` setting from
    ``$FINANCE_DATA_DIR/settings.toml`` as the gate reads it;
-9. data checks, only when one applies: source discrepancies, accounts with no data, and
-   archive files skipped because their name carries an identifier (by directory;
-   other skip reasons are not fixed by a rename and are not counted here);
+9. data checks, only when one applies: source discrepancies, the obligation checks
+   (``reports.views``), paid-up arrangements the derive kept active because finishing
+   them would not settle (by slug), accounts with no data, and archive files skipped
+   because their name carries an identifier (by directory; other skip reasons are not
+   fixed by a rename and are not counted here);
 10. intake, only when it applies: monitor-pattern files waiting in Downloads (the
    filer's count, read from the directory's names and mtimes).
 
@@ -223,6 +225,15 @@ def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
         "invoice decision refused for its currency",
         "invoice decisions refused for their currency",
     )
+    unsettled = sorted(
+        each.subject or "" for each in facts[views.ARRANGEMENT_UNSETTLED]
+    )
+    if unsettled:
+        parts.append(
+            _plural(len(unsettled), "paid-up arrangement", "paid-up arrangements")
+            + " kept active, its finish did not settle: "
+            + ", ".join(unsettled)
+        )
     no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
     if no_data:
         parts.append(

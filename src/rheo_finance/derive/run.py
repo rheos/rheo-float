@@ -56,11 +56,13 @@ Order of work, set by what each step reads:
    no obligation; then their application to the obligations (``stage15_apply``), with
    the ``payment_apply`` and ``payment_unapply`` decisions. When that application pays
    off an arrangement, stage 14 runs again with that arrangement finished and the day
-   its last instalment was paid (a bill its payee is issued after that day is owed as
-   with no arrangement), and the application runs again over the new rows, until the
-   finished set no longer changes (``FINISHED_ROUNDS``; a set still changing after that
-   fails the derive with ``stage15_apply.Unsettled``, a fault to report). Then
-   one ``finance.payment.detected`` per automatic application.
+   its last instalment was paid (a bill its payee is issued after that day plus
+   ``finance.payments.early_days`` is owed as with no arrangement), and the
+   application runs again over the new rows, until the finished set no longer changes
+   (``FINISHED_ROUNDS``; a set still changing after that is settled the conservative
+   way, ``stage15_apply.settled``, and the arrangements left out are marked for status
+   line 9, ``stage15_apply.mark_unsettled``). Then one ``finance.payment.detected``
+   per automatic application.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -126,7 +128,7 @@ OVERLAP_DAYS_KEY: Final = "finance.import.overlap_day_tolerance"
 RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 # How many times stage 14 may run again for arrangements an application finished: a
-# second round only confirms the first unless finishing one changes another's bills.
+# second round only confirms the first unless finishing one moves a payment off it.
 FINISHED_ROUNDS: Final = 3
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
@@ -263,6 +265,14 @@ def run(
         )
         stage11.resolve(uow, decided)
 
+        rules = stage15_apply.Rules(
+            tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
+            early_days=ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
+            partial_kinds=frozenset(
+                ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)
+            ),
+        )
+
         def obligations(finished: Mapping[str, dt.date] | None = None) -> None:
             stage14.create_obligations(
                 uow,
@@ -271,7 +281,16 @@ def run(
                 manual.payees,
                 lines.unpaid_invoices,
                 finished,
+                early_days=rules.early_days,
             )
+
+        def obligations_again(finished: Mapping[str, dt.date]) -> None:
+            """Make the obligations again with ``finished`` paid up, and apply again
+            to what they now owe."""
+            uow.execute(delete(payment_application))
+            uow.execute(delete(obligation))
+            obligations(finished)
+            stage15_apply.apply_payments(uow, rules)
 
         obligations()
         stage15.build_payments(
@@ -284,29 +303,23 @@ def run(
                 hold_days=ctx.settings.get_int(stage15.HOLD_KEY),
             ),
         )
-        rules = stage15_apply.Rules(
-            tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
-            early_days=ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
-            partial_kinds=frozenset(
-                ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)
-            ),
-        )
         stage15_apply.apply_payments(uow, rules)
+        # A paid-up arrangement no longer sets the bills issued after its last
+        # instalment, so make them again until finishing changes nothing more.
+        rounds = [stage15_apply.finished_arrangements(uow)]
         used: dict[str, dt.date] = {}
-        for _ in range(FINISHED_ROUNDS):
-            finished = stage15_apply.finished_arrangements(uow)
-            if finished == used:
-                break
-            # A paid-up arrangement no longer sets the bills issued after its last
-            # instalment: make them again, and apply again to what they now owe.
-            uow.execute(delete(payment_application))
-            uow.execute(delete(obligation))
-            obligations(finished)
-            stage15_apply.apply_payments(uow, rules)
-            used = finished
-        else:
-            if stage15_apply.finished_arrangements(uow) != used:
-                raise stage15_apply.Unsettled(sorted(used))
+        while rounds[-1] != used and len(rounds) <= FINISHED_ROUNDS:
+            used = rounds[-1]
+            obligations_again(used)
+            rounds.append(stage15_apply.finished_arrangements(uow))
+        if rounds[-1] != used:
+            # Still changing: finishing an arrangement moves a payment off it. Keep
+            # only what every round agreed on, so nothing is owed twice, and say so.
+            settled = stage15_apply.settled(rounds)
+            obligations_again(settled)
+            stage15_apply.mark_unsettled(
+                uow, {slug for each in rounds for slug in each} - settled.keys()
+            )
         stage15_apply.record_detected(uow)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))

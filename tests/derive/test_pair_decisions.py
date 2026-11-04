@@ -1038,7 +1038,9 @@ def test_a_conversion_leg_posted_a_day_later_leaves_no_rate_drift_in_the_net(
     ledger.derive()
 
     assert kinds(ledger) == [("conversion", True), ("own_transfer", True)]
-    assert ledger.conn.scalar(select(pair_edge.c.spread_cad)) == Decimal("4.00")
+    assert ledger.conn.scalar(
+        select(pair_edge.c.spread_cad).where(pair_edge.c.kind == "conversion")
+    ) == Decimal("4.00")
     assert fee_rows(ledger) == [
         (account_id("fx"), Decimal("-2.76")),
         (account_id("fx"), Decimal("-4.00")),

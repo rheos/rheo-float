@@ -458,6 +458,10 @@ document_line = Table(
     Column("line_key_id", Uuid),
     # A receipt payment's own reference as a digest (0015); null on other lines.
     Column("payment_ref_digest", Text),
+    # An invoice's printed amount due (0025); its ``amount`` stays the total.
+    Column("amount_due", Numeric),
+    # The invoice decision stage 3 could not apply for the line's currency (0025).
+    Column("refused_decision_id", Uuid, ForeignKey("finance.decision.id")),
 )
 # SPEC Data Models marks asset_identifier internal; it is restricted here because its
 # name is an identifier's, and the tier guard restricts every such column.
@@ -474,7 +478,8 @@ _tiers(
         "transfer_hint": P, "reversal_hint": P, "conversion_hint": P,
         "etransfer_hint": P, "hint_account_slug": P, "trade_ref": P,
         "instrument": Tier.INTERNAL, "result": R, "trading_fee": R,
-        "funding_fee": R, "line_key_id": P, "payment_ref_digest": R,
+        "funding_fee": R, "line_key_id": P, "payment_ref_digest": R, "amount_due": R,
+        "refused_decision_id": P,
     },
 )  # fmt: skip
 

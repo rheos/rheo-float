@@ -99,6 +99,8 @@ class Lines:
     invoices_currency_refused: int = 0
     # Invoice decisions a matching payment took over from: they add nothing.
     invoice_decisions_superseded: int = 0
+    # The invoices stage 14 turns into debts.
+    unpaid_invoices: tuple[evidence.UnpaidInvoice, ...] = ()
 
     @property
     def txns(self) -> int:
@@ -374,4 +376,5 @@ def build_lines(
         from_invoice_decisions=linked.invoice_txns,
         invoices_currency_refused=linked.invoices_currency_refused,
         invoice_decisions_superseded=linked.decisions_superseded,
+        unpaid_invoices=linked.unpaid_invoices,
     )

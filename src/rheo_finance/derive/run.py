@@ -50,8 +50,8 @@ Order of work, set by what each step reads:
    crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
    transfer's net or conversion's spread becomes a derived fee line; then stage 14, the
    obligations (``stage14``), which read the parsed periods and the payees stage 2
-   stored, the manual obligations and arrangements it holds, and the ``invoice_unpaid``
-   decisions on invoices stage 3 left unmatched.
+   stored, the manual obligations and arrangements it holds, and the invoices stage 3
+   found unpaid.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -119,7 +119,7 @@ CLEARED: Final = (
 # parse again. ``event`` holds only the rejection events of it (``DOCUMENT_REJECTED``).
 PARSE_CACHE: Final = frozenset({document_line, statement_period, rejected_period})
 # Written on ``document_line`` by stage 3, null after a parse.
-STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id")
+STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id", "refused_decision_id")
 # Rewritten whole by a loader or a stage.
 REWRITTEN: Final = frozenset(
     {
@@ -248,6 +248,7 @@ def run(
             manual.obligations.obligations,
             manual.arrangements.arrangements,
             manual.payees,
+            lines.unpaid_invoices,
         )
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))

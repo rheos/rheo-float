@@ -45,18 +45,21 @@ against payment lines:
   matches it. ``invoice_paid`` books it like an unmatched receipt: a txn on the internal
   account, at the decided date, origin ``document_expense``, the invoice line its
   primary source; the paying account stays on the decision. ``invoice_unpaid`` writes
-  nothing here (stage 14 makes the debt). Either way the invoice is no longer open.
-  Reversing the decision returns it to the open state on the next derive. An invoice in
-  a currency the internal account does not take is refused and counted and stays open:
-  neither a txn there nor an obligation can hold it.
+  nothing here: the invoice is handed to stage 14 (``UnpaidInvoice``), which makes the
+  debt, for the printed amount due, else the total. Either way the invoice is no longer
+  open. Reversing the decision returns it to the open state on the next derive. An
+  invoice in a currency the internal account does not take is refused and stays open,
+  because neither a txn there nor an obligation can hold it: the line names the decision
+  in ``refused_decision_id``, which status line 9 counts.
 - **A match beats a decision**, so an invoice never counts twice: the payment takes the
   invoice as evidence, the decision adds nothing, and the evidence source names it in
   ``overrides_decision_id``, which status line 9 counts. A receipt's txn is a payment
   here, so an invoice paid in cash with a receipt stays on that one txn. An owner who
   decides an invoice was paid months after its date can have the payment line arrive
   later, outside the window of the invoice's date, so an ``invoice_paid`` invoice left
-  unmatched is matched once more, by the decided date, against the payments no invoice
-  took. That round runs after the first, so a decision moves no other invoice's match.
+  unmatched is matched once more, by the decided date, against the payments on the
+  decided account that no invoice took. That round runs after the first, so a decision
+  moves no other invoice's match.
 
 **Keys.** A receipt or invoice line is keyed by (kind, payee, date, signed amount,
 currency, normalized description, the payment's reference digest, occurrence among
@@ -96,6 +99,7 @@ from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
 from rheo_finance.manual.payees import Payees, names_any
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.base import FIAT
+from rheo_finance.storage import refs
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import document, document_line, txn, txn_source
 from rheo_finance.text import normalize_description
@@ -104,6 +108,22 @@ Kind = Literal["receipt", "invoice"]
 KINDS: Final[tuple[Kind, ...]] = ("receipt", "invoice")
 DOCUMENT_ORIGIN: Final = "document_expense"
 DOCUMENT_BASIS: Final = "unverified_export"
+
+
+@dataclass(frozen=True)
+class UnpaidInvoice:
+    """An invoice no payment matched whose decision in force is ``invoice_unpaid``, the
+    copy that counts, for stage 14."""
+
+    line_key: uuid.UUID
+    invoice_date: dt.date
+    # The printed amount due, else the total; positive.
+    owed: Decimal
+    payee: str
+    document_id: uuid.UUID
+    path: str
+    issuer: str
+    due_date: dt.date | None
 
 
 @dataclass(frozen=True)
@@ -125,6 +145,8 @@ class Evidence:
     invoices_currency_refused: int = 0
     # Invoice decisions a matching payment took over from: they add nothing.
     decisions_superseded: int = 0
+    # The invoices stage 14 turns into debts.
+    unpaid_invoices: tuple[UnpaidInvoice, ...] = ()
     # Receipt or invoice lines without a date, an amount or a currency, left out.
     incomplete_lines: int = 0
 
@@ -144,6 +166,11 @@ class Line:
     # The normalized names the payment's text must hold one of: the printed payee
     # first, then the patterns of the registered payees that name it.
     patterns: tuple[str, ...]
+    document_id: uuid.UUID
+    path: str
+    issuer: str
+    # What an invoice prints as still due, when it does.
+    amount_due: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -151,6 +178,7 @@ class Payment:
     """A txn as a match candidate."""
 
     id: uuid.UUID
+    account_id: uuid.UUID
     dates: tuple[dt.date, ...]
     posting_date: dt.date
     amount: Decimal
@@ -284,6 +312,9 @@ def _lines(uow: UnitOfWork, payees: Payees) -> tuple[dict[uuid.UUID, list[Line]]
             document_line.c.description_raw,
             document_line.c.counterparty,
             document_line.c.payment_ref_digest,
+            document_line.c.amount_due,
+            document.c.path,
+            document.c.issuer,
         )
         .join(document, document.c.id == document_line.c.document_id)
         .where(
@@ -318,6 +349,10 @@ def _lines(uow: UnitOfWork, payees: Payees) -> tuple[dict[uuid.UUID, list[Line]]
             payee=payee,
             key=key,
             patterns=_patterns(payee, payees),
+            document_id=row.document_id,
+            path=row.path,
+            issuer=row.issuer,
+            amount_due=row.amount_due,
         )
         groups.setdefault(key, []).append(line)
     return groups, incomplete
@@ -335,6 +370,7 @@ def _payments(uow: UnitOfWork) -> list[Payment]:
     rows = uow.execute(
         select(
             txn.c.id,
+            txn.c.account_id,
             txn.c.posting_date,
             txn.c.txn_date,
             txn.c.amount,
@@ -345,6 +381,7 @@ def _payments(uow: UnitOfWork) -> list[Payment]:
     return [
         Payment(
             id=row.id,
+            account_id=row.account_id,
             dates=(row.posting_date,)
             if row.txn_date is None
             else (row.posting_date, row.txn_date),
@@ -410,6 +447,11 @@ def _decided_date(decided: Decision) -> dt.date:
     return decided.effective_on
 
 
+def _decided_account(decided: Decision) -> uuid.UUID:
+    assert decided.account_ref is not None  # invoice_paid requires it
+    return uuid.UUID(refs.parse(decided.account_ref).id)
+
+
 def _matched_on_decided_date(
     invoices: dict[uuid.UUID, list[Line]],
     decided: dict[uuid.UUID, Decision],
@@ -418,16 +460,39 @@ def _matched_on_decided_date(
     days: int,
 ) -> dict[uuid.UUID, uuid.UUID]:
     """The ``invoice_paid`` invoices no payment matched by their own date, matched by
-    the decided date against the payments no invoice took."""
+    the decided date against the payments on the decided account that no invoice took.
+    One account's payments are not another's, so each account is its own matching."""
     taken = set(paid.values())
-    return match(
-        [
-            replace(invoices[key][0], posting_date=_decided_date(each))
-            for key, each in decided.items()
-            if key not in paid and each.kind is DecisionKind.INVOICE_PAID
-        ],
-        [each for each in payments if each.id not in taken],
-        days,
+    by_account: dict[uuid.UUID, list[Line]] = defaultdict(list)
+    for key, each in decided.items():
+        if key not in paid and each.kind is DecisionKind.INVOICE_PAID:
+            by_account[_decided_account(each)].append(
+                replace(invoices[key][0], posting_date=_decided_date(each))
+            )
+    found: dict[uuid.UUID, uuid.UUID] = {}
+    for paying, lines in sorted(by_account.items()):
+        found |= match(
+            lines,
+            [
+                each
+                for each in payments
+                if each.account_id == paying and each.id not in taken
+            ],
+            days,
+        )
+    return found
+
+
+def _unpaid(line: Line, decided: Decision) -> UnpaidInvoice:
+    return UnpaidInvoice(
+        line_key=line.key,
+        invoice_date=line.posting_date,
+        owed=-line.amount if line.amount_due is None else line.amount_due,
+        payee=line.payee,
+        document_id=line.document_id,
+        path=line.path,
+        issuer=line.issuer,
+        due_date=decided.effective_on,
     )
 
 
@@ -466,6 +531,7 @@ def link(
         payments.append(
             Payment(
                 id=key,
+                account_id=account_id(INTERNAL_ACCOUNT.slug),
                 dates=(first.posting_date,),
                 posting_date=first.posting_date,
                 amount=first.amount,
@@ -489,7 +555,8 @@ def link(
         )
         sources.extend(_source(txn_id, each, "evidence") for each in copies)
     still_open = 0
-    invoices_refused = 0
+    invoices_refused: list[dict[str, uuid.UUID]] = []
+    unpaid: list[UnpaidInvoice] = []
     for key, lines in invoices.items():
         if key in paid:
             continue
@@ -499,9 +566,11 @@ def link(
             continue
         first, *copies = lines
         if first.currency not in INTERNAL_ACCOUNT.currencies:
-            invoices_refused += 1
+            invoices_refused.append({"b_id": first.id, "b_decision": each.id})
             still_open += 1
-        elif each.kind is DecisionKind.INVOICE_PAID:
+        elif each.kind is DecisionKind.INVOICE_UNPAID:
+            unpaid.append(_unpaid(first, each))
+        else:
             txns.append(_paid_outside(first, _decided_date(each)))
             sources.append(_source(key, first, "primary"))
             sources.extend(_source(key, copy, "evidence") for copy in copies)
@@ -523,13 +592,21 @@ def link(
                 for line in keyed
             ],
         )
+    if invoices_refused:
+        uow.execute(
+            update(document_line)
+            .where(document_line.c.id == bindparam("b_id"))
+            .values(refused_decision_id=bindparam("b_decision")),
+            invoices_refused,
+        )
     return Evidence(
         links=sum(1 for each in sources if each["role"] == "evidence"),
         receipt_txns=receipt_txns,
         receipts_currency_refused=refused,
         unmatched_invoices=still_open,
         invoice_txns=len(txns) - receipt_txns,
-        invoices_currency_refused=invoices_refused,
+        invoices_currency_refused=len(invoices_refused),
         decisions_superseded=sum(1 for key in paid if key in decided),
+        unpaid_invoices=tuple(unpaid),
         incomplete_lines=incomplete,
     )

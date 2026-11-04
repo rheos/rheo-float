@@ -281,6 +281,8 @@ class ParsedLine:
     funding_fee: Decimal | None = None
     # A receipt payment's own reference, as a digest: never the reference itself.
     payment_ref_digest: str | None = None
+    # What an invoice prints as still due, positive; its ``amount`` stays the total.
+    amount_due: Decimal | None = None
 
 
 @dataclass(frozen=True)

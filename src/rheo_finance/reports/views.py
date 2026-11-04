@@ -26,7 +26,9 @@ row per fact as ``(fact, subject, count, at)``:
 - ``typed_bill_unjoined``: per payee with any, its typed bills that no account takes
   beside its parsed bills (``derive.stage14``), by label;
 - ``invoice_decision_superseded``: per decision kind, the invoice decisions a matching
-  payment took over from (``derive.evidence``).
+  payment took over from (``derive.evidence``);
+- ``invoice_decision_refused``: per decision kind, the invoice decisions stage 3 could
+  not apply for the invoice's currency (``derive.evidence``).
 
 ``report_coverage`` is the matrix: account slug and label, month, state and the reason
 as words (``running_balance_break`` reads ``running balance break``).
@@ -70,6 +72,7 @@ from rheo_finance.storage.schema import (
     coverage,
     decision,
     document,
+    document_line,
     obligation,
     payee,
     source_discrepancy,
@@ -89,6 +92,7 @@ MANUAL_MISMATCH: Final = "manual_mismatch"
 STATEMENT_CONFLICT: Final = "statement_conflict"
 TYPED_BILL_UNJOINED: Final = "typed_bill_unjoined"
 INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
+INVOICE_DECISION_REFUSED: Final = "invoice_decision_refused"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -196,6 +200,18 @@ def report_status_select() -> Select[tuple[object, ...]]:
         .select_from(
             txn_source.join(
                 decision, txn_source.c.overrides_decision_id == decision.c.id
+            )
+        )
+        .group_by(decision.c.kind),
+        select(
+            _fact(INVOICE_DECISION_REFUSED),
+            decision.c.kind.label("subject"),
+            func.count().label("count"),
+            _no_time(),
+        )
+        .select_from(
+            document_line.join(
+                decision, document_line.c.refused_decision_id == decision.c.id
             )
         )
         .group_by(decision.c.kind),

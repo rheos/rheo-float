@@ -115,7 +115,7 @@ SOURCES: dict[str, Source] = {
     ),
     "Invoices received": Source(
         "invoices-received/sample-vendor/2025-12-01.pdf", "invoice_received.txt",
-        "invoices_received.invoice", "2",
+        "invoices_received.invoice", "3",
     ),
     "Receipts": Source(
         "receipts/sample-clinic/2026-03-16.pdf", "patient_receipt.txt",

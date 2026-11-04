@@ -224,6 +224,14 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                 )
                 .values(overrides_decision_id=taken_over)
             )
+            conn.execute(
+                update(document_line)
+                .where(
+                    document_line.c.id
+                    == select(document_line.c.id).limit(1).scalar_subquery()
+                )
+                .values(refused_decision_id=taken_over)
+            )
             descriptions = conn.scalars(
                 select(document_line.c.description_raw).where(
                     document_line.c.description_raw.is_not(None)
@@ -382,6 +390,7 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
         " 1 card statement with conflicting copies (fortisbc 1);"
         " 1 typed bill that joins no parsed bills (fortisbc 1);"
         " 1 invoice decision superseded by a matched line (invoice_unpaid 1);"
+        " 1 invoice decision refused for its currency (invoice_unpaid 1);"
         " 1 account with no data: Spare;"
         " 1 archive file skipped: file name carries an identifier, rename them"
         " (vancity 1)"

@@ -19,14 +19,14 @@ subscription vendor is a spending line only. The paths are in the table above
   period ``inst-<slug>-<n>``, issued on ``agreed_on``; and arrears, below.
 - (5) A manual debt: one ``manual_debt`` per ``obligations.csv`` row, period
   ``debt-<slug>``, with the row's ``issued_on`` and due date, either of which may be
-  null; and one per unmatched invoice whose decision in force is ``invoice_unpaid``.
-  That one's period is ``debt-inv-<line key>``, the key of the invoice line, which every
-  re-saved copy of the invoice document shares, so a new copy keeps the id a decision
-  names. It is issued on the invoice's date and due on the decision's date if it gives
-  one; ``invoice_ref`` names the document that counts. Its payee is the first payee
-  whose patterns name the printed payee, else the vendor payee of the invoice's
-  archive directory (``manual.payees``). An invoice a payment matches is paid, not
-  owed, so a match takes the debt away (``evidence``). Only ``CURRENCY``, as below.
+  null; and one per invoice stage 3 found unpaid (``evidence.UnpaidInvoice``: no
+  payment matches it and the decision in force is ``invoice_unpaid``). That one's period
+  is ``debt-inv-<line key>``, the key of the invoice line, which every re-saved copy of
+  the invoice document shares, so a new copy keeps the id a decision names. It is owed
+  the printed amount due, else the total, issued on the invoice's date and due on the
+  decision's date if it gives one; ``invoice_ref`` names the document that counts. Its
+  payee is the first payee whose patterns name the printed payee, else the vendor payee
+  of the invoice's archive directory (``manual.payees``).
 
 A document ``precedence.supersede`` marked as a copy is not parsed, so it makes nothing.
 Two different parsed statements of one card with one closing date have one natural key,
@@ -109,16 +109,11 @@ from decimal import Decimal
 from itertools import pairwise
 from typing import Final, Literal
 
-from sqlalchemy import Row, exists, insert, select
+from sqlalchemy import Row, insert, select
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.decision import (
-    INVOICE_DECISIONS,
-    DecisionKind,
-    effective,
-    invoice_ref,
-)
 from rheo_finance.derive import precedence
+from rheo_finance.derive.evidence import UnpaidInvoice
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.accounts import BILL_VENDOR
 from rheo_finance.manual.arrangements import Arrangement
@@ -130,11 +125,9 @@ from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
     document,
-    document_line,
     obligation,
     payee,
     statement_period,
-    txn_source,
 )
 
 ObligationKind = Literal[
@@ -393,55 +386,26 @@ def _manual_drafts(
 
 
 def _invoice_debt_drafts(
-    uow: UnitOfWork, payees: Payees, by_slug: Mapping[str, uuid.UUID]
+    unpaid: Iterable[UnpaidInvoice], payees: Payees, by_slug: Mapping[str, uuid.UUID]
 ) -> list[_Draft]:
-    """A debt per invoice no txn holds whose decision in force is ``invoice_unpaid``.
-    The copy of the larger sha256 is the one that counts, as ``evidence`` has it."""
-    line = document_line.c
-    rows = uow.execute(
-        select(
-            line.line_key_id,
-            line.posting_date,
-            line.amount,
-            line.counterparty,
-            document.c.id.label("document_id"),
-            document.c.path,
-            document.c.issuer,
-        )
-        .join(document, document.c.id == line.document_id)
-        .where(
-            document.c.status == "parsed",
-            line.line_kind == "invoice",
-            line.currency == CURRENCY,
-            line.line_key_id.is_not(None),
-            ~exists().where(txn_source.c.line_key_id == line.line_key_id),
-        )
-        .order_by(document.c.sha256.desc(), line.line_no)
-    ).all()
-    seen: set[uuid.UUID] = set()
+    """A debt per invoice stage 3 found unpaid."""
     drafts = []
-    for row in rows:
-        if row.line_key_id in seen:
-            continue
-        seen.add(row.line_key_id)
-        decided = effective(uow, INVOICE_DECISIONS, invoice_ref(row.line_key_id))
-        if decided is None or decided.kind is not DecisionKind.INVOICE_UNPAID:
-            continue
-        named = payees.naming(row.counterparty or "")
-        slug = row.issuer.partition("/")[0] if named is None else named.slug
+    for each in unpaid:
+        named = payees.naming(each.payee)
+        slug = each.issuer.partition("/")[0] if named is None else named.slug
         drafts.append(
             _Draft(
                 payee_id=by_slug[slug],
                 kind=MANUAL_DEBT,
-                period_label=f"debt-inv-{row.line_key_id}",
+                period_label=f"debt-inv-{each.line_key}",
                 statement_date=None,
-                issued_on=row.posting_date,
-                amount_due=cents(-row.amount),
+                issued_on=each.invoice_date,
+                amount_due=cents(each.owed),
                 minimum_due=None,
-                due_date=decided.effective_on,
-                source=row.path,
+                due_date=each.due_date,
+                source=each.path,
                 invoice_ref=refs.format_ref(
-                    refs.FINANCE_SYSTEM, DOCUMENT_REF_TYPE, row.document_id
+                    refs.FINANCE_SYSTEM, DOCUMENT_REF_TYPE, each.document_id
                 ),
             )
         )
@@ -700,9 +664,10 @@ def create_obligations(
     manual: Sequence[ManualObligation],
     arrangements: Sequence[Arrangement],
     payees: Payees,
+    unpaid_invoices: Iterable[UnpaidInvoice],
 ) -> int:
     """Rebuild ``obligation`` from the parsed statements and bills, stage 2's manual
-    rows and arrangements, and the ``invoice_unpaid`` decisions; how many it made. The
+    rows and arrangements, and the invoices stage 3 found unpaid; how many it made. The
     caller cleared the table."""
     by_account, by_slug = _payees(uow)
 
@@ -722,7 +687,7 @@ def create_obligations(
     documents = [
         *_card_drafts(uow, cards, payee_of),
         *_bill_drafts(bills, payee_of),
-        *_invoice_debt_drafts(uow, payees, by_slug),
+        *_invoice_debt_drafts(unpaid_invoices, payees, by_slug),
     ]
     holders = _issuer_holders(bills, payee_of, by_slug)
     merged = _merged(documents, _manual_drafts(uow, manual, by_slug, holders))

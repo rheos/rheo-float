@@ -26,7 +26,10 @@ from rheo_finance.derive.run import run
 from rheo_finance.manual.payees import PAYEES_FILE
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.operations import dispatch
-from rheo_finance.reports.views import INVOICE_DECISION_SUPERSEDED
+from rheo_finance.reports.views import (
+    INVOICE_DECISION_REFUSED,
+    INVOICE_DECISION_SUPERSEDED,
+)
 from rheo_finance.storage.refs import format_ref
 from rheo_finance.storage.schema import (
     document_line,
@@ -54,6 +57,8 @@ from .test_receipts_invoices import (
 )
 
 TOTAL = Decimal("750.00")
+# The fixture prints a total of 750.00, paid 100.00 and an amount due of 650.00.
+AMOUNT_DUE = Decimal("650.00")
 PAID_ON = D(2026, 3, 10)
 DUE_ON = D(2026, 4, 1)
 ISSUED = D(2025, 12, 1)
@@ -100,11 +105,13 @@ def paying_account(slug: str = "paid-outside") -> str:
     return format_ref("finance", "account", account_id(slug))
 
 
-def paid(ledger: Ledger, on: dt.date = PAID_ON) -> uuid.UUID:
+def paid(
+    ledger: Ledger, on: dt.date = PAID_ON, account: str = "paid-outside"
+) -> uuid.UUID:
     return decide(
         ledger,
         "invoice_paid",
-        account_ref=paying_account(),
+        account_ref=paying_account(account),
         effective_on=on.isoformat(),
     )
 
@@ -126,13 +133,24 @@ def debts(ledger: Ledger) -> list[Row[Any]]:
     return list(ledger.conn.execute(select(obligation)).all())
 
 
-def superseded_facts(ledger: Ledger) -> dict[str | None, int]:
+def facts(ledger: Ledger, name: str) -> dict[str | None, int]:
     found = ledger.conn.execute(
         select(report_status.c.subject, report_status.c.count).where(
-            report_status.c.fact == INVOICE_DECISION_SUPERSEDED
+            report_status.c.fact == name
         )
     ).all()
     return {subject: count for subject, count in found}
+
+
+def superseded_facts(ledger: Ledger) -> dict[str | None, int]:
+    return facts(ledger, INVOICE_DECISION_SUPERSEDED)
+
+
+def on_chequing(ledger: Ledger) -> None:
+    """The contractor's invoice, derived, with the chequing account on the registry."""
+    ledger.chequing()
+    ledger.file(INVOICE, invoice())
+    ledger.derive()
 
 
 def open_invoice(ledger: Ledger) -> None:
@@ -220,9 +238,8 @@ def test_a_payment_near_the_decided_date_supersedes_it_outside_the_invoices_wind
 ) -> None:
     """Paid months after the invoice's date: the decision says when, and the statement
     that arrives later prints that payment. It is one payment, not two."""
-    ledger.file(INVOICE, invoice())
-    ledger.derive()
-    decision_id = paid(ledger)
+    on_chequing(ledger)
+    decision_id = paid(ledger, account="chequing")
 
     payments(ledger, ("12-Mar-2026", CONTRACTOR, "750.00"))
     out = ledger.derive()
@@ -234,10 +251,25 @@ def test_a_payment_near_the_decided_date_supersedes_it_outside_the_invoices_wind
     assert link.overrides_decision_id == decision_id
 
 
+def test_a_payment_near_the_decided_date_on_another_account_does_not_supersede_it(
+    ledger: Ledger,
+) -> None:
+    """The decision says which account paid. A like payment on another one is another
+    payment."""
+    on_chequing(ledger)
+    paid(ledger, account="paid-outside")
+
+    payments(ledger, ("12-Mar-2026", CONTRACTOR, "750.00"))
+    out = ledger.derive()
+
+    assert len(outside(ledger)) == 1
+    assert spending(ledger) == -2 * TOTAL
+    assert out.lines.invoice_decisions_superseded == 0
+
+
 def test_a_payment_outside_both_windows_is_another_payment(ledger: Ledger) -> None:
-    ledger.file(INVOICE, invoice())
-    ledger.derive()
-    paid(ledger)
+    on_chequing(ledger)
+    paid(ledger, account="chequing")
 
     payments(ledger, ("01-Jun-2026", CONTRACTOR, "750.00"))
     out = ledger.derive()
@@ -275,7 +307,7 @@ def test_a_decided_invoice_does_not_take_a_payment_another_invoice_holds(
         {
             "kind": "invoice_paid",
             "target_ref": invoice_ref(other),
-            "account_ref": paying_account(),
+            "account_ref": paying_account("chequing"),
             "effective_on": "2025-12-30",
         },
     )
@@ -308,6 +340,27 @@ def test_an_invoice_on_a_cash_receipt_adds_no_second_paid_outside_line(
     assert spending(ledger) == Decimal("-245.00")
     assert out.lines.from_invoice_decisions == 0
     assert out.lines.from_receipts == 1
+    (link,) = [row for row in sources(ledger, "evidence") if row.line_kind == "invoice"]
+    assert (link.txn_id, link.overrides_decision_id) == (line["id"], decision_id)
+
+
+def test_a_decision_on_the_internal_account_attaches_to_a_cash_receipt_by_its_date(
+    ledger: Ledger,
+) -> None:
+    """The invoice is months older than the receipt, so only the decided date reaches
+    the receipt's txn: still one line on the internal account."""
+    payments(ledger, ("15-Mar-2026", CLINIC, "45.00"))
+    ledger.file(RECEIPT, fixture("patient_receipt.txt"))
+    ledger.file(INVOICE, clinic_invoice("200.00", "Sat, Jan 10, 2026"))
+    ledger.derive()
+    assert spending(ledger) == Decimal("-245.00")
+
+    decision_id = paid(ledger, D(2026, 3, 14))
+    out = ledger.derive()
+
+    (line,) = outside(ledger)
+    assert spending(ledger) == Decimal("-245.00")
+    assert out.lines.from_invoice_decisions == 0
     (link,) = [row for row in sources(ledger, "evidence") if row.line_kind == "invoice"]
     assert (link.txn_id, link.overrides_decision_id) == (line["id"], decision_id)
 
@@ -347,7 +400,7 @@ def test_invoice_unpaid_makes_the_manual_debt_with_the_decisions_due_date(
     assert (row.kind, row.period_label) == ("manual_debt", f"debt-inv-{key}")
     assert (row.issued_on, row.due_date) == (ISSUED, DUE_ON)
     assert row.statement_date is None
-    assert row.amount_due == row.threshold_due == row.remaining == TOTAL
+    assert row.amount_due == row.threshold_due == row.remaining == AMOUNT_DUE
     assert row.status == "open"
     assert row.primary_source == INVOICE
     assert row.manual_source is None
@@ -359,6 +412,33 @@ def test_invoice_unpaid_makes_the_manual_debt_with_the_decisions_due_date(
     assert spending(ledger) == Decimal("-45.00")
     assert outside(ledger) == []
     assert out.lines.unmatched_invoices == 0
+
+
+def test_with_no_printed_amount_due_the_debt_is_the_total(ledger: Ledger) -> None:
+    """The stored line is changed, because the one parser always stores one."""
+    open_invoice(ledger)
+    ledger.conn.execute(
+        document_line.update()
+        .where(document_line.c.line_kind == "invoice")
+        .values(amount_due=None)
+    )
+    unpaid(ledger)
+    ledger.derive()
+
+    (row,) = debts(ledger)
+    assert row.amount_due == row.remaining == TOTAL
+
+
+def test_an_invoice_that_prints_nothing_due_owes_nothing(ledger: Ledger) -> None:
+    """A printed zero is an amount due, not a missing one."""
+    payments(ledger, ("15-Mar-2026", OTHER_SHOP, "45.00"))
+    ledger.file(INVOICE, clinic_invoice("200.00", "Sat, Mar 14, 2026"))
+    ledger.derive()
+    unpaid(ledger)
+    ledger.derive()
+
+    (row,) = debts(ledger)
+    assert (row.amount_due, row.status) == (0, "paid")
 
 
 def test_invoice_unpaid_with_no_due_date_has_none(ledger: Ledger) -> None:
@@ -424,7 +504,7 @@ def test_two_unpaid_invoices_are_two_debts(ledger: Ledger) -> None:
     ledger.derive()
 
     assert sorted(row.status for row in debts(ledger)) == ["open", "open"]
-    assert sum(row.remaining for row in debts(ledger)) == 2 * TOTAL
+    assert sum(row.remaining for row in debts(ledger)) == 2 * AMOUNT_DUE
 
 
 def test_a_payment_that_matches_takes_the_debt_away(ledger: Ledger) -> None:
@@ -541,9 +621,13 @@ def test_a_resaved_copy_keeps_the_debts_key_and_names_the_copy_that_counts(
     assert row.invoice_ref == f"finance.document:{counts}"
 
 
-@pytest.mark.parametrize("decide_it", [paid, unpaid], ids=["paid", "unpaid"])
+@pytest.mark.parametrize(
+    ("decide_it", "kind"),
+    [(paid, "invoice_paid"), (unpaid, "invoice_unpaid")],
+    ids=["paid", "unpaid"],
+)
 def test_a_decided_invoice_in_another_currency_stays_open_and_is_counted(
-    ledger: Ledger, decide_it: Any
+    ledger: Ledger, decide_it: Any, kind: str
 ) -> None:
     """Neither the internal account nor an obligation holds it. No parser prints one
     today, so the stored line is changed."""
@@ -562,6 +646,26 @@ def test_a_decided_invoice_in_another_currency_stays_open_and_is_counted(
     assert (out.lines.invoices_currency_refused, out.lines.unmatched_invoices) == (1, 1)
     assert ledger.txns() == []
     assert debts(ledger) == []
+    assert facts(ledger, INVOICE_DECISION_REFUSED) == {kind: 1}
+
+
+def test_reversing_a_refused_decision_clears_its_fact(ledger: Ledger) -> None:
+    ledger.file(INVOICE, invoice())
+    ledger.derive()
+    ledger.conn.execute(
+        document_line.update()
+        .where(document_line.c.line_kind == "invoice")
+        .values(currency="USD")
+    )
+    ledger.derive()
+    decision_id = unpaid(ledger)
+    ledger.derive()
+    assert facts(ledger, INVOICE_DECISION_REFUSED) == {"invoice_unpaid": 1}
+
+    reverse(ledger, decision_id)
+    ledger.derive()
+
+    assert facts(ledger, INVOICE_DECISION_REFUSED) == {}
 
 
 def test_derive_and_rebuild_give_the_same_ledger_under_a_decision(

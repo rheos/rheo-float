@@ -77,11 +77,13 @@ never chains, and a manual row merged into a document is that document's row.
 ``superseded``, and names the arrangement in ``arrangement_ref``, from then on: when the
 last instalment is paid the arrangement stops being active, and the replaced periods
 must not come back as owed. An arrangement is active until stage 15's application has
-paid every one of its instalments (``finished``, handed back by ``derive.run``). While
-an arrangement of a payee is active, the newest bill
+paid every one of its instalments (``finished``, handed back by ``derive.run`` with the
+day the last one was paid). A bill issued up to that day stays governed by it for good,
+since its instalments covered that bill's arrears; only a bill issued after it is owed
+as with no arrangement. While an arrangement governs a payee's bill, the newest bill
 of each of its accounts is owed for its printed current charges only, or for its total
 less its printed arrears when it prints no current charges. A typed-in bill prints
-neither, so it is owed as typed. With none active, a bill that prints an arrears line
+neither, so it is owed as typed. With none governing it, a bill that prints arrears
 is split: the bill is owed its total less the arrears, and an ``arrears`` row, period
 ``arrears-YYYY-MM`` of the bill date, holds the arrears, so the two add up to the total
 printed and instalments and arrears are never both owed. Only the newest bill of an
@@ -532,20 +534,33 @@ def _with_replaced(
     ]
 
 
-def _active_payees(
+_Arranged = Callable[[uuid.UUID, dt.date | None], bool]
+
+
+def _arranged(
     arrangements: Iterable[Arrangement],
     by_slug: Mapping[str, uuid.UUID],
-    finished: Collection[str],
-) -> set[uuid.UUID]:
-    """The payees with an arrangement that has an instalment not yet paid: every
-    arrangement but the ``finished`` ones (stage 15's application says which)."""
-    return {
-        by_slug[found.payee] for found in arrangements if found.slug not in finished
-    }
+    finished: Mapping[str, dt.date],
+) -> _Arranged:
+    """Whether an arrangement of a payee governs its bill issued on a date: one with an
+    instalment still unpaid governs every bill, and a ``finished`` one (stage 15's
+    application says when its last instalment was paid) governs the bills issued up to
+    that day, whose arrears its instalments covered."""
+    until: dict[uuid.UUID, list[dt.date | None]] = defaultdict(list)
+    for found in arrangements:
+        until[by_slug[found.payee]].append(finished.get(found.slug))
+
+    def governs(payee_id: uuid.UUID, issued_on: dt.date | None) -> bool:
+        return any(
+            last is None or issued_on is None or issued_on <= last
+            for last in until.get(payee_id, ())
+        )
+
+    return governs
 
 
 def _owed_now(
-    drafts: Sequence[_Draft], active: set[uuid.UUID]
+    drafts: Sequence[_Draft], arranged: _Arranged
 ) -> tuple[Mapping[uuid.UUID, _Draft], list[_Draft]]:
     """What the arrangement rule changes: the bills owed less than their total, by id,
     and the arrears rows. ``drafts`` comes oldest first, so the last chained bill of a
@@ -563,7 +578,7 @@ def _owed_now(
             continue
         total = bill.amount_due
         printed = min(max(bill.arrears or ZERO, ZERO), max(total, ZERO))
-        if bill.payee_id in active:
+        if arranged(bill.payee_id, bill.issued_on):
             owed = total - printed
             if bill.current_charges is not None:
                 owed = max(min(bill.current_charges, total), min(total, ZERO))
@@ -670,11 +685,12 @@ def create_obligations(
     arrangements: Sequence[Arrangement],
     payees: Payees,
     unpaid_invoices: Iterable[UnpaidInvoice],
-    finished: Collection[str] = frozenset(),
+    finished: Mapping[str, dt.date] | None = None,
 ) -> int:
     """Rebuild ``obligation`` from the parsed statements and bills, stage 2's manual
     rows and arrangements, and the invoices stage 3 found unpaid; how many it made.
-    ``finished`` names the arrangements whose instalments are all paid. The caller
+    ``finished`` gives the arrangements whose instalments are all paid, with the day
+    the last was paid. The caller
     cleared the table."""
     by_account, by_slug = _payees(uow)
 
@@ -703,7 +719,7 @@ def create_obligations(
     )
     drafts = _in_issue_order(_with_replaced(chained, arrangements, by_slug))
     changed, arrears = _owed_now(
-        drafts, _active_payees(arrangements, by_slug, finished)
+        drafts, _arranged(arrangements, by_slug, finished or {})
     )
     rows = _rows(
         [

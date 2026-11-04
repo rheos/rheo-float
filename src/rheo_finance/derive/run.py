@@ -55,9 +55,11 @@ Order of work, set by what each step reads:
    edges, the coverage matrix, the notice lines and the owner's decisions on them, and
    no obligation; then their application to the obligations (``stage15_apply``), with
    the ``payment_apply`` and ``payment_unapply`` decisions. When that application pays
-   off an arrangement, stage 14 runs once more with that arrangement finished (its
-   payee's bills are then owed as with no arrangement) and the application runs again
-   over the new rows; the arrangements it finished are not read a second time. Then
+   off an arrangement, stage 14 runs again with that arrangement finished and the day
+   its last instalment was paid (a bill its payee is issued after that day is owed as
+   with no arrangement), and the application runs again over the new rows, until the
+   finished set no longer changes (``FINISHED_ROUNDS``; a set still changing after that
+   fails the derive with ``stage15_apply.Unsettled``, a fault to report). Then
    one ``finance.payment.detected`` per automatic application.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
@@ -70,8 +72,9 @@ call site (Key decision 14).
 
 from __future__ import annotations
 
+import datetime as dt
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -122,6 +125,9 @@ from rheo_finance.storage.schema import (
 OVERLAP_DAYS_KEY: Final = "finance.import.overlap_day_tolerance"
 RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
+# How many times stage 14 may run again for arrangements an application finished: a
+# second round only confirms the first unless finishing one changes another's bills.
+FINISHED_ROUNDS: Final = 3
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
     payment_application, payment_evidence, payment,
@@ -257,7 +263,7 @@ def run(
         )
         stage11.resolve(uow, decided)
 
-        def obligations(finished: frozenset[str] = frozenset()) -> None:
+        def obligations(finished: Mapping[str, dt.date] | None = None) -> None:
             stage14.create_obligations(
                 uow,
                 manual.obligations.obligations,
@@ -286,14 +292,21 @@ def run(
             ),
         )
         stage15_apply.apply_payments(uow, rules)
-        finished = stage15_apply.finished_arrangements(uow)
-        if finished:
-            # A paid-up arrangement no longer sets its payee's bills: make them again
-            # without it, and apply again to what they now owe.
+        used: dict[str, dt.date] = {}
+        for _ in range(FINISHED_ROUNDS):
+            finished = stage15_apply.finished_arrangements(uow)
+            if finished == used:
+                break
+            # A paid-up arrangement no longer sets the bills issued after its last
+            # instalment: make them again, and apply again to what they now owe.
             uow.execute(delete(payment_application))
             uow.execute(delete(obligation))
             obligations(finished)
             stage15_apply.apply_payments(uow, rules)
+            used = finished
+        else:
+            if stage15_apply.finished_arrangements(uow) != used:
+                raise stage15_apply.Unsettled(sorted(used))
         stage15_apply.record_detected(uow)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))

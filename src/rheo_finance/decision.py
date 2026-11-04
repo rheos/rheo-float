@@ -151,7 +151,7 @@ TARGET_COLUMN: Mapping[DecisionKind, str] = {
 # The ref types that name a ledger line (``finance.txn:<uuid>``, prompt 21). A prompt
 # that gives document lines their own ref type adds it here, unless the line has no
 # account to snapshot, as ``INVOICE_REF_TYPE``'s has not.
-LINE_REF_TYPES = frozenset({"txn"})
+LINE_REF_TYPES = frozenset({refs.LINE_TYPE})
 
 # An invoice line, by its line key (``derive.evidence``): the target of the invoice
 # kinds. It is not a ledger line until a decision or a payment makes it count.

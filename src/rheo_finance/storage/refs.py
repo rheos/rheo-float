@@ -14,6 +14,8 @@ import uuid
 from dataclasses import dataclass
 
 FINANCE_SYSTEM = "finance"
+# The type of a ledger line's ref, ``finance.txn:<uuid>``.
+LINE_TYPE = "txn"
 RHEOSTREAM_SYSTEMS = frozenset({"relationships", "current"})
 
 _NAME = re.compile(r"[a-z][a-z0-9_]*")

@@ -29,7 +29,6 @@ from rheo_finance.manual.loader import LoadResult, RowError, duplicate_lines
 from rheo_finance.storage import refs
 
 CRYPTO_LABELS_FILE: Final = "crypto_labels.csv"
-LINE_REF_TYPE: Final = "txn"
 
 Label = Literal["own_untracked", "other"]
 
@@ -42,7 +41,7 @@ def _line_key(value: object) -> object:
         parsed = refs.parse(value)
     except refs.RefError:
         raise ValueError("not a line ref (finance.txn:<uuid>)") from None
-    if parsed.system != refs.FINANCE_SYSTEM or parsed.type != LINE_REF_TYPE:
+    if parsed.system != refs.FINANCE_SYSTEM or parsed.type != refs.LINE_TYPE:
         raise ValueError("not a line ref (finance.txn:<uuid>)")
     return uuid.UUID(parsed.id)
 

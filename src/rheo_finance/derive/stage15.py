@@ -111,7 +111,6 @@ TOLERANCE_KEY: Final = "finance.payments.match_tolerance"
 WINDOW_KEY: Final = "finance.payments.evidence_window_days"
 HOLD_KEY: Final = "finance.payments.notice_hold_days"
 NOTICE_KIND: Final = "payment_notice"
-LINE_TYPE: Final = "txn"
 OWN_TRANSFER: Final = "own_transfer"
 REVERSAL: Final = "reversal"
 # The coverage states of a month with no lines of the account behind it.
@@ -430,9 +429,10 @@ def _money_payments(
     return found
 
 
-def _notices(uow: UnitOfWork) -> list[_Notice]:
-    """Every notice of a parsed document, the copy of the larger sha256 standing for its
-    key, which every copy's line stores with its normalized description."""
+def _key_notices(uow: UnitOfWork) -> list[_Notice]:
+    """Store on every notice line of a parsed document its key and normalized
+    description, and return the notices, the copy of the larger sha256 standing for
+    its key."""
     rows = uow.execute(
         select(
             document_line.c.id,
@@ -511,10 +511,10 @@ def _notice_decisions(
             ref.type: uuid.UUID(ref.id)
             for ref in map(refs.parse, (row.target_ref, row.counterpart_ref))
             if ref.system == refs.FINANCE_SYSTEM
-            and ref.type in (NOTICE_KIND, LINE_TYPE)
+            and ref.type in (NOTICE_KIND, refs.LINE_TYPE)
         }
-        if NOTICE_KIND in by_type and LINE_TYPE in by_type:
-            named.append((row.kind, by_type[NOTICE_KIND], by_type[LINE_TYPE]))
+        if NOTICE_KIND in by_type and refs.LINE_TYPE in by_type:
+            named.append((row.kind, by_type[NOTICE_KIND], by_type[refs.LINE_TYPE]))
     if not named:
         return {}, {}
     txn_of = {
@@ -672,7 +672,7 @@ def build_payments(
     stored = _stored_payees(uow)
     naming = _Naming(payees, stored)
     money = _money_payments(uow, _lines(uow, hint_rows), stored, naming)
-    own = _join_notices(uow, _notices(uow), money, naming, windows)
+    own = _join_notices(uow, _key_notices(uow), money, naming, windows)
     made = [*money, *own]
     if made:
         uow.execute(

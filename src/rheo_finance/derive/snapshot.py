@@ -21,15 +21,13 @@ from rheo_finance.context import LineSnapshot, UnitOfWork
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import account, txn, txn_source
 
-LINE_TYPE = "txn"
-
 
 def txn_snapshot(uow: UnitOfWork, ref: str) -> LineSnapshot | None:
     try:
         parsed = refs.parse(ref)
     except refs.RefError:
         return None
-    if parsed.system != refs.FINANCE_SYSTEM or parsed.type != LINE_TYPE:
+    if parsed.system != refs.FINANCE_SYSTEM or parsed.type != refs.LINE_TYPE:
         return None
     row = uow.execute(
         select(account.c.slug, txn.c.amount, txn.c.currency, txn.c.posting_date)

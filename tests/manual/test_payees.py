@@ -290,3 +290,43 @@ def test_a_pattern_with_nothing_to_match_is_rejected(
     assert errors(owner_conn)[2].startswith("patterns:")
     assert "dashes" not in found.slugs
     assert "plumber" in found.slugs
+
+
+def test_an_account_pattern_with_nothing_to_match_is_rejected(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    """``accounts.csv`` takes the same row error ``payees.csv`` gives."""
+    data = tmp_path
+    registry(data, card_patterns="SAMPLE CARD;--")
+    load(owner_conn, data, [])
+
+    (reason,) = [
+        each.reason
+        for each in owner_conn.execute(select(manual_entry_error)).all()
+        if each.file == ACCOUNTS_FILE and "payee_patterns" in each.reason
+    ]
+    assert "a pattern holds no letter or digit" in reason
+
+
+def test_a_card_with_no_patterns_is_still_a_payee(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    """Its statements need a payee; a chequing account with no patterns is none."""
+    data = tmp_path
+    registry(data, card_patterns="")
+    found = load(owner_conn, data, [])
+
+    (card,) = [each for each in found.payees if each.slug == "card"]
+    assert (card.kind, card.patterns, card.account) == ("account", (), "card")
+    assert "chequing" not in found.slugs
+
+
+def test_a_row_of_kind_account_holds_a_card_with_no_patterns(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    data = tmp_path
+    registry(data, card_patterns="")
+    found = load(owner_conn, data, ["card,My card,account,SAMPLE CARD CO,,"])
+
+    (card,) = [each for each in found.payees if each.slug == "card"]
+    assert (card.label, card.account) == ("My card", "card")

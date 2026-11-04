@@ -6,7 +6,8 @@ feeds obligations, not the ledger):
 
 - every amount goes through ``to_money``, so docextract's floats become exact
   two-decimal values;
-- ``balance_due`` is the printed total due and ``due_date`` the "pay by" date;
+- ``balance_due`` is the printed total due, ``due_date`` the "pay by" date and
+  ``bill_date`` the bill date;
 - the period is the bill-date month. That is a decision, not something the bill
   states: the only dates a bill prints are its bill date, its next bill date and the
   "pay by" date, never a service period, so the bill-date month is the period;
@@ -93,7 +94,8 @@ def _tied_out(
 
 def parse(text: str, accounts: AccountLookup) -> ParseResult:
     bill = reference_bill(text)
-    period = _bill_month(_date(bill["bill_date"]))
+    bill_date = _date(bill["bill_date"])
+    period = _bill_month(bill_date)
     registered = _account(text, accounts, period)
     tied_out = _tied_out(bill, period, registered)
     return ParseResult(
@@ -106,6 +108,7 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
                 control_kind="bill_identity",
                 balance_due=money(bill["total_due"]),
                 due_date=_date(bill["due_date"]),
+                bill_date=bill_date,
                 tied_out=tied_out,
             ),
         ),
@@ -124,7 +127,7 @@ PARSER: Final = register_parser(
         parser_id="virgin_plus.bill",
         issuer="virgin-plus",
         format="pdf",
-        version="1",
+        version="2",
         parse=parse,
         filing_date=filing_date,
     )

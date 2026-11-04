@@ -69,6 +69,6 @@ def load_manual(uow: UnitOfWork, data_dir: Path) -> ManualLoad:
         own_addresses=load_own_addresses(uow, data_dir, registry),
         crypto_labels=load_crypto_labels(uow, data_dir),
         payees=payees,
-        obligations=load_obligations(uow, data_dir, payees),
-        arrangements=load_arrangements(uow, data_dir, payees),
+        obligations=load_obligations(uow, data_dir, registry, payees),
+        arrangements=load_arrangements(uow, data_dir, registry, payees),
     )

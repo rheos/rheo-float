@@ -7,9 +7,11 @@ the lower bound of the payments that can be its own), the instalment number (fro
 the amount (CAD, to the cent, more than zero), the due date, and the bill periods the
 arrangement replaces (``;``-separated ``bill-YYYY-MM`` labels).
 
-``build_arrangements`` then rejects a row whose payee is not a loaded payee, every row
-of an instalment number written twice for one arrangement, and every row of an
-arrangement whose rows disagree on the payee or on ``agreed_on``. A row refused alone
+``build_arrangements`` then rejects a row whose payee is not a loaded payee, a row
+whose arrangement slug the adopted-path check refuses (``path_check.PathCheck``: the
+slug goes into a public period label the report views show), every row of an instalment
+number written twice for one arrangement, and every row of an arrangement whose rows
+disagree on the payee or on ``agreed_on``. A row refused alone
 (no ``agreed_on``, say) leaves the arrangement's other rows loading. Nothing is stored
 here: stage 14 reads the arrangements (``Arrangement``), each instalment with its
 source reference ``manual:arrangements.csv:<line_no>``.
@@ -33,9 +35,10 @@ from pydantic import (
     model_validator,
 )
 
-from rheo_finance.manual.accounts import Slug
+from rheo_finance.manual.accounts import CARRIES_IDENTIFIER, Slug
 from rheo_finance.manual.loader import LoadResult, RowError, duplicate_lines, split_list
 from rheo_finance.manual.obligations import BILL_PERIOD, SOURCE_PREFIX, Cents
+from rheo_finance.path_check import PathCheck
 
 ARRANGEMENTS_FILE: Final = "arrangements.csv"
 INSTALMENT_PREFIX: Final = "inst-"
@@ -121,7 +124,9 @@ class Arrangements:
 
 
 def build_arrangements(
-    result: LoadResult[ArrangementRow], payee_slugs: Collection[str]
+    result: LoadResult[ArrangementRow],
+    payee_slugs: Collection[str],
+    check: PathCheck,
 ) -> Arrangements:
     errors = list(result.errors)
 
@@ -149,6 +154,9 @@ def build_arrangements(
     for line, row in rows:
         if row.payee not in payee_slugs:
             reject(line, "payee: no loaded payee has this slug")
+            bad.add(line)
+        if not check.allows(row.arrangement):
+            reject(line, f"arrangement: {CARRIES_IDENTIFIER}")
             bad.add(line)
 
     arrangements = []

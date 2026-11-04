@@ -19,6 +19,7 @@ import datetime as dt
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,8 @@ from rheo_finance.storage.schema import (
     account,
     coverage,
     document_line,
+    obligation,
+    payee,
     source_discrepancy,
     txn,
 )
@@ -158,6 +161,24 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                     document_id=line.document_id,
                     document_line_id=line.id,
                     kind="unmatched_in_statement_window",
+                )
+            )
+            # The second bill of a due month, on the vendor payee stage 2 made.
+            conn.execute(
+                insert(obligation).values(
+                    id=uuid7(NOW),
+                    payee_id=conn.scalar(
+                        select(payee.c.id).where(payee.c.slug == "fortisbc")
+                    ),
+                    kind="bill",
+                    period_label="bill-2026-02-2",
+                    amount_due=Decimal("1.00"),
+                    threshold_due=Decimal("1.00"),
+                    paid=Decimal("0.00"),
+                    remaining=Decimal("1.00"),
+                    threshold_remaining=Decimal("1.00"),
+                    status="open",
+                    primary_source="fortisbc/bill.pdf",
                 )
             )
             descriptions = conn.scalars(
@@ -313,7 +334,8 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
     assert lines[7] == "sinks off: " + " ".join(SINKS)
     # Only the identifier skip counts: the unmapped file is skipped for another reason.
     assert lines[9] == (
-        "1 source discrepancy; 1 account with no data: Spare;"
+        "1 source discrepancy; 1 duplicate bill month (fortisbc 1);"
+        " 1 account with no data: Spare;"
         " 1 archive file skipped: file name carries an identifier, rename them"
         " (vancity 1)"
     )

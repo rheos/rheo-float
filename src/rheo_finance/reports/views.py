@@ -20,7 +20,9 @@ row per fact as ``(fact, subject, count, at)``:
   by a rename);
 - ``account_no_data``: one row per account with no coverage month, by label, leaving
   out the built-in "Paid outside recorded accounts", which has no source by design;
-- ``missing_months``: per account with any, its ``missing`` coverage months, by label.
+- ``missing_months``: per account with any, its ``missing`` coverage months, by label;
+- ``duplicate_bill_month``: per payee with any, its bills past the first of a due
+  month (a period label with a ``-<n>`` suffix), by label.
 
 ``report_coverage`` is the matrix: account slug and label, month, state and the reason
 as words (``running_balance_break`` reads ``running balance break``).
@@ -62,6 +64,8 @@ from rheo_finance.storage.schema import (
     archive_skip,
     coverage,
     document,
+    obligation,
+    payee,
     source_discrepancy,
 )
 
@@ -73,9 +77,12 @@ SOURCE_DISCREPANCY: Final = "source_discrepancy"
 ARCHIVE_SKIP_IDENTIFIER: Final = "archive_skip_identifier"
 ACCOUNT_NO_DATA: Final = "account_no_data"
 MISSING_MONTHS: Final = "missing_months"
+DUPLICATE_BILL_MONTH: Final = "duplicate_bill_month"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
+# ``bill-YYYY-MM-<n>``, not the plain ``bill-YYYY-MM``.
+SUFFIXED_BILL: Final = "^bill-[0-9]{4}-[0-9]{2}-"
 
 # Alembic's version table: not in the shared MetaData, which mirrors ledger tables.
 _version = table("alembic_version_finance", column("version_num"), schema="finance")
@@ -141,6 +148,16 @@ def report_status_select() -> Select[tuple[object, ...]]:
         .select_from(coverage.join(account, coverage.c.account_id == account.c.id))
         .where(coverage.c.state == MISSING)
         .group_by(account.c.id, account.c.label),
+        select(
+            _fact(DUPLICATE_BILL_MONTH),
+            payee.c.display_label.label("subject"),
+            func.count().label("count"),
+            _no_time(),
+        )
+        .select_from(obligation.join(payee, obligation.c.payee_id == payee.c.id))
+        .where(obligation.c.kind == "bill")
+        .where(obligation.c.period_label.regexp_match(SUFFIXED_BILL))
+        .group_by(payee.c.id, payee.c.display_label),
     ]
     # A view's body is one select; the union is wrapped as its only source.
     unioned = union_all(*branches).subquery("facts")

@@ -67,15 +67,15 @@ def payees(conn: Connection, data: Path) -> UnitOfWork:
 def obligations(conn: Connection, data: Path, rows: list[str]) -> ManualObligations:
     uow = payees(conn, data)
     write(data, OBLIGATIONS_FILE, rows)
-    return load_obligations(uow, data, load_payees(uow, data, load_accounts(uow, data)))
+    registry = load_accounts(uow, data)
+    return load_obligations(uow, data, registry, load_payees(uow, data, registry))
 
 
 def arrangements(conn: Connection, data: Path, rows: list[str]) -> Arrangements:
     uow = payees(conn, data)
     write(data, ARRANGEMENTS_FILE, rows)
-    return load_arrangements(
-        uow, data, load_payees(uow, data, load_accounts(uow, data))
-    )
+    registry = load_accounts(uow, data)
+    return load_arrangements(uow, data, registry, load_payees(uow, data, registry))
 
 
 def errors(conn: Connection, name: str) -> dict[int, str]:
@@ -269,3 +269,46 @@ def test_bad_arrangement_rows_are_reported_by_line_and_the_rest_load(
     assert reasons[7].startswith("payee: the rows of this arrangement disagree")
     assert reasons[9].startswith("instalment:")
     assert [plan.slug for plan in found.arrangements] == ["plan-g"]
+
+
+# --- the slugs that become public period labels ---------------------------------------
+
+
+def test_a_debt_slug_carrying_an_identifier_is_rejected_and_the_others_load(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    """A debt's slug is in its period label, which is public and in the report views."""
+    data = tmp_path
+    found = obligations(
+        owner_conn,
+        data,
+        [
+            "sample-isp,manual_debt,debt-99912345678,,10.00,,,,",
+            "sample-isp,manual_debt,loan-2026-03-15,,10.00,,,,",
+        ],
+    )
+
+    assert [each.row.period for each in found.obligations] == ["debt-loan-2026-03-15"]
+    reasons = errors(owner_conn, OBLIGATIONS_FILE)
+    assert list(reasons) == [2]
+    assert reasons[2].startswith("period_label: carries")
+
+
+def test_an_arrangement_slug_carrying_an_identifier_is_rejected_and_the_others_load(
+    owner_conn: Connection, tmp_path: Path
+) -> None:
+    """The slug is in each instalment's period label and in ``arrangement_ref``."""
+    data = tmp_path
+    found = arrangements(
+        owner_conn,
+        data,
+        [
+            "plan-99912345678,sample-isp,2026-01-10,1,50.00,2026-02-01,",
+            "plan,sample-isp,2026-01-10,1,50.00,2026-02-01,",
+        ],
+    )
+
+    assert [each.slug for each in found.arrangements] == ["plan"]
+    reasons = errors(owner_conn, ARRANGEMENTS_FILE)
+    assert list(reasons) == [2]
+    assert reasons[2].startswith("arrangement: carries")

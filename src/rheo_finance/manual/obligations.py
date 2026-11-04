@@ -15,8 +15,11 @@ date as printed.
   ``debt-<slug>`` (a label written ``debt-<slug>`` is taken as is). ``issued_on`` and
   the due date may be blank: no ``issued_on`` means no lower bound on a payment's date.
 
-``build_obligations`` then rejects a row whose payee is not a loaded payee, and every
-row of a (payee, kind, period) written twice. Nothing is stored here: stage 14 reads
+``build_obligations`` then rejects a row whose payee is not a loaded payee, every row
+of a (payee, kind, period) written twice, and a ``manual_debt`` whose period the
+adopted-path check refuses (``path_check.PathCheck``: a run of 8 or more digits that is
+not a date, or a registered identifier), since the period label is public and the
+report views show it. Nothing is stored here: stage 14 reads
 the rows (``ManualObligation``), each with its source reference
 ``manual:obligations.csv:<line_no>``.
 """
@@ -33,8 +36,9 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
-from rheo_finance.manual.accounts import Slug, Text
+from rheo_finance.manual.accounts import CARRIES_IDENTIFIER, Slug, Text
 from rheo_finance.manual.loader import LoadResult, RowError, duplicate_lines
+from rheo_finance.path_check import PathCheck
 
 OBLIGATIONS_FILE: Final = "obligations.csv"
 SOURCE_PREFIX: Final = "manual"
@@ -158,7 +162,9 @@ class ManualObligations:
 
 
 def build_obligations(
-    result: LoadResult[ObligationRow], payee_slugs: Collection[str]
+    result: LoadResult[ObligationRow],
+    payee_slugs: Collection[str],
+    check: PathCheck,
 ) -> ManualObligations:
     errors = list(result.errors)
     rows = result.numbered()
@@ -179,6 +185,11 @@ def build_obligations(
         if row.payee not in payee_slugs:
             errors.append(
                 RowError(OBLIGATIONS_FILE, line, "payee: no loaded payee has this slug")
+            )
+            bad.add(line)
+        if row.kind == "manual_debt" and not check.allows(row.period):
+            errors.append(
+                RowError(OBLIGATIONS_FILE, line, f"period_label: {CARRIES_IDENTIFIER}")
             )
             bad.add(line)
     kept = tuple(ManualObligation(line, row) for line, row in rows if line not in bad)

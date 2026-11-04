@@ -21,6 +21,7 @@ from sqlalchemy import (
     Numeric,
     Table,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -397,6 +398,8 @@ statement_period = Table(
     Column("due_date", Date),
     Column("control_kind", Text, nullable=False),
     Column("tied_out", Boolean, nullable=False),
+    # The date a bill prints (migration 0021); null for every other document.
+    Column("bill_date", Date),
 )
 _tiers(
     statement_period,
@@ -404,7 +407,7 @@ _tiers(
         "document_id": P, "account_id": P, "currency": P, "period_start": P,
         "period_end": P, "opening": R, "closing": R, "total_debits": R,
         "total_credits": R, "total_payments": R, "balance_due": R, "minimum_due": R,
-        "due_date": P, "control_kind": P, "tied_out": P,
+        "due_date": P, "control_kind": P, "tied_out": P, "bill_date": P,
     },
 )  # fmt: skip
 
@@ -719,5 +722,55 @@ _tiers(
     {
         "id": P, "slug": P, "display_label": P, "kind": P, "account_id": P,
         "party_ref": P, "patterns": R,
+    },
+)  # fmt: skip
+
+# --- obligations (derived, stage 14; migration 0021) ----------------------------------
+# One row per (payee, kind, period label). The period label and the references are the
+# owner's words, or a registered path, and show in the report views; the manual loaders
+# run the adopted-path check on the words.
+
+obligation = Table(
+    "obligation",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column(
+        "payee_id",
+        Uuid,
+        ForeignKey("finance.payee.id", deferrable=True, initially="DEFERRED"),
+        nullable=False,
+    ),
+    Column("kind", Text, nullable=False),
+    Column("period_label", Text, nullable=False),
+    Column("statement_date", Date),
+    Column("issued_on", Date),
+    Column("amount_due", Numeric(20, 2), nullable=False),
+    Column("minimum_due", Numeric(20, 2)),
+    Column("threshold_due", Numeric(20, 2), nullable=False),
+    Column("paid", Numeric(20, 2), nullable=False),
+    Column("remaining", Numeric(20, 2), nullable=False),
+    Column("threshold_remaining", Numeric(20, 2), nullable=False),
+    Column("due_date", Date),
+    Column("status", Text, nullable=False),
+    Column("primary_source", Text, nullable=False),
+    Column("manual_mismatch", Numeric(20, 2)),
+    Column(
+        "supersedes_id",
+        Uuid,
+        ForeignKey("finance.obligation.id", deferrable=True, initially="DEFERRED"),
+    ),
+    Column("arrangement_ref", Text),
+    Column("invoice_ref", Text),
+    Column("payments_mismatch", Numeric(20, 2)),
+    UniqueConstraint("payee_id", "kind", "period_label"),
+)
+_tiers(
+    obligation,
+    {
+        "id": P, "payee_id": P, "kind": P, "period_label": P, "statement_date": P,
+        "issued_on": P, "amount_due": R, "minimum_due": R, "threshold_due": R,
+        "paid": R, "remaining": R, "threshold_remaining": R, "due_date": P,
+        "status": P, "primary_source": P, "manual_mismatch": R, "supersedes_id": P,
+        "arrangement_ref": P, "invoice_ref": P, "payments_mismatch": R,
     },
 )  # fmt: skip

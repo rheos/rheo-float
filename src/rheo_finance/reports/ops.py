@@ -184,6 +184,19 @@ def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
         parts.append(
             _plural(discrepancies, "source discrepancy", "source discrepancies")
         )
+    second_bills = sorted(
+        (each.subject or "", each.count) for each in facts[views.DUPLICATE_BILL_MONTH]
+    )
+    if second_bills:
+        where = ", ".join(f"{label} {count}" for label, count in second_bills)
+        parts.append(
+            _plural(
+                sum(count for _, count in second_bills),
+                "duplicate bill month",
+                "duplicate bill months",
+            )
+            + f" ({where})"
+        )
     no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
     if no_data:
         parts.append(

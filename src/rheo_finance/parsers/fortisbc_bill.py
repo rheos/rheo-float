@@ -16,7 +16,8 @@ amount due (``Amount due``) and the due date; every value printed twice must agr
 - The bill gives one CAD ``statement_period``, control ``bill_identity``, over the
   printed billing period, with ``balance_due`` the total amount due and ``due_date``
   the printed due date, and no ledger lines (a bill feeds obligations, not the
-  ledger). The bill date names the filed copy (``filing_date``).
+  ledger). The period keeps the bill date (``bill_date``), the obligation's issue
+  date, which also names the filed copy (``filing_date``).
 - The identity: the previous bill amount plus the payments is the balance forward
   (when printed), and the previous bill amount plus the payments plus the current
   charges is the total amount due. A bill that breaks it is rejected
@@ -133,7 +134,7 @@ def _tied_out(found: dict[str, list[str]], total: Decimal) -> bool | None:
 
 
 def parse(text: str, accounts: AccountLookup) -> ParseResult:
-    _bill_date(text)
+    bill_date = _bill_date(text)
     found = _labelled(text)
     period = _period(found)
     total = _money(_one(found, "Total amount due"))
@@ -158,6 +159,7 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
                 control_kind="bill_identity",
                 balance_due=total,
                 due_date=due,
+                bill_date=bill_date,
                 tied_out=bool(tied_out),
             ),
         ),
@@ -176,7 +178,7 @@ PARSER: Final = register_parser(
         parser_id="fortisbc.bill",
         issuer=ISSUER,
         format="pdf",
-        version="1",
+        version="2",
         parse=parse,
         filing_date=filing_date,
     )

@@ -11,8 +11,8 @@ either way.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   coverage matrix, the pairing graph, the ``txn`` tables, the source discrepancies and
-   the events. The
+   coverage matrix, the pairing graph, the ``txn`` tables, the source discrepancies,
+   the obligations and the events. The
    parse cache (``PARSE_CACHE``: lines, periods, rejected periods and the rejection
    events) is cleared whole with ``reparse``; otherwise stage 1 clears and rewrites a
    document's rows when it parses that document, and the columns stage 3 writes on a
@@ -48,7 +48,9 @@ Order of work, set by what each step reads:
    owner's ``pair`` and ``unpair`` decisions apply first, then the
    mutually unique edges apply, every transfer-like line gets its state, a labelled
    crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
-   transfer's net or conversion's spread becomes a derived fee line.
+   transfer's net or conversion's spread becomes a derived fee line; then stage 14, the
+   obligations (``stage14``), which read the parsed periods and the payees stage 2
+   stored.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -83,6 +85,7 @@ from rheo_finance.derive import (
     stage8,
     stage9,
     stage11,
+    stage14,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -94,6 +97,7 @@ from rheo_finance.storage.schema import (
 from rheo_finance.storage.schema import (
     document_line,
     event,
+    obligation,
     pair_edge,
     rejected_period,
     source_discrepancy,
@@ -107,8 +111,8 @@ RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
-    coverage_table, pair_edge, txn_source, txn, source_discrepancy, document_line,
-    statement_period, rejected_period, event,
+    coverage_table, pair_edge, obligation, txn_source, txn, source_discrepancy,
+    document_line, statement_period, rejected_period, event,
 )  # fmt: skip
 # Of CLEARED, what stage 1 stores per document: kept for documents a derive does not
 # parse again. ``event`` holds only the rejection events of it (``DOCUMENT_REJECTED``).
@@ -238,6 +242,7 @@ def run(
             decided=decided,
         )
         stage11.resolve(uow, decided)
+        stage14.create_obligations(uow)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

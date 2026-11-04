@@ -228,6 +228,8 @@ class ParsedPeriod:
     balance_due: Decimal | None = None
     minimum_due: Decimal | None = None
     due_date: dt.date | None = None
+    # The date a bill prints; None for every other document.
+    bill_date: dt.date | None = None
     # Set by the parser for running_balance, bill_identity and none; a summary period
     # is tied out by the registry's own check.
     tied_out: bool = False

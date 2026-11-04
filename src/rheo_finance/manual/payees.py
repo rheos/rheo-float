@@ -24,7 +24,10 @@ on the row involved:
    ``paid_from`` slug no loaded account has; a slug or label the adopted-path check
    refuses (``path_check.PathCheck``: a run of 8 or more digits that is not a date, or
    a registered identifier), since the report views show both.
-3. **Bill issuers.** Each issuer key whose archive directory holds bills
+3. **Cards.** Each loaded credit card that no payee above holds by its slug is a
+   payee of kind ``account``, with no patterns, so a parsed statement always has its
+   payee.
+4. **Bill issuers.** Each issuer key whose archive directory holds bills
    (``documents.issuers.ISSUER_DIRS`` kind ``bill``) that no payee above holds is a
    ``vendor`` payee of that slug, labelled with it, with no patterns, so a parsed bill
    always has its payee.
@@ -37,7 +40,6 @@ until the peer-money feature defines parties.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Final, Literal, Self
@@ -54,9 +56,11 @@ from rheo_finance.documents import issuers
 from rheo_finance.manual.accounts import (
     ACCOUNTS_FILE,
     CARRIES_IDENTIFIER,
+    CREDIT_CARD,
     Registry,
     Slug,
     Text,
+    matchable,
 )
 from rheo_finance.manual.loader import (
     LoadResult,
@@ -64,21 +68,11 @@ from rheo_finance.manual.loader import (
     duplicate_lines,
     split_list,
 )
-from rheo_finance.path_check import PathCheck
-from rheo_finance.text import normalize_description
+from rheo_finance.text import compared, normalize_description
 
 PAYEES_FILE: Final = "payees.csv"
 
 PayeeKind = Literal["vendor", "person", "account"]
-
-_NOT_WORD: Final = re.compile(r"[\W_]+")
-
-
-def compared(text: str) -> str:
-    """``text`` folded as a party alias is (FR-57): normalized as a description is,
-    then every run of punctuation, underscores and whitespace one space, ends trimmed.
-    Patterns match in this form, and a label or slug meets its row's patterns in it."""
-    return _NOT_WORD.sub(" ", normalize_description(text)).strip()
 
 
 def _normalized(patterns: tuple[str, ...]) -> tuple[str, ...]:
@@ -86,15 +80,12 @@ def _normalized(patterns: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(normalize_description(each) for each in patterns))
 
 
-def _matchable(patterns: tuple[str, ...]) -> tuple[str, ...]:
-    """A row's patterns, each with something left to match once folded."""
-    if not all(compared(each) for each in patterns):
-        raise ValueError("a pattern holds no letter or digit")
-    return _normalized(patterns)
+def _normalized_matchable(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    return _normalized(matchable(patterns))
 
 
 Patterns = Annotated[
-    tuple[Text, ...], BeforeValidator(split_list), AfterValidator(_matchable)
+    tuple[Text, ...], BeforeValidator(split_list), AfterValidator(_normalized_matchable)
 ]
 Slugs = Annotated[tuple[Slug, ...], BeforeValidator(split_list)]
 
@@ -152,7 +143,7 @@ def names_any(patterns: Iterable[str], text: str) -> bool:
 @dataclass(frozen=True)
 class Payees:
     """Every payee, account-backed first, then ``payees.csv`` in file order, then the
-    bill issuers; and every ``payees.csv`` error, sorted."""
+    remaining cards and the bill issuers; and every ``payees.csv`` error, sorted."""
 
     payees: tuple[Payee, ...]
     errors: tuple[RowError, ...]
@@ -202,9 +193,7 @@ def build_payees(result: LoadResult[PayeeRow], registry: Registry) -> Payees:
     bad = duplicate_lines([(line, row.slug) for line, row in rows])
     for line in sorted(bad):
         reject(line, "slug: another row has the same slug")
-    check = PathCheck(
-        ident.identifier for ident in registry.identifiers if ident.kind != "internal"
-    )
+    check = registry.path_check()
     for line, row in rows:
         if row.slug in taken:
             reject(
@@ -237,9 +226,21 @@ def build_payees(result: LoadResult[PayeeRow], registry: Registry) -> Payees:
         if line not in bad
     ]
     taken |= {payee.slug for payee in listed}
+    cards = [
+        Payee(
+            slug=row.slug,
+            label=row.label,
+            kind="account",
+            patterns=(),
+            account=row.slug,
+        )
+        for row in registry.accounts
+        if row.kind == CREDIT_CARD and row.slug not in taken
+    ]
+    taken |= {payee.slug for payee in cards}
     vendors = [
         Payee(slug=key, label=key, kind="vendor", patterns=())
         for key in bill_issuers()
         if key not in taken
     ]
-    return Payees((*backed, *listed, *vendors), tuple(sorted(set(errors))))
+    return Payees((*backed, *listed, *cards, *vendors), tuple(sorted(set(errors))))

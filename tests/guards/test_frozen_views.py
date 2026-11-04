@@ -91,6 +91,9 @@ PINNED = {
     "0020_payee.py": (
         "aa3612c5a2660e033a7535f90f3e43b53f85de3e4c33322c283e152a2be10be4"
     ),
+    "0021_obligation.py": (
+        "8175a4001f58ccbe396b0bb55fe8c81d71830c156576858adb526617fe158a9a"
+    ),
 }
 
 

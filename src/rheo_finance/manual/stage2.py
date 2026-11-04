@@ -295,23 +295,27 @@ def load_payees(uow: UnitOfWork, data_dir: Path, registry: Registry) -> Payees:
 
 
 def load_obligations(
-    uow: UnitOfWork, data_dir: Path, payees: Payees
+    uow: UnitOfWork, data_dir: Path, registry: Registry, payees: Payees
 ) -> ManualObligations:
     """The ``obligations.csv`` rows whose payee is in ``payees``, for stage 14."""
     found = build_obligations(
         load_csv(data_dir / MANUAL_DIR_NAME / OBLIGATIONS_FILE, ObligationRow),
         payees.slugs,
+        registry.path_check(),
     )
     _rewrite_errors(uow, (OBLIGATIONS_FILE,), found.errors)
     return found
 
 
-def load_arrangements(uow: UnitOfWork, data_dir: Path, payees: Payees) -> Arrangements:
+def load_arrangements(
+    uow: UnitOfWork, data_dir: Path, registry: Registry, payees: Payees
+) -> Arrangements:
     """The ``arrangements.csv`` instalments whose payee is in ``payees``, for stage
     14."""
     found = build_arrangements(
         load_csv(data_dir / MANUAL_DIR_NAME / ARRANGEMENTS_FILE, ArrangementRow),
         payees.slugs,
+        registry.path_check(),
     )
     _rewrite_errors(uow, (ARRANGEMENTS_FILE,), found.errors)
     return found

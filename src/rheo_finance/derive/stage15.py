@@ -64,7 +64,10 @@ In order, each notice joining at most one payment:
    ``finance.payments.notice_hold_days`` either side: a ``confirm_only`` payment of its
    own, ``notice_only``, so a bank line that posts late never makes a phantom credit.
    Otherwise it is an ``active`` notice-only payment, so what is owed drops when the
-   email arrives before the statement."""
+   email arrives before the statement. Leftovers are taken oldest first (then by key),
+   and one is held too when an ``active`` notice-only payment of the same payee,
+   currency and amount, from another stream, lies within the hold window: two emails
+   about one payment count once (FR-22)."""
 
 from __future__ import annotations
 
@@ -594,12 +597,26 @@ def _join_notices(
             streams[each.basis].add(notice.stream)
             placed.add(key)
 
+    def told_already(notice: _Notice, payee_id: uuid.UUID, own: list[_Payment]) -> bool:
+        """An earlier leftover notice of another stream stands as this payment."""
+        return any(
+            each.state == ACTIVE
+            and each.payee_id == payee_id
+            and each.currency == notice.currency
+            and abs(each.amount - notice.amount) <= windows.tolerance
+            and abs((each.paid_on - notice.day).days) <= windows.hold_days
+            and each.notices[0].stream != notice.stream
+            for each in own
+        )
+
     own: list[_Payment] = []
-    for notice in notices:
+    for notice in sorted(notices, key=lambda each: (each.day, each.key)):
         if notice.key in placed or notice.key not in payee_of:
             continue
         payee_id = payee_of[notice.key]
-        held = near(notice, payee_id, windows.hold_days)
+        held = near(notice, payee_id, windows.hold_days) or told_already(
+            notice, payee_id, own
+        )
         own.append(
             _Payment(
                 payee_id=payee_id,

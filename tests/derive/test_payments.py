@@ -684,6 +684,40 @@ def test_a_notice_with_no_bank_line_is_an_active_payment_of_its_own(
     assert seen(notices) == [notice_only(JUNE, "active")]
 
 
+@pytest.mark.parametrize(
+    ("after", "state"),
+    [(0, "confirm_only"), (31, "confirm_only"), (32, "active")],
+    ids=["same day", "31 after", "32 after"],
+)
+def test_a_second_streams_notice_of_a_notice_only_payment_is_held(
+    notices: Ledger, after: int, state: str
+) -> None:
+    """Two emails about one payment and no bank line yet: it counts once."""
+    notice(notices, JUNE, sender="sender-b")
+    day = JUNE + dt.timedelta(days=after)
+    notice(notices, day, kind="etransfer")
+
+    notices.derive()
+
+    assert seen(notices) == sorted(
+        [notice_only(JUNE, "active"), notice_only(day, state)]
+    )
+
+
+def test_a_second_notice_of_the_same_stream_is_a_second_payment(
+    notices: Ledger,
+) -> None:
+    notice(notices, JUNE)
+    notice(notices, D(2025, 6, 20))
+
+    notices.derive()
+
+    assert seen(notices) == [
+        notice_only(JUNE, "active"),
+        notice_only(D(2025, 6, 20), "active"),
+    ]
+
+
 def test_when_the_statement_loads_its_line_joins_the_notice_and_the_count_stays_one(
     notices: Ledger,
 ) -> None:

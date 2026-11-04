@@ -362,21 +362,30 @@ def test_an_old_bills_window_ends_at_the_next_bill_plus_early_days(
 
 
 @pytest.mark.parametrize(
-    ("issued", "to"),
-    [(D(2025, 6, 1), "confirm"), (D(2025, 7, 1), "no_target")],
-    ids=["with a bill to pay", "with none"],
+    ("issued", "paid_before", "to"),
+    [
+        (D(2025, 6, 1), False, "confirm"),
+        (D(2025, 7, 1), False, "no_target"),
+        (D(2025, 6, 1), True, "no_target"),
+    ],
+    ids=["with a bill to pay", "with none issued", "with the bill paid already"],
 )
 def test_a_payment_in_another_currency_pays_nothing(
-    paying: Ledger, issued: dt.date, to: str
+    paying: Ledger, issued: dt.date, paid_before: bool, to: str
 ) -> None:
-    """Every obligation is in CAD: with one to pay, the owner says what it was."""
+    """Every obligation is in CAD: with one to pay, the owner says what it was; with
+    nothing to pay there is nothing to ask."""
     bills(paying, ("isp", "200.00", issued, issued + dt.timedelta(days=19)))
+    if paid_before:
+        bank(paying, (issued, ISP, Decimal("-200.00")))
     notice(paying, JUNE, currency="USD")
 
     paying.derive()
 
-    assert applied(paying) == [Applied(to, Decimal("200.00"), True)]
-    assert {row.paid for row in owed(paying).values()} == {0}
+    assert Applied(to, Decimal("200.00"), True) in applied(paying)
+    assert {row.paid for row in owed(paying).values()} == {
+        Decimal("200.00") if paid_before else 0
+    }
 
 
 def twelve_instalments(ledger: Ledger, payee_slug: str = "isp") -> None:
@@ -680,6 +689,25 @@ def test_a_decision_applies_no_payment_in_another_currency(paying: Ledger) -> No
     paying.derive()
 
     assert applied(paying) == [Applied("confirm", Decimal("200.00"), True)]
+    assert figures(paying, "bill-2025-06")[3] == "open"
+
+
+def test_an_unapply_clears_a_payment_in_another_currency(paying: Ledger) -> None:
+    """The confirm credit is a question the owner can answer: the unapply takes the
+    payment off the rules, although an apply on it is refused."""
+    bills(paying, ("isp", "200.00", D(2025, 6, 1), D(2025, 6, 20)))
+    filed = notice(paying, JUNE, currency="USD")
+    paying.derive()
+    assert applied(paying) == [Applied("confirm", Decimal("200.00"), True)]
+
+    decide(
+        paying,
+        "payment_unapply",
+        target_ref=f"finance.payment_notice:{notice_key(paying, filed)}",
+    )
+    paying.derive()
+
+    assert applied(paying) == [Applied("payment_unapply", Decimal("200.00"), False)]
     assert figures(paying, "bill-2025-06")[3] == "open"
 
 
@@ -987,8 +1015,17 @@ def test_a_payment_the_next_statement_does_not_print_is_a_payments_mismatch(
     assert owed(paying)[N].payments_mismatch is None
 
 
-def test_a_card_payment_in_another_currency_applies_nothing(paying: Ledger) -> None:
+@pytest.mark.parametrize(
+    ("paid_before", "to"),
+    [(False, "confirm"), (True, "no_target")],
+    ids=["with the statement to pay", "with it paid already"],
+)
+def test_a_card_payment_in_another_currency_applies_nothing(
+    paying: Ledger, paid_before: bool, to: str
+) -> None:
     statement_n(paying)
+    if paid_before:
+        card_export(paying, paid_card(D(2025, 3, 4), "800.00"))
     notice(
         paying,
         D(2025, 3, 10),
@@ -999,8 +1036,8 @@ def test_a_card_payment_in_another_currency_applies_nothing(paying: Ledger) -> N
 
     paying.derive()
 
-    assert applied(paying) == [Applied("confirm", Decimal("25.00"), True)]
-    assert figures(paying, N)[0] == 0
+    assert Applied(to, Decimal("25.00"), True) in applied(paying)
+    assert figures(paying, N)[0] == (Decimal("800.00") if paid_before else 0)
 
 
 def test_a_payment_left_to_the_owner_is_not_counted_as_applied_for_fr_21(

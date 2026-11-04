@@ -21,7 +21,9 @@ none bars every older decision of that payment. A payment with an apply in force
 nothing from the rules, and what is left over is ``excess``. One with only an unapply in
 force applies nothing: the whole of it is a credit of reason ``payment_unapply``, so
 undoing an application restores the remaining it had before. A decision naming an
-obligation that does not exist, or a payment that is not active, changes nothing.
+obligation that does not exist, or a payment that is not active, changes nothing, and
+neither does a ``payment_apply`` on a payment in another currency (every obligation is
+in CAD); its ``payment_unapply`` still takes it off the rules.
 
 **Cards, with no early_days slack.** A payment to a card's payee belongs to the card's
 statement whose ``statement_date`` is the latest on or before ``paid_on``, whatever its
@@ -32,8 +34,9 @@ paid. More than the remaining is ``excess``, never carried onto the next stateme
 is a partial payment, which applies when ``card_statement`` is in
 ``finance.payments.partial_auto_kinds`` and is a ``confirm`` credit otherwise. A card
 payment dated before the card's earliest statement is ``no_target``; one in a currency
-other than CAD, with a statement to pay, is a ``confirm`` credit. A superseded
-statement keeps what was applied to it and lends nothing to the newer one.
+other than CAD is a ``confirm`` credit when its statement has something left, and
+``no_target`` when not. A superseded statement keeps what was applied to it and lends
+nothing to the newer one.
 
 **Every other kind.** An obligation is a candidate when its ``issued_on`` is on or
 before ``paid_on`` plus ``finance.payments.early_days`` (a null ``issued_on`` is no
@@ -60,8 +63,8 @@ already, or out of its window, or no candidate at all) it is ``no_target``, with
 of a payment above what its target had left. So a credit never rolls forward onto an
 obligation issued after it: it leaves that state by a decision or by a target that
 passes the bound loading later. Only a CAD payment pays an obligation, since every
-obligation is in CAD: another currency's payment with a candidate is a ``confirm``
-credit, by rule or by decision.
+obligation is in CAD: another currency's payment is a ``confirm`` credit when a live
+candidate has something to pay, and ``no_target`` when none has.
 
 **Tolerance.** A payment within ``match_tolerance`` of what is left settles it: a
 remaining (or threshold remaining) at or under the tolerance once something was paid is
@@ -520,6 +523,14 @@ class _Applier:
         else:
             self.rows.add(paid, paid.amount, reason=CONFIRM)
 
+    def _foreign(self, paid: _Payment, *, owing: bool, bound: dt.date) -> None:
+        """A payment in another currency: a ``confirm`` credit when its target is
+        ``owing`` something, else ``no_target``."""
+        if owing:
+            self.rows.add(paid, paid.amount, reason=CONFIRM)
+        else:
+            self.rows.add(paid, paid.amount, reason=NO_TARGET, bound_on=bound)
+
     def _card(self, paid: _Payment, rules: Rules) -> None:
         statements = [
             each
@@ -532,10 +543,10 @@ class _Applier:
         if not statements:
             self.rows.add(paid, paid.amount, reason=NO_TARGET, bound_on=paid.paid_on)
             return
-        if paid.currency != CURRENCY:
-            self.rows.add(paid, paid.amount, reason=CONFIRM)
-            return
         target = max(statements, key=lambda each: (each.statement_date, each.age))
+        if paid.currency != CURRENCY:
+            self._foreign(paid, owing=target.remaining > 0, bound=paid.paid_on)
+            return
         self._fill(paid, target, rules, partial=CARD_STATEMENT in rules.partial_kinds)
 
     def _other(self, paid: _Payment, rules: Rules) -> None:
@@ -549,14 +560,14 @@ class _Applier:
         if not candidates:
             self.rows.add(paid, paid.amount, reason=NO_TARGET, bound_on=bound)
             return
-        if paid.currency != CURRENCY:
-            self.rows.add(paid, paid.amount, reason=CONFIRM)
-            return
         live = [
             each
             for each in candidates
             if each.status(rules.tolerance) in (OPEN, PARTIAL)
         ]
+        if paid.currency != CURRENCY:
+            self._foreign(paid, owing=bool(live), bound=bound)
+            return
         if live:
             self._live(paid, live, rules)
             return
@@ -692,11 +703,13 @@ def apply_payments(uow: UnitOfWork, rules: Rules) -> int:
     payments = _payments(uow)
     decided = _decisions(uow, obligations.keys())
     applier = _Applier(obligations, _card_payees(uow))
-    # Only a CAD payment pays an obligation, by decision or by rule.
+    # Only a CAD payment pays an obligation: an apply on another currency's payment
+    # changes nothing, while its unapply still takes it off the rules.
     decided = {
-        each.id: decided[each.id]
+        each.id: found
         for each in payments
-        if each.id in decided and each.currency == CURRENCY
+        if (found := decided.get(each.id)) is not None
+        and (each.currency == CURRENCY or not found.applies)
     }
     for paid in payments:
         found = decided.get(paid.id)

@@ -29,7 +29,7 @@ from rheo_finance.manual.obligations import OBLIGATIONS_FILE
 from rheo_finance.manual.payees import PAYEES_FILE
 from rheo_finance.reports import ops as report_ops
 from rheo_finance.reports.ops import StatusIn
-from rheo_finance.reports.views import ARRANGEMENT_UNSETTLED
+from rheo_finance.reports.views import ARRANGEMENT_UNSETTLED, ARRANGEMENT_UNSETTLED_BY
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage.schema import (
     event,
@@ -1224,7 +1224,7 @@ def test_a_finish_that_moves_a_payment_off_the_plan_keeps_it_active_and_says_so(
     ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
     ledger.derive()
     assert owed(ledger)["arrears-2026-05"].status == "open"
-    decide(
+    moved = decide(
         ledger,
         "payment_apply",
         target_ref=line_ref(ledger, D(2026, 4, 25)),
@@ -1251,11 +1251,21 @@ def test_a_finish_that_moves_a_payment_off_the_plan_keeps_it_active_and_says_so(
         "inst-plan-2",
     }
     assert facts(ledger, ARRANGEMENT_UNSETTLED) == {"plan": 1}
+    # The decision that would not settle is named, on the instalment its payment
+    # paid, and nothing about it carries an amount.
+    assert {
+        label: row.unsettled_decision_id
+        for label, row in found.items()
+        if row.unsettled_decision_id is not None
+    } == {"inst-plan-2": moved}
+    assert facts(ledger, ARRANGEMENT_UNSETTLED_BY) == {
+        f"plan finance.decision:{moved}": 1
+    }
     out = report_ops.status(ledger.ctx, ledger.uow, StatusIn())
     lines = {each.line_no: each.text for each in out.lines}
     assert (
-        "1 paid-up arrangement kept active, its finish did not settle: plan"
-        in (lines[9])
+        "1 paid-up arrangement kept active, its finish did not settle:"
+        f" plan (by finance.decision:{moved})" in (lines[9])
     )
     rows = sorted(repr(tuple(row)) for row in ledger.conn.execute(select(obligation)))
     ledger.derive()

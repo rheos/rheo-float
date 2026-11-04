@@ -112,6 +112,9 @@ PINNED = {
     "0027_arrangement_unsettled.py": (
         "834a7b77578bb6e12c17590848776727911d59d44bc6ac09024deb93fbebdbc9"
     ),
+    "0028_unsettled_decision.py": (
+        "b4ccba5141a76a76248282134aa01437cb834d7b1e05a249e158925273d17592"
+    ),
 }
 
 

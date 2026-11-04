@@ -28,6 +28,8 @@ row per fact as ``(fact, subject, count, at)``:
 - ``arrangement_unsettled``: one row per arrangement, by slug, whose instalments are
   all paid but which the derive kept active because finishing it would not settle
   (``derive.stage15_apply.mark_unsettled``);
+- ``arrangement_unsettled_by``: per such arrangement, each ``payment_apply`` decision
+  that moved a payment off it, as ``<slug> finance.decision:<id>`` (migration 0028);
 - ``invoice_decision_superseded``: per decision kind, the invoice decisions a matching
   payment took over from (``derive.evidence``);
 - ``invoice_decision_refused``: per decision kind, the invoice decisions stage 3 could
@@ -95,11 +97,14 @@ MANUAL_MISMATCH: Final = "manual_mismatch"
 STATEMENT_CONFLICT: Final = "statement_conflict"
 TYPED_BILL_UNJOINED: Final = "typed_bill_unjoined"
 ARRANGEMENT_UNSETTLED: Final = "arrangement_unsettled"
+ARRANGEMENT_UNSETTLED_BY: Final = "arrangement_unsettled_by"
 INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
 INVOICE_DECISION_REFUSED: Final = "invoice_decision_refused"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
+# How a decision is named (``storage.refs.format_ref``), before its id.
+DECISION_REF: Final = "finance.decision"
 # ``bill-YYYY-MM-<n>``, not the plain ``bill-YYYY-MM``.
 SUFFIXED_BILL: Final = "^bill-[0-9]{4}-[0-9]{2}-"
 
@@ -203,6 +208,18 @@ def report_status_select() -> Select[tuple[object, ...]]:
         )
         .where(obligation.c.arrangement_unsettled.is_(True))
         .group_by(obligation.c.arrangement_ref),
+        select(
+            _fact(ARRANGEMENT_UNSETTLED_BY),
+            func.concat(
+                obligation.c.arrangement_ref,
+                literal(f" {DECISION_REF}:", Text),
+                obligation.c.unsettled_decision_id,
+            ).label("subject"),
+            _one(),
+            _no_time(),
+        )
+        .where(obligation.c.unsettled_decision_id.is_not(None))
+        .group_by(obligation.c.arrangement_ref, obligation.c.unsettled_decision_id),
         select(
             _fact(INVOICE_DECISION_SUPERSEDED),
             decision.c.kind.label("subject"),

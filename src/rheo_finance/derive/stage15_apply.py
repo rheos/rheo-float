@@ -90,7 +90,8 @@ reaches a bill that finishing ungoverns, and the rules alone settle in one round
 finished moves the payment off it, and then no finished set holds. ``settled`` then
 keeps the arrangements every round finished on one day (the rest stay active, their
 bills governed, so nothing is owed twice) and ``mark_unsettled`` flags the instalments
-of the rest, which status line 9 names (``arrangement_unsettled``).
+of the rest, which status line 9 names (``arrangement_unsettled``), each instalment
+with the decision that moved its payment off it (``unsettled_decision_id``).
 
 **Events.** Each automatic application to an obligation registers one
 ``finance.payment.detected`` (``record_detected``): the payment, its payee and the
@@ -806,8 +807,49 @@ def settled(rounds: Sequence[Mapping[str, dt.date]]) -> dict[str, dt.date]:
     }
 
 
+def _unsettling(uow: UnitOfWork, slugs: Collection[str]) -> dict[uuid.UUID, uuid.UUID]:
+    """Per instalment of the arrangements named, the newest unreversed
+    ``payment_apply`` decision on the payment that paid it whose obligation is not
+    there now: with the arrangement kept active, the row that decision names (an
+    arrears row of the finished arrangement) is not made, so the rules paid the
+    instalment instead, and that decision is what would not settle."""
+    paid_by: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
+    for row in uow.execute(
+        select(payment_application.c.payment_id, obligation.c.id)
+        .join(obligation, obligation.c.id == payment_application.c.obligation_id)
+        .where(
+            obligation.c.kind == INSTALMENT,
+            obligation.c.arrangement_ref.in_(list(slugs)),
+        )
+    ):
+        paid_by[row.payment_id].append(row.id)
+    if not paid_by:
+        return {}
+    rows = uow.execute(
+        select(decision.c.id, decision.c.target_ref, decision.c.obligation_ref)
+        .where(
+            decision.c.kind == DecisionKind.PAYMENT_APPLY.value,
+            decision.c.obligation_ref.is_not(None),
+            ~reversed_clause(decision),
+        )
+        .order_by(decision.c.decided_at.desc(), decision.c.id.desc())
+    ).all()
+    of_ref = _payment_of_ref(uow, {row.target_ref for row in rows})
+    present = set(uow.scalars(select(obligation.c.id)))
+    found: dict[uuid.UUID, uuid.UUID] = {}
+    for row in rows:
+        named = _obligation_of_ref(row.obligation_ref)
+        paid = of_ref.get(row.target_ref)
+        if named is None or named in present or paid is None:
+            continue
+        for instalment in paid_by.get(paid, ()):
+            found.setdefault(instalment, row.id)
+    return found
+
+
 def mark_unsettled(uow: UnitOfWork, slugs: Collection[str]) -> int:
-    """Flag the instalments of the arrangements named, for status line 9; how many."""
+    """Flag the instalments of the arrangements named, for status line 9, each with
+    the decision that would not let it settle when one is found; how many."""
     if not slugs:
         return 0
     result = uow.execute(
@@ -818,6 +860,14 @@ def mark_unsettled(uow: UnitOfWork, slugs: Collection[str]) -> int:
         )
         .values(arrangement_unsettled=True)
     )
+    named = _unsettling(uow, slugs)
+    if named:
+        uow.execute(
+            update(obligation)
+            .where(obligation.c.id == bindparam("b_id"))
+            .values(unsettled_decision_id=bindparam("b_decision")),
+            [{"b_id": key, "b_decision": value} for key, value in named.items()],
+        )
     return result.rowcount
 
 

@@ -25,7 +25,8 @@ with later prompts, so a gap in the numbers is expected.
    ``$FINANCE_DATA_DIR/settings.toml`` as the gate reads it;
 9. data checks, only when one applies: source discrepancies, the obligation checks
    (``reports.views``), paid-up arrangements the derive kept active because finishing
-   them would not settle (by slug), accounts with no data, and archive files skipped
+   them would not settle (by slug, with the ``payment_apply`` decision that moved a
+   payment off each, as its ref), accounts with no data, and archive files skipped
    because their name carries an identifier (by directory; other skip reasons are not
    fixed by a rename and are not counted here);
 10. intake, only when it applies: monitor-pattern files waiting in Downloads (the
@@ -229,10 +230,18 @@ def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
         each.subject or "" for each in facts[views.ARRANGEMENT_UNSETTLED]
     )
     if unsettled:
+        # ``<slug> <decision ref>``: a slug holds no space.
+        by: dict[str, list[str]] = defaultdict(list)
+        for each in facts[views.ARRANGEMENT_UNSETTLED_BY]:
+            slug, _, ref = (each.subject or "").partition(" ")
+            by[slug].append(ref)
         parts.append(
             _plural(len(unsettled), "paid-up arrangement", "paid-up arrangements")
             + " kept active, its finish did not settle: "
-            + ", ".join(unsettled)
+            + ", ".join(
+                slug + (f" (by {', '.join(sorted(by[slug]))})" if by[slug] else "")
+                for slug in unsettled
+            )
         )
     no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
     if no_data:

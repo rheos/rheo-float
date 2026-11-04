@@ -18,9 +18,10 @@ Two different parsed statements of one card with one closing date have one natur
 so they are one obligation: the last in path order.
 
 **The payee.** The payee standing for the account (``payee.account_id``), else the
-payee named by the account's slug for a card or the issuer's slug for a bill. Stage 2
-makes both of those exist (``manual.payees``), so a parse with no payee fails the derive
-rather than dropping what is owed.
+payee named by the account's slug for a statement or the issuer's slug for a bill. Stage
+2 makes a card's and an issuer's exist (``manual.payees``). A statement that states an
+amount owed on an account not registered as a card has none: ``NoPayee`` fails the
+derive rather than dropping what is owed.
 
 **Supersession (FR-21).** Per (payee, kind), in the order above, each newer row names
 the one before it in ``supersedes_id`` and the one before it is ``superseded``. A
@@ -49,7 +50,6 @@ from sqlalchemy import Row, insert, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive.stage4 import cents
-from rheo_finance.manual.accounts import CREDIT_CARD
 from rheo_finance.manual.obligations import bill_period
 from rheo_finance.manual.stage2 import REGISTRY_DATE
 from rheo_finance.storage.ids import derived_id
@@ -71,6 +71,10 @@ CURRENCY: Final = "CAD"
 ZERO: Final = Decimal("0.00")
 
 _PayeeOf = Callable[[Row[tuple[object, ...]], str], uuid.UUID]
+
+
+class NoPayee(LookupError):
+    """A parsed document states an amount owed and nothing names who it is owed to."""
 
 
 def obligation_id(
@@ -118,7 +122,6 @@ def _periods(uow: UnitOfWork) -> list[Row[tuple[object, ...]]]:
                 document.c.kind,
                 document.c.issuer,
                 account.c.slug.label("account_slug"),
-                account.c.kind.label("account_kind"),
             )
             .select_from(
                 statement_period.join(document, sp.document_id == document.c.id).join(
@@ -253,14 +256,17 @@ def create_obligations(uow: UnitOfWork) -> int:
     by_account, by_slug = _payees(uow)
 
     def payee_of(row: Row[tuple[object, ...]], slug: str) -> uuid.UUID:
-        return by_account.get(row.account_id) or by_slug[slug]
+        found = by_account.get(row.account_id) or by_slug.get(slug)
+        if found is None:
+            raise NoPayee(
+                f"account {row.account_slug}: a parsed {row.kind} states an amount"
+                " owed and no payee has this slug; register the account as a"
+                " credit_card, or add a payee of that slug"
+            )
+        return found
 
     periods = _periods(uow)
-    cards = [
-        row
-        for row in periods
-        if row.account_kind == CREDIT_CARD and row.kind == "statement"
-    ]
+    cards = [row for row in periods if row.kind == "statement"]
     bills = [row for row in periods if row.kind == "bill"]
     rows = _chained([*_card_drafts(cards, payee_of), *_bill_drafts(bills, payee_of)])
     if rows:

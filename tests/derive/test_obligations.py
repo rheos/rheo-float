@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import Row, select
 
-from rheo_finance.derive.stage14 import obligation_id
+from rheo_finance.derive.stage14 import NoPayee, obligation_id
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.payees import PAYEES_FILE
 from rheo_finance.reports.views import DUPLICATE_BILL_MONTH
@@ -461,6 +461,31 @@ def test_a_bill_that_prints_no_total_makes_no_obligation(ledger: Ledger) -> None
 
 
 # --- the payee and the key ------------------------------------------------------------
+
+
+def test_a_statement_on_an_account_not_registered_as_a_card_fails_the_derive(
+    ledger: Ledger,
+) -> None:
+    """Dropping it would hide what the statement says is owed."""
+    accounts(ledger, ("visa", "Vancity", "chequing", "999000009991", ""))
+    ledger.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
+
+    with pytest.raises(NoPayee, match="account visa"):
+        ledger.derive()
+
+
+def test_a_payee_row_gives_a_statement_on_a_misregistered_card_its_payee(
+    ledger: Ledger,
+) -> None:
+    accounts(ledger, ("visa", "Vancity", "chequing", "999000009991", ""))
+    ledger.manual(PAYEES_FILE, "visa,My card,vendor,,,")
+    ledger.file(VISA_STATEMENT, fixture("vancity_visa_statement.txt"))
+    ledger.derive()
+
+    (row,) = rows(ledger)
+
+    assert row.kind == "card_statement"
+    assert row.payee_id == payee_id(ledger, "visa")
 
 
 def test_a_card_with_patterns_is_owed_to_its_account_backed_payee(

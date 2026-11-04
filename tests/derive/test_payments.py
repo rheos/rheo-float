@@ -1073,6 +1073,42 @@ def test_evidence_names_exactly_one_thing(notices: Ledger, both: bool) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("values", "stored"),
+    [
+        ({"reason": "payment_unapply"}, True),
+        ({"reason": "confirm"}, True),
+        ({"reason": "no_target", "bound_on": JUNE}, True),
+        ({"reason": "no_target"}, False),
+        ({"reason": "excess", "bound_on": JUNE}, False),
+        ({"reason": "rolled_forward"}, False),
+    ],
+    ids=["unapplied", "confirm", "no target", "no bound", "bound on excess", "other"],
+)
+def test_an_unapplied_credit_names_an_honest_reason(
+    notices: Ledger, values: dict[str, object], stored: bool
+) -> None:
+    bank(notices, (JUNE, ISP, BANK))
+    notices.derive()
+    row = {
+        "id": uuid.uuid4(),
+        "payment_id": notices.conn.scalar(select(payment.c.id)),
+        "amount": Decimal("0.125"),
+        "auto": False,
+        **values,
+    }
+    if stored:
+        notices.conn.execute(insert(payment_application).values(**row))
+        assert notices.conn.scalar(
+            select(payment_application.c.amount).where(
+                payment_application.c.id == row["id"]
+            )
+        ) == Decimal("0.125")
+        return
+    with pytest.raises(IntegrityError, match="check"), notices.conn.begin_nested():
+        notices.conn.execute(insert(payment_application).values(**row))
+
+
 # --- an invoice debt ------------------------------------------------------------------
 
 

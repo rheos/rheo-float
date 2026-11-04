@@ -5,8 +5,12 @@ its money line or from its notice, and ``payment_evidence`` names what it was se
 txn or a notice line evidences one payment, which the unique constraints hold.
 ``drop_evidence_id`` has no foreign key yet: its table arrives with the drop records.
 
-``payment_application`` is what a payment paid. A null obligation is an unapplied
-credit, and only an unapplied credit has a ``reason``.
+``payment_application`` is what a payment paid, in the payment's currency and to its
+precision, so an active payment's rows add up to its amount. A null obligation is an
+unapplied credit, and only an unapplied credit has a ``reason``: ``no_target`` (no
+obligation issued by ``bound_on``, which only it carries), ``excess`` (more than the
+obligation's remaining), ``confirm`` (the rules leave it to the owner) or
+``payment_unapply`` (the owner's decision took it off).
 """
 
 from alembic import op
@@ -47,11 +51,15 @@ STATEMENTS = (
         payment_id uuid NOT NULL REFERENCES finance.payment (id),
         obligation_id uuid REFERENCES finance.obligation (id)
             DEFERRABLE INITIALLY DEFERRED,
-        amount numeric(20,2) NOT NULL CHECK (amount > 0),
-        reason text CHECK (reason IN ('no_target', 'excess')),
+        amount numeric NOT NULL CHECK (amount > 0),
+        reason text CHECK (
+            reason IN ('no_target', 'excess', 'confirm', 'payment_unapply')
+        ),
+        bound_on date,
         basis_ref text CHECK (basis_ref <> ''),
         auto boolean NOT NULL,
-        CHECK ((obligation_id IS NULL) = (reason IS NOT NULL))
+        CHECK ((obligation_id IS NULL) = (reason IS NOT NULL)),
+        CHECK ((reason IS NOT DISTINCT FROM 'no_target') = (bound_on IS NOT NULL))
     )
     """,
 )

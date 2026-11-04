@@ -107,7 +107,7 @@ PINNED = {
         "fc3d9f29792605e6252503d8ce1b0df6b29b00fbc76003c5b1512c1bed2814ad"
     ),
     "0026_stage15.py": (
-        "7900ecf36ec288fef9d81ee4429b3f640bf6d73f78557870763e5b97e0d675cc"
+        "a4a56bfd754dc3a19d24b5871f91d9c470a420a2595447ffe2853ebe29f05a8b"
     ),
 }
 

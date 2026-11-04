@@ -858,8 +858,11 @@ payment_application = Table(
         Uuid,
         ForeignKey("finance.obligation.id", deferrable=True, initially="DEFERRED"),
     ),
-    Column("amount", Numeric(20, 2), nullable=False),
+    # In the payment's currency, at its precision: a payment's rows add up to it.
+    Column("amount", Numeric, nullable=False),
     Column("reason", Text),
+    # The latest issue date a target could have had, for reason ``no_target`` only.
+    Column("bound_on", Date),
     Column("basis_ref", Text),
     Column("auto", Boolean, nullable=False),
 )
@@ -867,6 +870,6 @@ _tiers(
     payment_application,
     {
         "id": P, "payment_id": P, "obligation_id": P, "amount": R, "reason": P,
-        "basis_ref": P, "auto": P,
+        "bound_on": P, "basis_ref": P, "auto": P,
     },
 )  # fmt: skip

@@ -34,9 +34,9 @@ paid. More than the remaining is ``excess``, never carried onto the next stateme
 is a partial payment, which applies when ``card_statement`` is in
 ``finance.payments.partial_auto_kinds`` and is a ``confirm`` credit otherwise. A card
 payment dated before the card's earliest statement is ``no_target``; one in a currency
-other than CAD is a ``confirm`` credit when its statement has something left, and
-``no_target`` when not. A superseded statement keeps what was applied to it and lends
-nothing to the newer one.
+other than CAD is a ``confirm`` credit when its statement has something left past
+the tolerance (below), and ``no_target`` when not. A superseded statement keeps what
+was applied to it and lends nothing to the newer one.
 
 **Every other kind.** An obligation is a candidate when its ``issued_on`` is on or
 before ``paid_on`` plus ``finance.payments.early_days`` (a null ``issued_on`` is no
@@ -211,10 +211,14 @@ class _Obligation:
     def remaining(self) -> Decimal:
         return max(self.amount_due - self.paid, ZERO)
 
+    def owes(self, tolerance: Decimal) -> bool:
+        """Whether something is left once ``tolerance`` settles what was paid."""
+        return not (self.remaining == 0 or (self.paid and self.remaining <= tolerance))
+
     def status(self, tolerance: Decimal) -> str:
         if self.base_status in KEPT:
             return self.base_status
-        if self.remaining == 0 or (self.paid and self.remaining <= tolerance):
+        if not self.owes(tolerance):
             return PAID
         return PARTIAL if self.paid else OPEN
 
@@ -545,7 +549,7 @@ class _Applier:
             return
         target = max(statements, key=lambda each: (each.statement_date, each.age))
         if paid.currency != CURRENCY:
-            self._foreign(paid, owing=target.remaining > 0, bound=paid.paid_on)
+            self._foreign(paid, owing=target.owes(rules.tolerance), bound=paid.paid_on)
             return
         self._fill(paid, target, rules, partial=CARD_STATEMENT in rules.partial_kinds)
 

@@ -1017,15 +1017,21 @@ def test_a_payment_the_next_statement_does_not_print_is_a_payments_mismatch(
 
 @pytest.mark.parametrize(
     ("paid_before", "to"),
-    [(False, "confirm"), (True, "no_target")],
-    ids=["with the statement to pay", "with it paid already"],
+    [(None, "confirm"), ("800.00", "no_target"), ("799.99", "no_target")],
+    ids=[
+        "with the statement to pay",
+        "with it paid already",
+        "with it paid within the tolerance",
+    ],
 )
 def test_a_card_payment_in_another_currency_applies_nothing(
-    paying: Ledger, paid_before: bool, to: str
+    paying: Ledger, paid_before: str | None, to: str
 ) -> None:
+    """A cent short of the balance is paid, as for every other kind: nothing is owed
+    for the other currency's payment to wait on."""
     statement_n(paying)
-    if paid_before:
-        card_export(paying, paid_card(D(2025, 3, 4), "800.00"))
+    if paid_before is not None:
+        card_export(paying, paid_card(D(2025, 3, 4), paid_before))
     notice(
         paying,
         D(2025, 3, 10),
@@ -1037,7 +1043,7 @@ def test_a_card_payment_in_another_currency_applies_nothing(
     paying.derive()
 
     assert Applied(to, Decimal("25.00"), True) in applied(paying)
-    assert figures(paying, N)[0] == (Decimal("800.00") if paid_before else 0)
+    assert figures(paying, N)[0] == Decimal(paid_before or 0)
 
 
 def test_a_payment_left_to_the_owner_is_not_counted_as_applied_for_fr_21(

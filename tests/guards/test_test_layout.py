@@ -10,7 +10,8 @@ pytest 9 parses a conftest's fixtures once, for the first collector of its direc
 and a command line that goes into a directory, out and back in
 (``tests/derive/a.py tests/b.py tests/derive/c.py``) makes a second collector, which
 never gets them: ``c.py`` reports "fixture not found". So every fixture lives in
-``tests/conftest.py``, and a directory's own ``conftest.py`` holds helpers only.
+``tests/conftest.py``, what it builds from lives in a ``support`` module, and a
+directory's own ``conftest.py`` defines no fixture.
 
 The static scan parses every ``tests/**/*.py``, collects the functions each decorates
 with ``pytest.fixture``, and checks every import of a module under ``tests/``: relative

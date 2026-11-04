@@ -7,7 +7,8 @@ line that goes into a directory, out of it and back in makes a second one, whose
 then report the fixture as not found (``tests/guards/test_test_layout.py``). So
 ``ledger`` and the fixtures built on it (``derive.support`` and
 ``derive.crypto_support`` hold what they build), ``valet_stub`` and ``fake_claude`` are
-here, and a directory's own ``conftest.py`` holds helpers only.
+here (``rates.support`` and ``model.support`` hold theirs), and a directory's own
+``conftest.py`` defines no fixture.
 
 Also the sink fixtures: a settings file under a temporary ``$FINANCE_DATA_DIR``, a
 direct approval record, and a local stub HTTP server; and ``scratch_database``, a
@@ -65,8 +66,8 @@ from derive.support import (
     THIRD,
     Ledger,
 )
-from model.conftest import SCRIPT, FakeClaude
-from rates.conftest import stub_client
+from model.support import SCRIPT, FakeClaude
+from rates.support import stub_client
 from rheo_finance import db, operations, settings
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import (
@@ -713,7 +714,7 @@ def valet_stub(stub_server: StubServer, monkeypatch: pytest.MonkeyPatch) -> Stub
 def fake_claude(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[FakeClaude]:
-    """The fake ``claude`` (``model.conftest``), alone on ``PATH``."""
+    """The fake ``claude`` (``model.support``), alone on ``PATH``."""
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
     script = bin_dir / "claude"

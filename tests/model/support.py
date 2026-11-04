@@ -6,7 +6,7 @@ tripwire in ``tests/conftest.py`` shadows it everywhere else). Each run appends 
 it saw (its argv, working directory, the directory's entries, stdin and its
 environment) to a record file beside it, then prints the reply the test set and
 exits with its code. The ``fake_claude`` fixture that installs it is in
-``tests/conftest.py``, with every other fixture.
+``tests/conftest.py``, with every other fixture, and imports from here.
 """
 
 from __future__ import annotations

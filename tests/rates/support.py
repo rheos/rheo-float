@@ -1,6 +1,6 @@
 """Helpers of the rates tests: Valet's reply shape and a client that allows http. The
 ``valet_stub`` fixture that uses them is in ``tests/conftest.py``, with every other
-fixture.
+fixture, and imports from here.
 """
 
 from __future__ import annotations

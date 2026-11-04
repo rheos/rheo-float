@@ -31,7 +31,7 @@ from rheo_finance.sinks.ops import Preview
 from rheo_finance.sinks.spec import spec_digest
 from rheo_finance.storage.schema import rate, rate_coverage, txn
 
-from .conftest import valet_reply
+from .support import valet_reply
 
 if TYPE_CHECKING:
     from conftest import StubServer

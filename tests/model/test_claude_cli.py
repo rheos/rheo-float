@@ -27,7 +27,7 @@ from rheo_finance.model.client import ModelReplyInvalid, ModelUnavailable
 from rheo_finance.model.guard import PromptGuard, PromptRefused
 from rheo_finance.settings import default_settings, parse_settings
 
-from .conftest import FakeClaude, Verdict, write_manual
+from .support import FakeClaude, Verdict, write_manual
 
 SYSTEM = "Classify the merchant record."
 TEXT = "merchant sample grocer, -45.00 CAD, 2026-03-15"

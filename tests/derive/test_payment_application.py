@@ -1265,6 +1265,37 @@ def test_a_finish_that_moves_a_payment_off_the_plan_keeps_it_active_and_says_so(
     )
 
 
+@pytest.mark.parametrize(
+    ("rounds", "kept"),
+    [
+        (
+            [{"plan": D(2026, 4, 25)}, {"plan": D(2026, 4, 25), "loan": D(2026, 4, 2)}],
+            {"plan": D(2026, 4, 25)},
+        ),
+        (
+            [
+                {"plan": D(2026, 4, 25), "loan": D(2026, 4, 2)},
+                {"plan": D(2026, 4, 25)},
+                {"plan": D(2026, 4, 25), "loan": D(2026, 4, 2)},
+            ],
+            {"plan": D(2026, 4, 25)},
+        ),
+        ([{"plan": D(2026, 4, 25)}, {"plan": D(2026, 5, 8)}], {}),
+    ],
+    ids=[
+        "the last round finishes one more",
+        "one finished in every other round",
+        "one finished on two days",
+    ],
+)
+def test_finished_sets_that_would_not_settle_keep_only_what_every_round_agreed(
+    rounds: list[dict[str, dt.date]], kept: dict[str, dt.date]
+) -> None:
+    """What the derive keeps finished when the rounds run out: an arrangement every
+    round finished, on one day, and nothing the last round alone says."""
+    assert stage15_apply.settled(rounds) == kept
+
+
 def test_the_arrangements_an_application_finishes_are_settled_after_a_derive(
     ledger: Ledger,
 ) -> None:

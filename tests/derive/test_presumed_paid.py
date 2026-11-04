@@ -21,11 +21,18 @@ import pytest
 from sqlalchemy import Row as SqlRow
 from sqlalchemy import select
 
+from rheo_finance.clock import local_today
 from rheo_finance.derive.presumed import presumed_paid_candidates
 from rheo_finance.derive.run import run
 from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.manual.payees import PAYEES_FILE
-from rheo_finance.storage.schema import obligation, payee, payment
+from rheo_finance.storage.schema import (
+    account,
+    coverage,
+    obligation,
+    payee,
+    payment,
+)
 
 from .support import CSV_IDENTIFIER, SECOND, THIRD, D, Ledger, read_as_text
 from .test_coverage import account_row, register
@@ -143,9 +150,10 @@ def rows(ledger: Ledger) -> dict[str, SqlRow[Any]]:
 def offered(ledger: Ledger) -> dict[str, tuple[str, ...]]:
     """The candidates, each with the paying accounts that left a gap."""
     label = {row.id: name for name, row in rows(ledger).items()}
+    today = local_today(ledger.ctx.clock, ledger.ctx.settings.timezone)
     return {
         label[each.obligation_id]: each.gaps
-        for each in presumed_paid_candidates(ledger.uow)
+        for each in presumed_paid_candidates(ledger.uow, today)
     }
 
 
@@ -192,6 +200,27 @@ def test_a_paid_from_row_narrows_the_paying_accounts_to_its_own(
     found = offered(ledger)
     assert found["landlord bill-2023-01"] == ("second",)
     assert "landlord bill-2023-05" not in found
+
+
+def test_a_bill_due_after_this_month_is_not_offered(ledger: Ledger) -> None:
+    """Presumed paid is a statement about the past (edge case 24). Today is 15 January
+    2026 and the floor a year on: the bill due this month is offered on chequing's
+    gap, the one due in March is not, though chequing has no data for it either."""
+    history(ledger)
+    with_settings(ledger, "[finance.reminders]\nmin_due_date = 2027-01-01\n")
+    bills(
+        ledger,
+        ("net", "42.00", D(2026, 1, 2), D(2026, 1, 31)),
+        ("net", "43.00", D(2026, 3, 1), D(2026, 3, 20)),
+    )
+
+    ledger.derive()
+
+    assert {name for name, row in rows(ledger).items() if row.before_floor} == {
+        "net bill-2026-01",
+        "net bill-2026-03",
+    }
+    assert offered(ledger) == {"net bill-2026-01": ("chequing", "second")}
 
 
 def test_nothing_is_offered_while_the_floor_is_unset(ledger: Ledger) -> None:
@@ -259,6 +288,36 @@ def test_an_account_not_open_in_the_month_leaves_no_gap(ledger: Ledger) -> None:
     ledger.derive()
 
     assert offered(ledger) == {"net bill-2023-07": ("chequing", "later")}
+
+
+def test_a_partial_month_is_a_gap(ledger: Ledger) -> None:
+    """Chequing is had from 1 January to 15 March 2023, so March is ``partial``: the
+    February bill, whose own month chequing has, is offered on the month after."""
+    dated_accounts(ledger)
+    statement(
+        ledger,
+        "chequing-q1",
+        CSV_IDENTIFIER,
+        filler(D(2023, 1, 1), 1),
+        filler(D(2023, 3, 15), 2),
+    )
+    bills(ledger, ("net", "40.00", D(2023, 2, 1), D(2023, 2, 20)))
+
+    ledger.derive()
+
+    months = dict(
+        ledger.conn.execute(
+            select(coverage.c.month, coverage.c.state)
+            .join(account, account.c.id == coverage.c.account_id)
+            .where(account.c.slug == "chequing", coverage.c.month < D(2023, 4, 1))
+        ).all()
+    )
+    assert months == {
+        D(2023, 1, 1): "have",
+        D(2023, 2, 1): "have",
+        D(2023, 3, 1): "partial",
+    }
+    assert offered(ledger) == {"net bill-2023-02": ("chequing",)}
 
 
 def test_a_payee_paid_only_from_a_later_account_has_no_gap_before_it_opened(

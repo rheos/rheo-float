@@ -18,13 +18,14 @@ reminders floor", and it gets no ticket or nudge, whatever its status. Unset, no
 before the floor, and an obligation with no due date never is.
 
 **Candidates.** ``presumed_paid_candidates`` lists the ``open`` obligations before the
-floor with nothing paid whose payee's paying account has a gap for the due month or the
-month after: the payment can sit there. A month is a gap only where the account could
-have held the payment: its coverage is ``partial``, ``missing``, ``rejected`` or
-``unparsed``, or it has no coverage row and the account has no known opened date. A
-month that is ``not_applicable``, or wholly before the account's opened date or after
-its closed date, is never a gap, and neither is a ``have`` month. The paying accounts
-of a payee, in this precedence:
+floor with nothing paid, due in the current local month or earlier (presumed paid is a
+statement about the past, edge case 24), whose payee's paying account has a gap for the
+due month or the month after: the payment can sit there. A month is a gap only where
+the account could have held the payment: its coverage is any state of stage 6 but
+``have`` and ``not_applicable`` (``GAP_STATES``), or it has no coverage row and the
+account has no known opened date. A month that is ``not_applicable``, or wholly before
+the account's opened date or after its closed date, is never a gap, and neither is a
+``have`` month. The paying accounts of a payee, in this precedence:
 
 1. the ``paid_from`` accounts of its ``payees.csv`` row, when set, the whole set;
 2. else the accounts whose lines are ``money`` evidence of an active payment to it
@@ -46,7 +47,7 @@ from sqlalchemy import bindparam, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
-from rheo_finance.derive.coverage import month_end, month_start
+from rheo_finance.derive.coverage import STATES, month_end, month_start
 from rheo_finance.derive.stage15 import ACTIVE, MONEY
 from rheo_finance.derive.stage15_apply import OBLIGATION_TYPE, OPEN, PRESUMED_PAID
 from rheo_finance.storage import refs
@@ -64,8 +65,9 @@ from rheo_finance.storage.schema import (
 FLOOR_KEY: Final = "finance.reminders.min_due_date"
 FLOOR_MARKER: Final = "before reminders floor"
 CHEQUING: Final = "chequing"
-# Coverage states a payment could hide in (``derive.coverage.State``).
-GAP_STATES: Final = frozenset({"partial", "missing", "rejected", "unparsed"})
+# Coverage states a payment could hide in: every state stage 6 writes but a month it
+# has and a month the account was not open, so a new state is a gap until said not.
+GAP_STATES: Final = frozenset(STATES) - {"have", "not_applicable"}
 
 
 def presumed(uow: UnitOfWork) -> dict[uuid.UUID, uuid.UUID]:
@@ -190,16 +192,19 @@ class _Gaps:
             # A month wholly outside the open dates is ``not_applicable``.
             return state in GAP_STATES
         # Stage 6 writes a row for every month from the first known date, which is on
-        # or before the opened date: a missing row of an opened account is outside its
-        # open dates. One with no opened date may still have closed before the month.
+        # or before the opened date, to the latest coverage row (the derive's current
+        # month, or a later dated record): up to that row, a missing row of an opened
+        # account is outside its open dates. Past it there is no row yet, and an opened
+        # account reads as no gap there. One with no opened date may still have closed
+        # before the month.
         opened, closed = self.open_dates.get(account_id, (None, None))
         return opened is None and (closed is None or month <= closed)
 
 
-def presumed_paid_candidates(uow: UnitOfWork) -> list[Candidate]:
+def presumed_paid_candidates(uow: UnitOfWork, today: dt.date) -> list[Candidate]:
     """The obligations the confirm queue offers as presumed paid (module docstring),
-    by due date; each with the paying accounts that have a gap for its due month or
-    the month after."""
+    by due date, as of the local date ``today``; each with the paying accounts that
+    have a gap for its due month or the month after."""
     o = obligation.c
     rows = uow.execute(
         select(o.id, o.payee_id, o.kind, o.period_label, o.due_date, o.remaining)
@@ -207,6 +212,8 @@ def presumed_paid_candidates(uow: UnitOfWork) -> list[Candidate]:
             # ``open``: nothing paid, and not presumed paid already.
             o.status == OPEN,
             o.before_floor.is_(True),
+            # Due this month or earlier: nothing is presumed paid ahead of time.
+            o.due_date <= month_end(today),
         )
         .order_by(o.due_date, o.period_label, o.id)
     ).all()

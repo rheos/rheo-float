@@ -71,8 +71,11 @@ remaining (or threshold remaining) at or under the tolerance once something was 
 written as zero, so a cent short leaves no overdue cent behind.
 
 **Status.** ``open``, ``partial`` or ``paid`` from what was paid. A status stage 14 set
-otherwise (``superseded``, and later ``disputed`` and ``presumed_paid``) stays: a
-superseded row still shows what was applied to it.
+otherwise (``superseded``, and later ``disputed``) stays: a superseded row still shows
+what was applied to it. ``presumed_paid`` stays only while nothing is paid: it is not a
+live candidate, and once a payment applies to it (in its own window, or by a
+``payment_apply``) it reverts to ``partial`` or ``paid`` with its remaining, while the
+decision stays on record and changes nothing.
 
 **FR-21.** For each obligation that supersedes another and whose document prints a
 payments figure (a card statement's ``total_payments``), the payments applied to its
@@ -146,8 +149,10 @@ PAID: Final = "paid"
 DISPUTED: Final = "disputed"
 SUPERSEDED: Final = "superseded"
 PRESUMED_PAID: Final = "presumed_paid"
-# Statuses stage 14 sets that a payment does not change.
+# Statuses stage 14 sets that a payment does not change, and of them the one a payment
+# applied to it turns back into what was paid.
 KEPT: Final = frozenset({SUPERSEDED, DISPUTED, PRESUMED_PAID})
+REVERTED: Final = frozenset({PRESUMED_PAID})
 # Statuses whose own window can still take a payment, with no live candidate.
 WINDOWED: Final = frozenset({SUPERSEDED, PRESUMED_PAID})
 
@@ -217,7 +222,9 @@ class _Obligation:
         return not (self.remaining == 0 or (self.paid and self.remaining <= tolerance))
 
     def status(self, tolerance: Decimal) -> str:
-        if self.base_status in KEPT:
+        if self.base_status in KEPT and not (
+            self.base_status in REVERTED and self.paid
+        ):
             return self.base_status
         if not self.owes(tolerance):
             return PAID

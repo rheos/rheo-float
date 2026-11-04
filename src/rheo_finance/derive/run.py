@@ -61,8 +61,11 @@ Order of work, set by what each step reads:
    application runs again over the new rows, until the finished set no longer changes
    (``FINISHED_ROUNDS``; a set still changing after that is settled the conservative
    way, ``stage15_apply.settled``, and the arrangements left out are marked for status
-   line 9, ``stage15_apply.mark_unsettled``). Then one ``finance.payment.detected``
-   per automatic application.
+   line 9, ``stage15_apply.mark_unsettled``). Each time stage 14 makes the
+   obligations, the ``presumed_paid`` decisions mark theirs (``presumed``) before the
+   application reads them, and a payment applied to one reverts it. Then one
+   ``finance.payment.detected`` per automatic application, and the obligations due
+   before ``finance.reminders.min_due_date`` are marked (``presumed.mark_floor``).
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -89,6 +92,7 @@ from rheo_finance.derive import (
     coverage,
     crypto_edges,
     pair_decisions,
+    presumed,
     stage1,
     stage2,
     stage3,
@@ -273,6 +277,8 @@ def run(
             ),
         )
 
+        presumed_paid = presumed.presumed(uow)
+
         def obligations(finished: Mapping[str, dt.date] | None = None) -> None:
             stage14.create_obligations(
                 uow,
@@ -283,6 +289,7 @@ def run(
                 finished,
                 early_days=rules.early_days,
             )
+            presumed.mark_presumed(uow, presumed_paid)
 
         def obligations_again(finished: Mapping[str, dt.date]) -> None:
             """Make the obligations again with ``finished`` paid up, and apply again
@@ -321,6 +328,7 @@ def run(
                 uow, {slug for each in rounds for slug in each} - settled.keys()
             )
         stage15_apply.record_detected(uow)
+        presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

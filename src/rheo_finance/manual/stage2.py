@@ -278,6 +278,7 @@ def _payee_values(found: Payee) -> dict[str, object]:
         "account_id": None if found.account is None else account_id(found.account),
         "party_ref": found.party,
         "patterns": list(found.patterns),
+        "paid_from": [account_id(slug) for slug in found.paid_from],
     }
 
 

@@ -115,6 +115,9 @@ PINNED = {
     "0028_unsettled_decision.py": (
         "b4ccba5141a76a76248282134aa01437cb834d7b1e05a249e158925273d17592"
     ),
+    "0029_presumed_paid.py": (
+        "a28c59b223e354d16beb0a5f664adc69aeb09f780eaa8365334e3521cad8916c"
+    ),
 }
 
 

@@ -730,12 +730,15 @@ payee = Table(
     Column("account_id", Uuid, _account_fk()),
     Column("party_ref", Text),
     Column("patterns", ARRAY(Text), nullable=False, server_default="{}"),
+    # The accounts ``payees.csv`` says this payee is paid from, by id (migration 0029):
+    # when set, the whole set of its paying accounts (``derive.presumed``).
+    Column("paid_from", ARRAY(Uuid), nullable=False, server_default="{}"),
 )
 _tiers(
     payee,
     {
         "id": P, "slug": P, "display_label": P, "kind": P, "account_id": P,
-        "party_ref": P, "patterns": R,
+        "party_ref": P, "patterns": R, "paid_from": P,
     },
 )  # fmt: skip
 
@@ -788,6 +791,12 @@ obligation = Table(
     # On such an instalment, the ``payment_apply`` decision that moved its payment off
     # it once the arrangement was finished (migration 0028).
     Column("unsettled_decision_id", Uuid, ForeignKey("finance.decision.id")),
+    # The ``presumed_paid`` decision in force on it, its basis while the status is
+    # ``presumed_paid``; kept when a payment reverts it (migration 0029).
+    Column("presumed_paid_decision_id", Uuid, ForeignKey("finance.decision.id")),
+    # Due before ``finance.reminders.min_due_date``: shown in owed with the marker
+    # "before reminders floor", never a ticket or a nudge (migration 0029).
+    Column("before_floor", Boolean, nullable=False, server_default="false"),
     UniqueConstraint("payee_id", "kind", "period_label"),
 )
 _tiers(
@@ -800,7 +809,7 @@ _tiers(
         "statement_conflict": P, "unjoined": P, "supersedes_id": P,
         "arrangement_ref": P,
         "invoice_ref": P, "payments_mismatch": R, "arrangement_unsettled": P,
-        "unsettled_decision_id": P,
+        "unsettled_decision_id": P, "presumed_paid_decision_id": P, "before_floor": P,
     },
 )  # fmt: skip
 

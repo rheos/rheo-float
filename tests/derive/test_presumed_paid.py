@@ -25,9 +25,10 @@ from rheo_finance.derive.presumed import presumed_paid_candidates
 from rheo_finance.derive.run import run
 from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.manual.payees import PAYEES_FILE
-from rheo_finance.storage.schema import obligation, payee
+from rheo_finance.storage.schema import obligation, payee, payment
 
-from .support import CSV_IDENTIFIER, SECOND, D, Ledger, read_as_text
+from .support import CSV_IDENTIFIER, SECOND, THIRD, D, Ledger, read_as_text
+from .test_coverage import account_row, register
 from .test_invoice_decisions import reverse
 from .test_payment_application import (
     Applied,
@@ -201,6 +202,119 @@ def test_nothing_is_offered_while_the_floor_is_unset(ledger: Ledger) -> None:
 
     assert offered(ledger) == {}
     assert not any(row.before_floor for row in rows(ledger).values())
+
+
+# --- which months are gaps -----------------------------------------------------------
+
+CANCEL = "E-TRANSFER DEBIT REVERSAL CUSTOMER CANCEL"
+GONE = "999000000055"
+
+
+def dated_accounts(ledger: Ledger) -> None:
+    """``chequing``, had January to March 2023; ``later``, opened 1 June 2023 with
+    nothing loaded; ``closed``, open from 2021 to October 2022 with nothing loaded;
+    ``gone``, closed in October 2022 with no opened date and nothing loaded. Coverage
+    rows: ``later`` from June 2023, ``closed`` from 2021 and ``not_applicable`` after
+    October 2022, ``gone`` none."""
+    register(
+        ledger,
+        (account_row("chequing", "Vancity", "chequing"), CSV_IDENTIFIER),
+        (account_row("later", "Vancity", "chequing", opened="2023-06-01"), SECOND),
+        (
+            account_row(
+                "closed",
+                "Vancity",
+                "chequing",
+                opened="2021-01-01",
+                closed="2022-10-31",
+            ),
+            THIRD,
+        ),
+        (account_row("gone", "Vancity", "chequing", closed="2022-10-31"), GONE),
+    )
+    payees(ledger)
+    with_settings(ledger, FLOOR)
+    statement(
+        ledger,
+        "chequing-q1",
+        CSV_IDENTIFIER,
+        filler(D(2023, 1, 1), 1),
+        filler(D(2023, 3, 31), 2),
+    )
+
+
+def test_an_account_not_open_in_the_month_leaves_no_gap(ledger: Ledger) -> None:
+    """A never-paid payee is tested against every chequing account. January 2023 is
+    had on chequing, before ``later`` opened and after ``closed`` closed: no gap, so
+    the January bill is not offered, and ``gone`` had closed, though it has no row and
+    no opened date. July is a gap on chequing (no data) and on ``later`` (open, no
+    data), never on ``closed`` or ``gone``."""
+    dated_accounts(ledger)
+    bills(
+        ledger,
+        ("net", "40.00", D(2023, 1, 2), D(2023, 1, 20)),
+        ("net", "41.00", D(2023, 7, 1), D(2023, 7, 20)),
+    )
+
+    ledger.derive()
+
+    assert offered(ledger) == {"net bill-2023-07": ("chequing", "later")}
+
+
+def test_a_payee_paid_only_from_a_later_account_has_no_gap_before_it_opened(
+    ledger: Ledger,
+) -> None:
+    """The ISP's one payment is on ``later`` in July, so ``later`` is its paying
+    account; its January bill falls before ``later`` opened and is not offered."""
+    dated_accounts(ledger)
+    statement(
+        ledger,
+        "later-summer",
+        SECOND,
+        filler(D(2023, 7, 1), 3),
+        (D(2023, 7, 10), ISP, Decimal("-99.00")),
+        filler(D(2023, 8, 31), 4),
+    )
+    bills(ledger, ("isp", "55.00", D(2023, 1, 2), D(2023, 1, 20)))
+
+    ledger.derive()
+
+    assert offered(ledger) == {}
+
+
+def test_a_reversed_payment_names_no_paying_account(ledger: Ledger) -> None:
+    """The landlord's only payment, from ``second``, was cancelled: with no active
+    payment the paying accounts are every chequing account, and chequing, with no row
+    for January and no opened date, is the gap. Read as paying from ``second``, which
+    has January and February, nothing would be offered."""
+    ledger.accounts(
+        ("chequing", "Vancity", "chequing", CSV_IDENTIFIER),
+        ("second", "Vancity", "chequing", SECOND),
+    )
+    payees(ledger)
+    with_settings(ledger, FLOOR)
+    statement(
+        ledger,
+        "chequing-summer",
+        CSV_IDENTIFIER,
+        filler(D(2023, 7, 1), 1),
+        filler(D(2023, 8, 31), 2),
+    )
+    statement(
+        ledger,
+        "second-q1",
+        SECOND,
+        filler(D(2023, 1, 1), 3),
+        (D(2023, 2, 3), LANDLORD, Decimal("-850.00")),
+        (D(2023, 2, 6), CANCEL, Decimal("850.00")),
+        filler(D(2023, 3, 31), 4),
+    )
+    bills(ledger, ("landlord", "520.00", D(2023, 1, 2), D(2023, 1, 20)))
+
+    ledger.derive()
+
+    assert ledger.conn.execute(select(payment.c.state)).scalars().all() == ["reversed"]
+    assert offered(ledger) == {"landlord bill-2023-01": ("chequing",)}
 
 
 # --- the floor ------------------------------------------------------------------------

@@ -18,9 +18,13 @@ reminders floor", and it gets no ticket or nudge, whatever its status. Unset, no
 before the floor, and an obligation with no due date never is.
 
 **Candidates.** ``presumed_paid_candidates`` lists the ``open`` obligations before the
-floor with nothing paid whose payee's paying account has coverage other than ``have``
-(a coverage row in another state, or none) for the due month or the month after: the
-payment can sit in that gap. The paying accounts of a payee, in this precedence:
+floor with nothing paid whose payee's paying account has a gap for the due month or the
+month after: the payment can sit there. A month is a gap only where the account could
+have held the payment: its coverage is ``partial``, ``missing``, ``rejected`` or
+``unparsed``, or it has no coverage row and the account has no known opened date. A
+month that is ``not_applicable``, or wholly before the account's opened date or after
+its closed date, is never a gap, and neither is a ``have`` month. The paying accounts
+of a payee, in this precedence:
 
 1. the ``paid_from`` accounts of its ``payees.csv`` row, when set, the whole set;
 2. else the accounts whose lines are ``money`` evidence of an active payment to it
@@ -60,7 +64,8 @@ from rheo_finance.storage.schema import (
 FLOOR_KEY: Final = "finance.reminders.min_due_date"
 FLOOR_MARKER: Final = "before reminders floor"
 CHEQUING: Final = "chequing"
-HAVE: Final = "have"
+# Coverage states a payment could hide in (``derive.coverage.State``).
+GAP_STATES: Final = frozenset({"partial", "missing", "rejected", "unparsed"})
 
 
 def presumed(uow: UnitOfWork) -> dict[uuid.UUID, uuid.UUID]:
@@ -155,10 +160,46 @@ def _paying_accounts(uow: UnitOfWork) -> dict[uuid.UUID, frozenset[uuid.UUID]]:
     return found
 
 
+@dataclass(frozen=True)
+class _Gaps:
+    """Each account's coverage state per month, and its opened and closed dates."""
+
+    states: Mapping[tuple[uuid.UUID, dt.date], str]
+    open_dates: Mapping[uuid.UUID, tuple[dt.date | None, dt.date | None]]
+
+    @classmethod
+    def read(cls, uow: UnitOfWork) -> _Gaps:
+        states = {
+            (row.account_id, row.month): row.state
+            for row in uow.execute(
+                select(coverage.c.account_id, coverage.c.month, coverage.c.state)
+            )
+        }
+        open_dates = {
+            row.id: (row.opened_on, row.closed_on)
+            for row in uow.execute(
+                select(account.c.id, account.c.opened_on, account.c.closed_on)
+            )
+        }
+        return cls(states, open_dates)
+
+    def gap(self, account_id: uuid.UUID, month: dt.date) -> bool:
+        """Whether the payment could sit in ``account_id`` in ``month``."""
+        state = self.states.get((account_id, month))
+        if state is not None:
+            # A month wholly outside the open dates is ``not_applicable``.
+            return state in GAP_STATES
+        # Stage 6 writes a row for every month from the first known date, which is on
+        # or before the opened date: a missing row of an opened account is outside its
+        # open dates. One with no opened date may still have closed before the month.
+        opened, closed = self.open_dates.get(account_id, (None, None))
+        return opened is None and (closed is None or month <= closed)
+
+
 def presumed_paid_candidates(uow: UnitOfWork) -> list[Candidate]:
     """The obligations the confirm queue offers as presumed paid (module docstring),
-    by due date; each with the paying accounts that have no ``have`` month for its
-    due month or the month after."""
+    by due date; each with the paying accounts that have a gap for its due month or
+    the month after."""
     o = obligation.c
     rows = uow.execute(
         select(o.id, o.payee_id, o.kind, o.period_label, o.due_date, o.remaining)
@@ -175,14 +216,7 @@ def presumed_paid_candidates(uow: UnitOfWork) -> list[Candidate]:
     slugs = {
         row.id: row.slug for row in uow.execute(select(account.c.id, account.c.slug))
     }
-    had = {
-        (row.account_id, row.month)
-        for row in uow.execute(
-            select(coverage.c.account_id, coverage.c.month).where(
-                coverage.c.state == HAVE
-            )
-        )
-    }
+    coverage_of = _Gaps.read(uow)
     found = []
     for row in rows:
         first = month_start(row.due_date)
@@ -190,7 +224,7 @@ def presumed_paid_candidates(uow: UnitOfWork) -> list[Candidate]:
         gaps = sorted(
             slugs[each]
             for each in paying.get(row.payee_id, frozenset())
-            if any((each, month) not in had for month in months)
+            if any(coverage_of.gap(each, month) for month in months)
         )
         if gaps:
             found.append(

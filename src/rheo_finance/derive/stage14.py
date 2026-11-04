@@ -23,8 +23,9 @@ subscription vendor is a spending line only. The paths are in the table above
   payment matches it and the decision in force is ``invoice_unpaid``). That one's period
   is ``debt-inv-<line key>``, the key of the invoice line, which every re-saved copy of
   the invoice document shares, so a new copy keeps the id a decision names. It is owed
-  the printed amount due, else the total, issued on the invoice's date and due on the
-  decision's date if it gives one; ``invoice_ref`` names the document that counts. Its
+  the smallest amount due its copies print, else the total, issued on the invoice's date
+  and due on the decision's date if it gives one; ``invoice_ref`` names the document
+  that counts. Its
   payee is the first payee whose patterns name the printed payee, else the vendor payee
   of the invoice's archive directory (``manual.payees``).
 

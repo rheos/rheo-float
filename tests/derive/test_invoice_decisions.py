@@ -267,6 +267,52 @@ def test_a_payment_near_the_decided_date_on_another_account_does_not_supersede_i
     assert out.lines.invoice_decisions_superseded == 0
 
 
+def test_a_payment_of_the_amount_due_near_the_decided_date_supersedes_it(
+    ledger: Ledger,
+) -> None:
+    """The invoice printed what was left. A decision over that remainder and the bank
+    line that arrives later are one payment."""
+    on_chequing(ledger)
+    decision_id = paid(ledger, account="chequing")
+    ledger.derive()
+    assert len(outside(ledger)) == 1
+
+    payments(ledger, ("12-Mar-2026", CONTRACTOR, "650.00"))
+    out = ledger.derive()
+
+    assert outside(ledger) == []
+    assert spending(ledger) == -AMOUNT_DUE
+    assert out.lines.invoice_decisions_superseded == 1
+    (link,) = sources(ledger, "evidence")
+    assert link.overrides_decision_id == decision_id
+
+
+def test_a_payment_of_the_amount_due_on_another_account_does_not_supersede_it(
+    ledger: Ledger,
+) -> None:
+    on_chequing(ledger)
+    paid(ledger, account="paid-outside")
+
+    payments(ledger, ("12-Mar-2026", CONTRACTOR, "650.00"))
+    out = ledger.derive()
+
+    assert len(outside(ledger)) == 1
+    assert out.lines.invoice_decisions_superseded == 0
+
+
+def test_a_payment_of_the_amount_due_matches_only_in_the_decided_round(
+    ledger: Ledger,
+) -> None:
+    """With no decision, the amount due is no match by the invoice's own date."""
+    payments(ledger, ("31-Dec-2025", CONTRACTOR, "650.00"))
+    ledger.file(INVOICE, invoice())
+
+    out = ledger.derive()
+
+    assert sources(ledger, "evidence") == []
+    assert out.lines.unmatched_invoices == 1
+
+
 def test_a_payment_outside_both_windows_is_another_payment(ledger: Ledger) -> None:
     on_chequing(ledger)
     paid(ledger, account="chequing")
@@ -619,6 +665,58 @@ def test_a_resaved_copy_keeps_the_debts_key_and_names_the_copy_that_counts(
     }
     counts = max(digests, key=lambda doc: digests[doc])
     assert row.invoice_ref == f"finance.document:{counts}"
+
+
+def part_paid(amount_paid: str) -> str:
+    """The invoice as printed after ``amount_paid``: its key does not read these."""
+    total = Decimal(750)
+    text = invoice().replace("Paid   $100.00", f"Paid   ${amount_paid}")
+    return text.replace(
+        "Amount due   $650.00", f"Amount due   ${total - Decimal(amount_paid):.2f}"
+    )
+
+
+@pytest.mark.parametrize(
+    "printed",
+    [("100.00", "500.00"), ("100.00", "200.00", "500.00")],
+    ids=["two", "three"],
+)
+def test_copies_that_print_different_amounts_due_owe_the_smallest(
+    ledger: Ledger, printed: tuple[str, ...]
+) -> None:
+    """Whichever copy counts: a file's sha256 is no reason for a debt to move."""
+    for number, paid_so_far in enumerate(printed):
+        ledger.file(
+            f"invoices-received/sample-vendor/2025-12-01-{number}.pdf",
+            part_paid(paid_so_far),
+        )
+    ledger.derive()
+    unpaid(ledger)
+    ledger.derive()
+
+    (row,) = debts(ledger)
+    assert row.amount_due == row.remaining == Decimal("250.00")
+
+
+def test_a_copy_that_prints_no_amount_due_does_not_raise_the_debt(
+    ledger: Ledger,
+) -> None:
+    """A missing figure is not a figure. The stored line is changed, because the one
+    parser always stores one."""
+    first = ledger.file(INVOICE, invoice())
+    copy = "invoices-received/sample-vendor/2025-12-01-copy.pdf"
+    ledger.file(copy, part_paid("100.00") + "\n")
+    ledger.derive()
+    ledger.conn.execute(
+        document_line.update()
+        .where(document_line.c.document_id == first)
+        .values(amount_due=None)
+    )
+    unpaid(ledger)
+    ledger.derive()
+
+    (row,) = debts(ledger)
+    assert row.amount_due == AMOUNT_DUE
 
 
 @pytest.mark.parametrize(

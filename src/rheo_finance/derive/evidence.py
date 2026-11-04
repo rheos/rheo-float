@@ -46,8 +46,9 @@ against payment lines:
   account, at the decided date, origin ``document_expense``, the invoice line its
   primary source; the paying account stays on the decision. ``invoice_unpaid`` writes
   nothing here: the invoice is handed to stage 14 (``UnpaidInvoice``), which makes the
-  debt, for the printed amount due, else the total. Either way the invoice is no longer
-  open. Reversing the decision returns it to the open state on the next derive. An
+  debt, for the smallest amount due its copies print, else the total, so which copy
+  counts never moves the debt. Either way the invoice is no longer open. Reversing the
+  decision returns it to the open state on the next derive. An
   invoice in a currency the internal account does not take is refused and stays open,
   because neither a txn there nor an obligation can hold it: the line names the decision
   in ``refused_decision_id``, which status line 9 counts.
@@ -58,8 +59,10 @@ against payment lines:
   decides an invoice was paid months after its date can have the payment line arrive
   later, outside the window of the invoice's date, so an ``invoice_paid`` invoice left
   unmatched is matched once more, by the decided date, against the payments on the
-  decided account that no invoice took. That round runs after the first, so a decision
-  moves no other invoice's match.
+  decided account that no invoice took. A payment of the amount due a copy prints
+  matches there as well as one of the total: the invoice printed what was left, and the
+  owner's decision over that remainder is the same payment. That round runs after the
+  first, so a decision moves no other invoice's match.
 
 **Keys.** A receipt or invoice line is keyed by (kind, payee, date, signed amount,
 currency, normalized description, the payment's reference digest, occurrence among
@@ -117,7 +120,7 @@ class UnpaidInvoice:
 
     line_key: uuid.UUID
     invoice_date: dt.date
-    # The printed amount due, else the total; positive.
+    # The smallest amount due its copies print, else the total; positive.
     owed: Decimal
     payee: str
     document_id: uuid.UUID
@@ -171,6 +174,8 @@ class Line:
     issuer: str
     # What an invoice prints as still due, when it does.
     amount_due: Decimal | None
+    # Other signed amounts a payment of this line may be, in the decided-date round.
+    also: tuple[Decimal, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -241,7 +246,9 @@ def match(
     edges: list[list[tuple[int, int]]] = []
     for item in ordered:
         found: list[tuple[int, int]] = []
-        for index in by_amount.get((item.currency, item.amount), ()):
+        amounts = (item.amount, *item.also)
+        indexes = {i for a in amounts for i in by_amount.get((item.currency, a), ())}
+        for index in sorted(indexes):
             payment = candidates[index]
             gap = _gap(item.posting_date, payment)
             if gap <= days and names_payee(item.patterns, payment.texts):
@@ -452,6 +459,11 @@ def _decided_account(decided: Decision) -> uuid.UUID:
     return uuid.UUID(refs.parse(decided.account_ref).id)
 
 
+def _printed_due(lines: Iterable[Line]) -> list[Decimal]:
+    """What the copies of one invoice print as still due, above zero."""
+    return [each.amount_due for each in lines if each.amount_due]
+
+
 def _matched_on_decided_date(
     invoices: dict[uuid.UUID, list[Line]],
     decided: dict[uuid.UUID, Decision],
@@ -460,14 +472,19 @@ def _matched_on_decided_date(
     days: int,
 ) -> dict[uuid.UUID, uuid.UUID]:
     """The ``invoice_paid`` invoices no payment matched by their own date, matched by
-    the decided date against the payments on the decided account that no invoice took.
-    One account's payments are not another's, so each account is its own matching."""
+    the decided date against the payments on the decided account that no invoice took,
+    at the total or an amount due a copy prints. One account's payments are not
+    another's, so each account is its own matching."""
     taken = set(paid.values())
     by_account: dict[uuid.UUID, list[Line]] = defaultdict(list)
     for key, each in decided.items():
         if key not in paid and each.kind is DecisionKind.INVOICE_PAID:
             by_account[_decided_account(each)].append(
-                replace(invoices[key][0], posting_date=_decided_date(each))
+                replace(
+                    invoices[key][0],
+                    posting_date=_decided_date(each),
+                    also=tuple(-due for due in _printed_due(invoices[key])),
+                )
             )
     found: dict[uuid.UUID, uuid.UUID] = {}
     for paying, lines in sorted(by_account.items()):
@@ -483,11 +500,15 @@ def _matched_on_decided_date(
     return found
 
 
-def _unpaid(line: Line, decided: Decision) -> UnpaidInvoice:
+def _unpaid(lines: Sequence[Line], decided: Decision) -> UnpaidInvoice:
+    """The debt of one invoice, read from every copy: the copy that counts names the
+    document, and its sha256 has no say in the amount."""
+    line = lines[0]
+    printed = [each.amount_due for each in lines if each.amount_due is not None]
     return UnpaidInvoice(
         line_key=line.key,
         invoice_date=line.posting_date,
-        owed=-line.amount if line.amount_due is None else line.amount_due,
+        owed=min(printed) if printed else -line.amount,
         payee=line.payee,
         document_id=line.document_id,
         path=line.path,
@@ -569,7 +590,7 @@ def link(
             invoices_refused.append({"b_id": first.id, "b_decision": each.id})
             still_open += 1
         elif each.kind is DecisionKind.INVOICE_UNPAID:
-            unpaid.append(_unpaid(first, each))
+            unpaid.append(_unpaid(lines, each))
         else:
             txns.append(_paid_outside(first, _decided_date(each)))
             sources.append(_source(key, first, "primary"))

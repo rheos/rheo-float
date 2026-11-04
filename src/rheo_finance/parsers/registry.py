@@ -78,6 +78,7 @@ from rheo_finance.storage.schema import (
     document,
     document_line,
     event,
+    parsed_overdrawn,
     rejected_period,
     statement_period,
 )
@@ -86,6 +87,9 @@ from rheo_finance.tier import Tier
 P = Tier.PUBLIC
 
 # --- events ---------------------------------------------------------------------------
+
+# Stored parse shape, also in parse inputs and the derive fingerprint.
+PARSE_CACHE_VERSION: Final = "spells-v1"
 
 DOCUMENT_REJECTED: Final = "finance.document.rejected"
 
@@ -282,6 +286,9 @@ class Parsed:
 
 
 def _clear(uow: UnitOfWork, document_id: uuid.UUID, ref: str) -> None:
+    uow.execute(
+        delete(parsed_overdrawn).where(parsed_overdrawn.c.document_id == document_id)
+    )
     uow.execute(delete(document_line).where(document_line.c.document_id == document_id))
     uow.execute(
         delete(statement_period).where(statement_period.c.document_id == document_id)
@@ -526,6 +533,19 @@ def _store(
     fallback = span[0] if span else dt.date(2000, 1, 1)
     if result.periods:
         uow.execute(insert(statement_period), _period_values(document_id, result))
+    spells = [
+        dict(
+            document_id=document_id,
+            account_id=period.account.id,
+            currency=period.currency,
+            start_date=spell.start,
+            end_date=spell.end,
+        )
+        for period in result.periods
+        for spell in period.overdrawn
+    ]
+    if spells:
+        uow.execute(insert(parsed_overdrawn), spells)
     if result.lines:
         uow.execute(
             insert(document_line),

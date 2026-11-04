@@ -889,3 +889,40 @@ _tiers(
         "bound_on": P, "basis_ref": P, "auto": P,
     },
 )  # fmt: skip
+
+
+# Notice delivery is state, never cleared by a derive (migration 0030).
+notice = Table(
+    "notice",
+    metadata,
+    Column("key", Text, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("event_date", Date, nullable=False),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("sent_at", DateTime(timezone=True)),
+)
+_tiers(notice, {name: P for name in notice.c.keys()})
+
+# Actual parser spells survive cached derives; stage 16 selects current documents
+# and coalesces copies by account, currency and start day into overdrawn_spell.
+parsed_overdrawn = Table(
+    "parsed_overdrawn",
+    metadata,
+    Column("document_id", Uuid, ForeignKey("finance.document.id"), primary_key=True),
+    Column("account_id", Uuid, _account_fk(), primary_key=True),
+    Column("currency", Text, primary_key=True),
+    Column("start_date", Date, primary_key=True),
+    Column("end_date", Date),
+)
+_tiers(parsed_overdrawn, {name: P for name in parsed_overdrawn.c.keys()})
+
+overdrawn_spell = Table(
+    "overdrawn_spell",
+    metadata,
+    Column("account_id", Uuid, _account_fk(), primary_key=True),
+    Column("currency", Text, primary_key=True),
+    Column("start_date", Date, primary_key=True),
+    Column("end_date", Date),
+)
+_tiers(overdrawn_spell, {name: P for name in overdrawn_spell.c.keys()})

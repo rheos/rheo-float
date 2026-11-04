@@ -61,7 +61,7 @@ _UUID7 = r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 SCHEMA = "finance"
 _NAME = r"[a-z][a-z0-9_]*"
 _IRREGULAR_PAST = (
-    "went|sent|began|paid|rose|fell|held|lost|came|left|ran|won|got|made|took|grew"
+    "became|went|sent|began|paid|rose|fell|held|lost|came|left|ran|won|got|made|took|grew"
     "|brought|bought|spent|split|set|cut|put|read|shut"
 )
 SHAPES: dict[str, re.Pattern[str]] = {

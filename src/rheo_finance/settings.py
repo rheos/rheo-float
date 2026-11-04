@@ -294,6 +294,8 @@ SPECS: Final[tuple[KeySpec, ...]] = (
     _spec("finance.backup.keep_dumps", INT, 30, "Dumps kept on the external volume."),
     _spec("finance.backup.local_keep", INT, 7, "Dumps kept in the data directory."),
     _spec("finance.backup.time", TIME, dt.time(2, 0), "Local time the backup runs."),
+    _spec("finance.statements.availability_lag_days", INT, 2,
+          "Days after the expected period end before a statement is ready."),
     _spec("finance.statements.grace_days", INT, 7,
           "Days past an account's cadence before a statement counts as overdue."),
     _spec("finance.waste.price_increase_pct", DEC, Decimal("5"),

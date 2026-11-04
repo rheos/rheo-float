@@ -118,6 +118,9 @@ PINNED = {
     "0029_presumed_paid.py": (
         "a28c59b223e354d16beb0a5f664adc69aeb09f780eaa8365334e3521cad8916c"
     ),
+    "0030_notices.py": (
+        "ed5edb752f928a945874a30b9773d0caa7dc5c043e638ddc865cb4033c6b2913"
+    ),
 }
 
 

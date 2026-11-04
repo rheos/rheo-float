@@ -66,10 +66,12 @@ Order of work, set by what each step reads:
    application reads them, and a payment applied to one reverts it. Then one
    ``finance.payment.detected`` per automatic application, and the obligations due
    before ``finance.reminders.min_due_date`` are marked (``presumed.mark_floor``).
-6. Check the deferred constraints now, inside the run, so a violation fails the derive
+6. Stage 16, events, persistent notices and actual parser overdrawn spells
+   (``stage16``).
+7. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
-7. Stage 16, the sink specs (``sinks.store.write_sink_specs``), last.
+8. The sink specs (``sinks.store.write_sink_specs``), last.
 
 A stage is a plain import at its step; a feature package that is not built yet has no
 call site (Key decision 14).
@@ -105,6 +107,7 @@ from rheo_finance.derive import (
     stage14,
     stage15,
     stage15_apply,
+    stage16,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -117,7 +120,9 @@ from rheo_finance.storage.schema import (
     document_line,
     event,
     obligation,
+    overdrawn_spell,
     pair_edge,
+    parsed_overdrawn,
     payment,
     payment_application,
     payment_evidence,
@@ -136,13 +141,16 @@ INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 FINISHED_ROUNDS: Final = 3
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
+    overdrawn_spell, parsed_overdrawn,
     payment_application, payment_evidence, payment,
     coverage_table, pair_edge, obligation, txn_source, txn, source_discrepancy,
     document_line, statement_period, rejected_period, event,
 )  # fmt: skip
 # Of CLEARED, what stage 1 stores per document: kept for documents a derive does not
 # parse again. ``event`` holds only the rejection events of it (``DOCUMENT_REJECTED``).
-PARSE_CACHE: Final = frozenset({document_line, statement_period, rejected_period})
+PARSE_CACHE: Final = frozenset(
+    {document_line, statement_period, rejected_period, parsed_overdrawn}
+)
 # Written on ``document_line`` by stage 3, null after a parse.
 STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id", "refused_decision_id")
 # Rewritten whole by a loader or a stage.
@@ -152,12 +160,12 @@ REWRITTEN: Final = frozenset(
         "own_address", "crypto_label", "payee", "sink_spec",
     }
 )  # fmt: skip
-# State, never truncated (Key decision 3): the decisions, the stored rates and the
-# ranges fetches covered. Each is an input of a derive and feeds a part of the input
-# fingerprint (``fingerprint.STATE_PARTS``).
+# State, never truncated (Key decision 3). Input state feeds the fingerprint;
+# output-only delivery state must not dirty the next derive.
 STATE: Final = frozenset(
-    {"decision", "decision_item", "decision_target", "rate", "rate_coverage"}
+    {"decision", "decision_item", "decision_target", "rate", "rate_coverage", "notice"}
 )
+OUTPUT_STATE: Final = frozenset({"notice"})
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 
@@ -196,6 +204,7 @@ def run(
     *,
     extract_pdf: Callable[[Path], str] = pdf_text,
     reparse: bool = False,
+    statement_ready: stage16.ReadyLoader = stage16.load_ready,
 ) -> Derived:
     """Rebuild every derived table from the archive, the manual files and the
     decisions; with ``reparse``, parse every document again instead of keeping the
@@ -330,6 +339,7 @@ def run(
         stage15_apply.record_detected(uow)
         presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
 
+        stage16.build(uow, ctx, statement_ready=statement_ready)
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
         write_sink_specs(uow)

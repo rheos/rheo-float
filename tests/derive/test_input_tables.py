@@ -26,7 +26,9 @@ def moved_parts(before: fp.Fingerprint, after: fp.Fingerprint) -> set[str]:
 def test_every_input_table_feeds_a_fingerprint_part(ledger: Ledger) -> None:
     # Every table is cleared, rewritten, state or file-owned (test_derive_run); the
     # last two are what a derive reads and does not rebuild.
-    inputs = set(derive_run.STATE) | set(derive_run.FILE_OWNED)
+    inputs = (set(derive_run.STATE) - set(derive_run.OUTPUT_STATE)) | set(
+        derive_run.FILE_OWNED
+    )
     assert set(fp.STATE_PARTS) == inputs
     parts = fp.fingerprint(ledger.uow, ledger.ctx).parts
     assert set(fp.STATE_PARTS.values()) <= set(parts)

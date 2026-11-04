@@ -22,7 +22,9 @@ row per fact as ``(fact, subject, count, at)``:
   out the built-in "Paid outside recorded accounts", which has no source by design;
 - ``missing_months``: per account with any, its ``missing`` coverage months, by label;
 - ``duplicate_bill_month``: per payee with any, its bills past the first of a due
-  month (a period label with a ``-<n>`` suffix), by label.
+  month (a period label with a ``-<n>`` suffix), by label;
+- ``typed_bill_unjoined``: per payee with any, its typed bills that no account takes
+  beside its parsed bills (``derive.stage14``), by label.
 
 ``report_coverage`` is the matrix: account slug and label, month, state and the reason
 as words (``running_balance_break`` reads ``running balance break``).
@@ -81,6 +83,7 @@ MISSING_MONTHS: Final = "missing_months"
 DUPLICATE_BILL_MONTH: Final = "duplicate_bill_month"
 MANUAL_MISMATCH: Final = "manual_mismatch"
 STATEMENT_CONFLICT: Final = "statement_conflict"
+TYPED_BILL_UNJOINED: Final = "typed_bill_unjoined"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -178,6 +181,7 @@ def report_status_select() -> Select[tuple[object, ...]]:
         _obligations_per_payee(
             STATEMENT_CONFLICT, obligation.c.statement_conflict.is_(True)
         ),
+        _obligations_per_payee(TYPED_BILL_UNJOINED, obligation.c.unjoined.is_(True)),
     ]
     # A view's body is one select; the union is wrapped as its only source.
     unioned = union_all(*branches).subquery("facts")

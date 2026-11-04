@@ -24,6 +24,10 @@ involved:
   views show both, so neither may carry one;
 - an account left with no identifier row (AC-1), checked after the rules above.
 
+An account of kind ``bill_vendor`` is one running bill account with a vendor: each
+bill's total holds the unpaid balance before it, so only the newest is owed (ADR-0013).
+A vendor whose invoices stand alone is a payee, not an account.
+
 The built-in account "Paid outside recorded accounts" (kind ``wallet``, identifier
 ``CASH`` of kind ``internal``) is added here, never read from a file, so it exists
 after every load. Kind ``internal`` is reserved for it.
@@ -60,6 +64,7 @@ from rheo_finance.text import compared
 
 ACCOUNTS_FILE: Final = "accounts.csv"
 CREDIT_CARD: Final = "credit_card"
+BILL_VENDOR: Final = "bill_vendor"
 CARRIES_IDENTIFIER: Final = (
     "carries an account identifier or a run of 8 or more digits; the report views"
     " show it, so change it"

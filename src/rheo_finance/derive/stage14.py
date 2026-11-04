@@ -11,9 +11,10 @@ subscription vendor is a spending line only. The paths are in the table above
   one payee due in one month takes ``-2``, ``-3`` in (bill date, due date, path) order,
   which ``report_status`` counts for status line 9. A parsed bill that prints no total
   due has no amount to owe and makes no obligation.
-- (3) A manual bill: one ``bill`` per ``obligations.csv`` row, for a bill with no
-  parser. The document its row names, when one is registered at that path, is its
-  primary source and makes nothing of its own; otherwise the row is.
+- (3) A manual bill: one ``bill`` per ``obligations.csv`` row, typed in whether or not a
+  parser reads that issuer's bills. The document its row names, when one is registered
+  at that path, is its primary source and makes nothing of its own; otherwise the row
+  is.
 - (4) An arrangement: one ``arrangement_instalment`` per ``arrangements.csv`` row,
   period ``inst-<slug>-<n>``, issued on ``agreed_on``; and arrears, below.
 - (5) A manual debt: one ``manual_debt`` per ``obligations.csv`` row, period
@@ -38,6 +39,14 @@ amount owed on an account not registered as a card has none: ``NoPayee`` fails t
 derive rather than dropping what is owed. A manual row and an arrangement name their
 payee by slug, and the loaders refuse an unknown one.
 
+**A bill row naming the issuer.** An account with its own payee takes its parsed bills
+from the issuer's payee, so a typed bill naming the issuer's slug would be owed beside
+the parsed bill it copies. When every parsed bill of the issuer is owed to one other
+payee, the row is read as that payee's and merges or chains there. Parsed bills owed to
+two or more other payees leave nothing to say which one it means: the row stays on the
+issuer's payee and is ``unjoined``. With no parsed bill yet there is nothing to count
+twice, and the row stays where it was written.
+
 **Supersession (FR-21).** Per (payee, account, kind), so two accounts of one issuer stay
 two chains, oldest issue first, each newer row names the one before it in
 ``supersedes_id`` and the one before it is ``superseded``. A statement's balance and
@@ -51,9 +60,10 @@ Its bills are one running account, typed in or parsed: a manual bill joins the c
 typed from a photo is never owed beside the bill that carries it. Its account is the
 one the payee's parsed bills are on, else the one the payee stands for. Parsed bills on
 two accounts leave it no account to join: it then chains only with the payee's other
-manual bills. Any other payee is invoice-style: a manual invoice does not carry the one
-before it, so two of them are both owed. A manual debt never chains, and a manual row
-merged into a document is that document's row.
+manual bills and is ``unjoined``, which status line 9 counts, because it stays open
+beside the parsed bills that may carry it. Any other payee is invoice-style: a manual
+invoice does not carry the one before it, so two of them are both owed. A manual debt
+never chains, and a manual row merged into a document is that document's row.
 
 **Arrangements and arrears.** Every bill period an arrangement ``replaces`` is
 ``superseded``, and names the arrangement in ``arrangement_ref``, from then on: when the
@@ -86,7 +96,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from itertools import pairwise
@@ -97,6 +107,7 @@ from sqlalchemy import Row, insert, select
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import precedence
 from rheo_finance.derive.stage4 import cents
+from rheo_finance.manual.accounts import BILL_VENDOR
 from rheo_finance.manual.arrangements import Arrangement
 from rheo_finance.manual.obligations import ManualObligation, bill_period
 from rheo_finance.manual.payees import bill_issuers
@@ -118,7 +129,6 @@ CARD_STATEMENT: Final[ObligationKind] = "card_statement"
 BILL: Final[ObligationKind] = "bill"
 INSTALMENT: Final[ObligationKind] = "arrangement_instalment"
 ARREARS: Final[ObligationKind] = "arrears"
-BILL_VENDOR: Final = "bill_vendor"
 CURRENCY: Final = "CAD"
 ZERO: Final = Decimal("0.00")
 
@@ -138,9 +148,9 @@ def obligation_id(
 
 @dataclass(frozen=True)
 class _Draft:
-    """One obligation before its place in its chain is known. ``account_id``, the
-    current charges and the arrears are a parsed document's; ``chained`` says it takes
-    part in supersession."""
+    """One obligation before its place in its chain is known. ``account_id`` is the
+    account its chain runs on; the current charges and the arrears are a parsed
+    document's; ``chained`` says it takes part in supersession."""
 
     payee_id: uuid.UUID
     kind: ObligationKind
@@ -159,6 +169,7 @@ class _Draft:
     manual_mismatch: Decimal | None = None
     statement_conflict: bool = False
     arrangement_ref: str | None = None
+    unjoined: bool = False
 
     @property
     def id(self) -> uuid.UUID:
@@ -303,13 +314,29 @@ def _bill_drafts(
     return drafts
 
 
+def _issuer_holders(
+    rows: Iterable[Row[tuple[object, ...]]],
+    payee_of: _PayeeOf,
+    by_slug: Mapping[str, uuid.UUID],
+) -> Mapping[uuid.UUID, set[uuid.UUID]]:
+    """Per issuer's slug payee, the payees that issuer's parsed bills are owed to."""
+    holders: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    for row in rows:
+        named = by_slug.get(row.issuer)
+        if named is not None:
+            holders[named].add(payee_of(row, row.issuer))
+    return holders
+
+
 def _manual_drafts(
     uow: UnitOfWork,
     manual: Sequence[ManualObligation],
     by_slug: Mapping[str, uuid.UUID],
+    holders: Mapping[uuid.UUID, set[uuid.UUID]],
 ) -> list[_Draft]:
-    """A draft per ``obligations.csv`` row. Each row's source is the document it names,
-    if one is registered at that path, else the row itself."""
+    """A draft per ``obligations.csv`` row, a bill naming an issuer whose parsed bills
+    all go to one other payee read as that payee's. Each row's source is the document it
+    names, if one is registered at that path, else the row itself."""
     named = {each.row.archive_path for each in manual if each.row.archive_path}
     registered = set(
         uow.execute(select(document.c.path).where(document.c.path.in_(named))).scalars()
@@ -319,9 +346,19 @@ def _manual_drafts(
         path = each.row.archive_path
         return path if path is not None and path in registered else each.source_ref
 
+    standing = {
+        named: next(iter(found))
+        for named, found in holders.items()
+        if len(found) == 1 and named not in found
+    }
+
+    def payee_id(each: ManualObligation) -> uuid.UUID:
+        named = by_slug[each.row.payee]
+        return standing.get(named, named) if each.row.kind == BILL else named
+
     return [
         _Draft(
-            payee_id=by_slug[each.row.payee],
+            payee_id=payee_id(each),
             kind=each.row.kind,
             period_label=each.row.period,
             statement_date=None,
@@ -381,11 +418,19 @@ def _bill_sources(
 
 
 def _with_manual_chained(
-    drafts: Iterable[_Draft], sources: Mapping[uuid.UUID, uuid.UUID | None]
+    drafts: Iterable[_Draft],
+    sources: Mapping[uuid.UUID, uuid.UUID | None],
+    billed: Collection[uuid.UUID],
 ) -> list[_Draft]:
-    """``drafts``, each manual bill of a bill source in its chain."""
+    """``drafts``, each manual bill of a bill source in its chain, and ``unjoined`` when
+    the payee is in ``billed`` (it has parsed bills) and no account takes the row."""
     return [
-        replace(draft, chained=True, account_id=sources[draft.payee_id])
+        replace(
+            draft,
+            chained=True,
+            account_id=sources[draft.payee_id],
+            unjoined=sources[draft.payee_id] is None and draft.payee_id in billed,
+        )
         if draft.kind == BILL and not draft.chained and draft.payee_id in sources
         else draft
         for draft in drafts
@@ -529,6 +574,7 @@ def _values(
         "manual_source": draft.manual_source,
         "manual_mismatch": draft.manual_mismatch,
         "statement_conflict": draft.statement_conflict,
+        "unjoined": draft.unjoined,
         "supersedes_id": None if supersedes is None else supersedes.id,
         "arrangement_ref": draft.arrangement_ref,
         "invoice_ref": None,
@@ -596,8 +642,11 @@ def create_obligations(
     cards = [row for row in periods if row.kind == "statement"]
     bills = [row for row in periods if row.kind == "bill"]
     documents = [*_card_drafts(uow, cards, payee_of), *_bill_drafts(bills, payee_of)]
-    merged = _merged(documents, _manual_drafts(uow, manual, by_slug))
-    chained = _with_manual_chained(merged, _bill_sources(uow, documents, by_slug))
+    holders = _issuer_holders(bills, payee_of, by_slug)
+    merged = _merged(documents, _manual_drafts(uow, manual, by_slug, holders))
+    chained = _with_manual_chained(
+        merged, _bill_sources(uow, documents, by_slug), holders
+    )
     drafts = _in_issue_order(_with_replaced(chained, arrangements, by_slug))
     changed, arrears = _owed_now(drafts, _active_payees(arrangements, by_slug))
     rows = _rows(

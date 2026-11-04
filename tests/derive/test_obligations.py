@@ -26,6 +26,7 @@ from rheo_finance.reports.views import (
     DUPLICATE_BILL_MONTH,
     MANUAL_MISMATCH,
     STATEMENT_CONFLICT,
+    TYPED_BILL_UNJOINED,
 )
 from rheo_finance.storage.schema import document, obligation, payee, report_status
 
@@ -900,6 +901,202 @@ def test_a_manual_bill_of_an_issuer_with_two_billed_accounts_joins_neither(
     ledger.derive()
 
     assert [row.status for row in rows(ledger)] == ["open", "open", "open"]
+    assert facts(ledger, TYPED_BILL_UNJOINED) == {"virgin-plus": 1}
+    assert [row.unjoined for row in rows(ledger)].count(True) == 1
+
+
+def test_a_typed_bill_that_joins_a_chain_records_no_fact(ledger: Ledger) -> None:
+    virgin_account(ledger)
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,140.00,,2026-03-23,,2026-03-02",
+    )
+    ledger.derive()
+
+    assert facts(ledger, TYPED_BILL_UNJOINED) == {}
+
+
+def test_typed_bills_of_an_issuer_with_no_parsed_bill_record_no_fact(
+    ledger: Ledger,
+) -> None:
+    """They chain with each other, and no parsed bill stands beside them."""
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "fortisbc,bill,,,400.00,,2026-02-05,,2026-01-15",
+    )
+    ledger.derive()
+
+    assert facts(ledger, TYPED_BILL_UNJOINED) == {}
+
+
+def test_a_bill_sources_manual_debts_never_chain(ledger: Ledger) -> None:
+    """A debt to a bill vendor is not a bill: the newer one holds nothing of the older,
+    and chaining them would make the older debt vanish from what is owed."""
+    virgin_account(ledger)
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,manual_debt,first,,500.00,,,,2026-01-01",
+        "virgin-plus,manual_debt,second,,20.00,,,,2026-03-01",
+    )
+    ledger.derive()
+
+    found = by_label(ledger)
+
+    assert (found["debt-first"].status, found["debt-second"].status) == ("open", "open")
+    assert found["debt-second"].supersedes_id is None
+    assert found["bill-2026-02"].status == "open"
+    assert owed_total(ledger) == Decimal("646.30")
+
+
+def test_a_manual_bill_chains_on_the_account_of_the_parsed_bills_not_the_stood_for_one(
+    ledger: Ledger,
+) -> None:
+    """The issuer's payee stands for one account and its parsed bills are on the other:
+    the bills on file say where the running balance is."""
+    accounts(
+        ledger,
+        ("virgin-plus", "Virgin Plus", "bill_vendor", "999000123", "SAMPLE MOBILE CO"),
+        ("second-mobile", "Virgin Plus", "bill_vendor", SECOND_VIRGIN_NUMBER, ""),
+    )
+    ledger.file(VIRGIN, second_account(fixture("virgin_bill.txt")))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,140.00,,2026-03-23,,2026-03-02",
+    )
+    ledger.derive()
+
+    parsed, typed = rows(ledger)
+
+    assert (parsed.status, typed.status) == ("superseded", "open")
+    assert typed.supersedes_id == parsed.id
+    assert owed_total(ledger) == Decimal("140.00")
+
+
+def test_a_later_due_date_is_the_newer_of_two_bills_issued_on_one_date(
+    ledger: Ledger,
+) -> None:
+    """The later due date is written first: the order of the rows does not decide it."""
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "fortisbc,bill,,,600.00,,2026-03-05,,2026-01-15",
+        "fortisbc,bill,,,400.00,,2026-02-05,,2026-01-15",
+    )
+    ledger.derive()
+
+    found = by_label(ledger)
+
+    assert (found["bill-2026-02"].status, found["bill-2026-03"].status) == (
+        "superseded",
+        "open",
+    )
+    assert found["bill-2026-03"].supersedes_id == found["bill-2026-02"].id
+    assert owed_total(ledger) == Decimal("600.00")
+
+
+# --- a bill row that names the issuer of an account with its own payee ----------------
+
+
+def test_a_bill_row_naming_the_issuer_is_read_as_the_standing_payee(
+    ledger: Ledger,
+) -> None:
+    """One bill, parsed under the account's own payee and typed under the issuer's, is
+    owed once."""
+    virgin_account(ledger, "SAMPLE MOBILE CO")
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,126.30,,2026-02-23,,2026-02-02",
+    )
+    ledger.derive()
+
+    (row,) = rows(ledger)
+
+    assert row.payee_id == payee_id(ledger, "mobile")
+    assert row.primary_source == VIRGIN
+    assert row.manual_source == "manual:obligations.csv:2"
+    assert owed_total(ledger) == Decimal("126.30")
+    assert facts(ledger, TYPED_BILL_UNJOINED) == {}
+
+
+def test_a_later_bill_row_naming_the_issuer_chains_under_the_standing_payee(
+    ledger: Ledger,
+) -> None:
+    virgin_account(ledger, "SAMPLE MOBILE CO")
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,140.00,,2026-03-23,,2026-03-02",
+    )
+    ledger.derive()
+
+    parsed, typed = rows(ledger)
+
+    assert typed.payee_id == parsed.payee_id == payee_id(ledger, "mobile")
+    assert (parsed.status, typed.status) == ("superseded", "open")
+    assert owed_total(ledger) == Decimal("140.00")
+
+
+def test_a_debt_row_naming_the_issuer_stays_on_the_issuers_payee(
+    ledger: Ledger,
+) -> None:
+    """A debt is not one of the account's bills."""
+    virgin_account(ledger, "SAMPLE MOBILE CO")
+    ledger.file(VIRGIN, fixture("virgin_bill.txt"))
+    ledger.manual(OBLIGATIONS_FILE, "virgin-plus,manual_debt,loan,,500.00,,,,")
+    ledger.derive()
+
+    assert by_label(ledger)["debt-loan"].payee_id == payee_id(ledger, "virgin-plus")
+
+
+def test_a_bill_row_naming_an_issuer_with_no_parsed_bill_stays_where_it_was_written(
+    ledger: Ledger,
+) -> None:
+    virgin_account(ledger, "SAMPLE MOBILE CO")
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,126.30,,2026-02-23,,2026-02-02",
+    )
+    ledger.derive()
+
+    (row,) = rows(ledger)
+
+    assert row.payee_id == payee_id(ledger, "virgin-plus")
+    assert facts(ledger, TYPED_BILL_UNJOINED) == {}
+
+
+def test_a_bill_row_naming_an_issuer_billed_under_two_payees_stays_and_is_counted(
+    ledger: Ledger,
+) -> None:
+    """Either account's bill could be the one it copies: it is not guessed, and status
+    says so."""
+    accounts(
+        ledger,
+        ("mobile", "Virgin Plus", "bill_vendor", "999000123", "SAMPLE MOBILE CO"),
+        (
+            "second-mobile",
+            "Virgin Plus",
+            "bill_vendor",
+            SECOND_VIRGIN_NUMBER,
+            "SAMPLE SECOND CO",
+        ),
+    )
+    ledger.file("virgin-plus/a.pdf", virgin_bill())
+    ledger.file("virgin-plus/b.pdf", second_account(virgin_bill()))
+    ledger.manual(
+        OBLIGATIONS_FILE,
+        "virgin-plus,bill,,,126.30,,2026-02-23,,2026-02-02",
+    )
+    ledger.derive()
+
+    typed = [
+        row for row in rows(ledger) if row.payee_id == payee_id(ledger, "virgin-plus")
+    ]
+
+    assert len(typed) == 1
+    assert len(rows(ledger)) == 3
+    assert facts(ledger, TYPED_BILL_UNJOINED) == {"virgin-plus": 1}
 
 
 # --- a manual row and a parsed document -----------------------------------------------

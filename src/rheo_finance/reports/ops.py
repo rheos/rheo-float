@@ -208,6 +208,11 @@ def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
         "card statement with conflicting copies",
         "card statements with conflicting copies",
     )
+    parts += _per_payee(
+        facts[views.TYPED_BILL_UNJOINED],
+        "typed bill that joins no parsed bills",
+        "typed bills that join no parsed bills",
+    )
     no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
     if no_data:
         parts.append(

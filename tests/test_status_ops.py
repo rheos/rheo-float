@@ -200,6 +200,7 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                     primary_source="fortisbc/bill.pdf",
                     manual_mismatch=Decimal("0.50"),
                     statement_conflict=True,
+                    unjoined=True,
                 )
             )
             descriptions = conn.scalars(
@@ -358,6 +359,7 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
         "1 source discrepancy; 1 duplicate bill month (fortisbc 1);"
         " 1 manual bill that differs from its document (fortisbc 1);"
         " 1 card statement with conflicting copies (fortisbc 1);"
+        " 1 typed bill that joins no parsed bills (fortisbc 1);"
         " 1 account with no data: Spare;"
         " 1 archive file skipped: file name carries an identifier, rename them"
         " (vancity 1)"

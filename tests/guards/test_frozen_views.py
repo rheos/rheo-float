@@ -97,6 +97,9 @@ PINNED = {
     "0022_bill_figures.py": (
         "10a9a46bcc724e22f1dfcf408b6563987c6b977b06c95db0578371267da046d1"
     ),
+    "0023_typed_bill_unjoined.py": (
+        "947b3204f4eacecb655056b49f8813f011e3343b798b1094467f8c93a5af5731"
+    ),
 }
 
 

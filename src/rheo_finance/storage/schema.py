@@ -762,6 +762,8 @@ obligation = Table(
     Column("manual_mismatch", Numeric(20, 2)),
     # Two parsed statements of its closing date differ in their figures (0022).
     Column("statement_conflict", Boolean, nullable=False, server_default="false"),
+    # A typed bill of a payee with parsed bills that no account takes (migration 0023).
+    Column("unjoined", Boolean, nullable=False, server_default="false"),
     Column(
         "supersedes_id",
         Uuid,
@@ -779,7 +781,8 @@ _tiers(
         "issued_on": P, "amount_due": R, "minimum_due": R, "threshold_due": R,
         "paid": R, "remaining": R, "threshold_remaining": R, "due_date": P,
         "status": P, "primary_source": P, "manual_source": P, "manual_mismatch": R,
-        "statement_conflict": P, "supersedes_id": P, "arrangement_ref": P,
+        "statement_conflict": P, "unjoined": P, "supersedes_id": P,
+        "arrangement_ref": P,
         "invoice_ref": P, "payments_mismatch": R,
     },
 )  # fmt: skip

@@ -313,6 +313,32 @@ def test_a_payment_of_the_amount_due_matches_only_in_the_decided_round(
     assert out.lines.unmatched_invoices == 1
 
 
+def test_the_decided_round_reads_the_amount_due_every_copy_prints(
+    ledger: Ledger,
+) -> None:
+    """The copy whose sha256 ranks it second prints what the payment paid."""
+    ledger.chequing()
+    first, copy = invoice(), part_paid("300.00")
+    while (
+        hashlib.sha256(copy.encode()).digest() > hashlib.sha256(first.encode()).digest()
+    ):
+        copy += "\n"
+    ledger.file(INVOICE, first)
+    ledger.file("invoices-received/sample-vendor/2025-12-01-copy.pdf", copy)
+    ledger.derive()
+    decision_id = paid(ledger, account="chequing")
+
+    payments(ledger, ("12-Mar-2026", CONTRACTOR, "450.00"))
+    out = ledger.derive()
+
+    assert outside(ledger) == []
+    assert out.lines.invoice_decisions_superseded == 1
+    # Both copies are evidence of the one payment; the decision is overridden once.
+    links = sources(ledger, "evidence")
+    assert len(links) == 2
+    assert [link.overrides_decision_id for link in links].count(decision_id) == 1
+
+
 def test_a_payment_outside_both_windows_is_another_payment(ledger: Ledger) -> None:
     on_chequing(ledger)
     paid(ledger, account="chequing")

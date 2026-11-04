@@ -12,15 +12,18 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, NamedTuple
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
+from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import RecordOut
-from rheo_finance.derive import fees
+from rheo_finance.derive import coverage as coverage_stage
+from rheo_finance.derive import fees, precedence, stage1, stage11
 from rheo_finance.derive.run import run
 from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.manual.accounts import ACCOUNTS_FILE
@@ -30,6 +33,7 @@ from rheo_finance.manual.stage2 import account_id
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
 from rheo_finance.storage.schema import (
     coverage,
+    document,
     document_line,
     obligation,
     payee,
@@ -1107,6 +1111,168 @@ def test_an_unapplied_credit_names_an_honest_reason(
         return
     with pytest.raises(IntegrityError, match="check"), notices.conn.begin_nested():
         notices.conn.execute(insert(payment_application).values(**row))
+
+
+# --- the cases each rule turns on -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state", "paid_state"),
+    [
+        ("unparsed", "active"),
+        ("rejected", "active"),
+        ("missing", "active"),
+        ("partial", "confirm_only"),
+        ("have", "confirm_only"),
+    ],
+)
+def test_a_debit_naming_a_card_is_the_payment_only_in_a_month_with_no_card_lines(
+    notices: Ledger,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    paid_state: str,
+) -> None:
+    """The card's June is set to each state as the coverage stage would leave it."""
+    original: Callable[..., Any] = coverage_stage.build_coverage
+
+    def then_set(uow: UnitOfWork, *args: Any) -> Any:
+        months = original(uow, *args)
+        uow.execute(
+            update(coverage)
+            .where(
+                coverage.c.account_id == account_id("visa"),
+                coverage.c.month == D(2025, 6, 1),
+            )
+            .values(state=state, reason_code=None)
+        )
+        return months
+
+    monkeypatch.setattr(coverage_stage, "build_coverage", then_set)
+    bank(notices, (JUNE, BILL_PAYMENT, BANK))
+    file_card(notices, (D(2025, 6, 2), "SAMPLE SHOP", Decimal("-10.00")))
+
+    notices.derive()
+
+    assert seen(notices) == [money(JUNE, name="visa", state=paid_state)]
+
+
+def test_a_notice_printed_negative_is_the_payment_of_its_size(notices: Ledger) -> None:
+    bank(notices, (JUNE, ISP, BANK))
+    notice(notices, JUNE, amount=BANK)
+
+    notices.derive()
+
+    assert seen(notices) == [money(JUNE, "notice")]
+
+
+def test_a_notice_in_a_document_that_is_not_parsed_is_no_notice(
+    notices: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its lines stay stored; the document no longer counts."""
+    filed = notice(notices, JUNE)
+    original: Callable[[UnitOfWork], int] = precedence.supersede
+
+    def then_set_aside(uow: UnitOfWork) -> int:
+        made = original(uow)
+        uow.execute(
+            update(document).where(document.c.id == filed).values(status="superseded")
+        )
+        return made
+
+    monkeypatch.setattr(stage1, "supersede", then_set_aside)
+
+    notices.derive()
+
+    assert notices.conn.scalar(
+        select(document_line.c.id).where(document_line.c.document_id == filed)
+    )
+    assert seen(notices) == []
+
+
+def test_the_copy_of_the_larger_sha256_stands_for_a_notice(notices: Ledger) -> None:
+    text = notice_lines(f"{JUNE} 200.00 CAD payment_received Sample ISP")
+    filed = [
+        notices.file(f"{NOTICE_ISSUER}/sender-a/{name}.txt", text + "\n" * extra)
+        for name, extra in (("one", 0), ("two", 1), ("three", 2))
+    ]
+    notices.derive()
+
+    shas = dict(
+        notices.conn.execute(
+            select(document.c.id, document.c.sha256).where(document.c.id.in_(filed))
+        ).all()
+    )
+    standing = notices.conn.scalar(
+        select(document_line.c.id).where(
+            document_line.c.document_id == max(filed, key=lambda each: shas[each])
+        )
+    )
+    (row,) = notices.conn.execute(select(payment_evidence)).all()
+    assert row.document_line_id == standing
+
+
+@pytest.mark.parametrize("kind", ["conversion", "trade", "loan"])
+def test_a_line_paired_as_anything_but_an_own_transfer_is_no_payment(
+    notices: Ledger, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    original: Callable[..., None] = stage11.resolve
+
+    def then_pair(uow: UnitOfWork, *args: Any) -> None:
+        original(uow, *args)
+        uow.execute(update(txn).values(pair_kind=kind))
+
+    monkeypatch.setattr(stage11, "resolve", then_pair)
+    bank(notices, (JUNE, ISP, BANK))
+
+    notices.derive()
+
+    assert seen(notices) == []
+
+
+def test_a_debit_on_the_card_itself_naming_the_card_pays_nothing(
+    notices: Ledger,
+) -> None:
+    """A returned payment, say: it took money back off the card."""
+    file_card(notices, (JUNE, "RETURNED PAYMENT VANCITY VISA", BANK))
+
+    notices.derive()
+
+    assert seen(notices) == []
+
+
+def test_a_fans_amount_is_the_sum_of_its_credits(notices: Ledger) -> None:
+    """One debit the owner pairs with two card credits is one payment of both."""
+    bank(notices, (D(2025, 6, 2), BILL_PAYMENT, Decimal("-400.00")))
+    file_card(
+        notices,
+        (D(2025, 6, 4), PAYMENT_RECEIVED, AMOUNT),
+        (D(2025, 6, 5), PAYMENT_RECEIVED, AMOUNT),
+    )
+    notices.derive()
+
+    call(
+        notices,
+        "finance.decision.record",
+        {
+            "kind": "pair",
+            "target_ref": f"finance.txn:{bank_line(notices, D(2025, 6, 2))}",
+            "legs": [
+                {"target_ref": f"finance.txn:{bank_line(notices, D(2025, 6, 4))}"},
+                {"target_ref": f"finance.txn:{bank_line(notices, D(2025, 6, 5))}"},
+            ],
+        },
+    )
+    notices.derive()
+
+    assert seen(notices) == [
+        money(
+            D(2025, 6, 4),
+            "joined",
+            "joined",
+            name="visa",
+            amount=Decimal("400.00"),
+        )
+    ]
 
 
 # --- an invoice debt ------------------------------------------------------------------

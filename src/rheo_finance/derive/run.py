@@ -30,7 +30,7 @@ Order of work, set by what each step reads:
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
    source discrepancies (``stage3``, ``precedence``, ``overlap``), then the receipts
    and invoices linked to the txns as evidence (``evidence``), by the payee patterns
-   stage 2 loaded.
+   stage 2 loaded, and the ``invoice_paid`` decisions booked.
 5. Stage 4, conversion to CAD from the stored rates (``stage4``); stage 5,
    recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
    which reads the periods, the lines and ``document_periods.csv``; then stage 7, the
@@ -50,7 +50,8 @@ Order of work, set by what each step reads:
    crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
    transfer's net or conversion's spread becomes a derived fee line; then stage 14, the
    obligations (``stage14``), which read the parsed periods and the payees stage 2
-   stored, and the manual obligations and arrangements it holds.
+   stored, the manual obligations and arrangements it holds, and the ``invoice_unpaid``
+   decisions on invoices stage 3 left unmatched.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -243,7 +244,10 @@ def run(
         )
         stage11.resolve(uow, decided)
         stage14.create_obligations(
-            uow, manual.obligations.obligations, manual.arrangements.arrangements
+            uow,
+            manual.obligations.obligations,
+            manual.arrangements.arrangements,
+            manual.payees,
         )
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))

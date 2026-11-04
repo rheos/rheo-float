@@ -31,6 +31,9 @@ on the row involved:
    (``documents.issuers.ISSUER_DIRS`` kind ``bill``) that no payee above holds is a
    ``vendor`` payee of that slug, labelled with it, with no patterns, so a parsed bill
    always has its payee.
+5. **Invoice issuers.** The same for each directory of invoices (kind ``invoice``), so a
+   debt from an invoice whose printed payee no payee names has one (``derive.stage14``).
+   Its label is the directory key, never the printed name.
 
 Stage 2 stores every payee in ``payee`` (the patterns restricted) and holds the set in
 memory: stage 3 reads the patterns, stage 14 the ``paid_from`` accounts. The party
@@ -143,7 +146,8 @@ def names_any(patterns: Iterable[str], text: str) -> bool:
 @dataclass(frozen=True)
 class Payees:
     """Every payee, account-backed first, then ``payees.csv`` in file order, then the
-    remaining cards and the bill issuers; and every ``payees.csv`` error, sorted."""
+    remaining cards and the bill and invoice issuers; and every ``payees.csv`` error,
+    sorted."""
 
     payees: tuple[Payee, ...]
     errors: tuple[RowError, ...]
@@ -151,6 +155,10 @@ class Payees:
     @property
     def slugs(self) -> frozenset[str]:
         return frozenset(payee.slug for payee in self.payees)
+
+    def naming(self, printed: str) -> Payee | None:
+        """The first payee one of whose patterns names ``printed``, or None."""
+        return next((payee for payee in self.payees if payee.names(printed)), None)
 
     def patterns_naming(self, printed: str) -> tuple[str, ...]:
         """The patterns of every payee one of whose patterns names ``printed`` (a
@@ -162,11 +170,15 @@ class Payees:
         return tuple(found)
 
 
+def _issuers_of(kind: str) -> tuple[str, ...]:
+    return tuple(
+        sorted(key for key, rule in issuers.ISSUER_DIRS.items() if rule.kind == kind)
+    )
+
+
 def bill_issuers() -> tuple[str, ...]:
     """The issuer keys whose archive directory holds bills, sorted."""
-    return tuple(
-        sorted(key for key, rule in issuers.ISSUER_DIRS.items() if rule.kind == "bill")
-    )
+    return _issuers_of("bill")
 
 
 def build_payees(result: LoadResult[PayeeRow], registry: Registry) -> Payees:
@@ -240,7 +252,7 @@ def build_payees(result: LoadResult[PayeeRow], registry: Registry) -> Payees:
     taken |= {payee.slug for payee in cards}
     vendors = [
         Payee(slug=key, label=key, kind="vendor", patterns=())
-        for key in bill_issuers()
+        for key in (*bill_issuers(), *_issuers_of("invoice"))
         if key not in taken
     ]
     return Payees((*backed, *listed, *cards, *vendors), tuple(sorted(set(errors))))

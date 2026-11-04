@@ -213,6 +213,11 @@ def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
         "typed bill that joins no parsed bills",
         "typed bills that join no parsed bills",
     )
+    parts += _per_payee(
+        facts[views.INVOICE_DECISION_SUPERSEDED],
+        "invoice decision superseded by a matched line",
+        "invoice decisions superseded by matched lines",
+    )
     no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
     if no_data:
         parts.append(

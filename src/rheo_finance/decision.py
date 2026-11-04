@@ -31,7 +31,13 @@ from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.storage import refs
 from rheo_finance.storage.ids import uuid7
-from rheo_finance.storage.schema import decision, decision_item, decision_target
+from rheo_finance.storage.schema import (
+    account,
+    decision,
+    decision_item,
+    decision_target,
+    document_line,
+)
 from rheo_finance.tier import Tier
 
 
@@ -143,8 +149,15 @@ TARGET_COLUMN: Mapping[DecisionKind, str] = {
 }
 
 # The ref types that name a ledger line (``finance.txn:<uuid>``, prompt 21). A prompt
-# that gives document lines their own ref type adds it here.
+# that gives document lines their own ref type adds it here, unless the line has no
+# account to snapshot, as ``INVOICE_REF_TYPE``'s has not.
 LINE_REF_TYPES = frozenset({"txn"})
+
+# An invoice line, by its line key (``derive.evidence``): the target of the invoice
+# kinds. It is not a ledger line until a decision or a payment makes it count.
+INVOICE_REF_TYPE = "invoice"
+ACCOUNT_REF_TYPE = "account"
+INVOICE_DECISIONS = (K.INVOICE_PAID, K.INVOICE_UNPAID)
 
 # Kinds keyed to a line or a merchant, which stage 17 can find orphaned.
 LINE_KEYED_KINDS = frozenset(
@@ -458,6 +471,43 @@ def _check_about(uow: UnitOfWork, data: RecordIn) -> None:
         )
 
 
+def invoice_ref(line_key: uuid.UUID) -> str:
+    """The reference an invoice decision targets the invoice line of ``line_key`` by."""
+    return refs.format_ref(refs.FINANCE_SYSTEM, INVOICE_REF_TYPE, line_key)
+
+
+def _check_invoice(uow: UnitOfWork, data: RecordIn) -> None:
+    """An invoice decision names a current invoice line, and ``invoice_paid`` an account
+    on the registry. Stage 3 reads such a decision by its line key alone, so one that
+    names anything else would be stored and change nothing, without a word."""
+    if data.kind not in INVOICE_DECISIONS:
+        return
+    assert data.target_ref is not None  # the kind's required column
+    target = refs.parse(data.target_ref)
+    if target.system != refs.FINANCE_SYSTEM or target.type != INVOICE_REF_TYPE:
+        raise DecisionRefused(f"{data.kind.value}: target_ref is not an invoice line")
+    found = uow.scalar(
+        select(func.count()).where(
+            document_line.c.line_key_id == uuid.UUID(target.id),
+            document_line.c.line_kind == "invoice",
+        )
+    )
+    if not found:
+        raise DecisionRefused(
+            f"{data.kind.value}: target_ref resolves to no current invoice line"
+        )
+    if data.account_ref is None:
+        return
+    paying = refs.parse(data.account_ref)
+    known = (
+        paying.system == refs.FINANCE_SYSTEM
+        and paying.type == ACCOUNT_REF_TYPE
+        and uow.scalar(select(func.count()).where(account.c.id == uuid.UUID(paying.id)))
+    )
+    if not known:
+        raise DecisionRefused(f"{data.kind.value}: account_ref names no account")
+
+
 def is_line_ref(ref: str) -> bool:
     """Whether ``ref`` names a ledger line, the thing a snapshot is taken of."""
     parsed = refs.parse(ref)
@@ -491,6 +541,7 @@ def record(ctx: FinanceContext, uow: UnitOfWork, data: RecordIn) -> RecordOut:
         raise DecisionRefused(f"{data.kind.value}: recorded only by {elsewhere}")
     _check_columns(data)
     _check_about(uow, data)
+    _check_invoice(uow, data)
     if data.bulk_id is not None and _bulk_reversed(uow, data.bulk_id):
         # It would be un-applied from the moment it was recorded.
         raise DecisionRefused(f"{data.kind.value}: that bulk run is already reversed")

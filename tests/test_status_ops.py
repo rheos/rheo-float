@@ -36,6 +36,7 @@ from sqlalchemy import (
     insert,
     select,
     text,
+    update,
 )
 from sqlalchemy.pool import NullPool
 
@@ -72,11 +73,13 @@ from rheo_finance.storage.ids import uuid7
 from rheo_finance.storage.schema import (
     account,
     coverage,
+    decision,
     document_line,
     obligation,
     payee,
     source_discrepancy,
     txn,
+    txn_source,
 )
 
 MakeContext = Callable[[Role], FinanceContext]
@@ -202,6 +205,24 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                     statement_conflict=True,
                     unjoined=True,
                 )
+            )
+            # An invoice decision a payment took over from.
+            taken_over = uuid7(NOW)
+            conn.execute(
+                insert(decision).values(
+                    id=taken_over,
+                    kind="invoice_unpaid",
+                    target_ref=f"finance.invoice:{uuid7(NOW)}",
+                    decided_at=NOW,
+                )
+            )
+            conn.execute(
+                update(txn_source)
+                .where(
+                    txn_source.c.txn_id
+                    == select(txn_source.c.txn_id).limit(1).scalar_subquery()
+                )
+                .values(overrides_decision_id=taken_over)
             )
             descriptions = conn.scalars(
                 select(document_line.c.description_raw).where(
@@ -360,6 +381,7 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
         " 1 manual bill that differs from its document (fortisbc 1);"
         " 1 card statement with conflicting copies (fortisbc 1);"
         " 1 typed bill that joins no parsed bills (fortisbc 1);"
+        " 1 invoice decision superseded by a matched line (invoice_unpaid 1);"
         " 1 account with no data: Spare;"
         " 1 archive file skipped: file name carries an identifier, rename them"
         " (vancity 1)"

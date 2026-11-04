@@ -100,6 +100,9 @@ PINNED = {
     "0023_typed_bill_unjoined.py": (
         "947b3204f4eacecb655056b49f8813f011e3343b798b1094467f8c93a5af5731"
     ),
+    "0024_invoice_decisions.py": (
+        "e113205e1160995bd06877132faea3fd042e7ef4b92497f603af8bf178065a8b"
+    ),
 }
 
 

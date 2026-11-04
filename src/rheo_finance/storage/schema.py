@@ -578,11 +578,16 @@ txn_source = Table(
     Column("manual_ref", Text),
     Column("line_key_id", Uuid, nullable=False),
     Column("role", Text, nullable=False),
+    # The invoice decision this matching payment took over from (migration 0024).
+    Column("overrides_decision_id", Uuid, ForeignKey("finance.decision.id")),
 )
 _tiers(
     txn_source,
-    {"txn_id": P, "document_line_id": P, "manual_ref": P, "line_key_id": P, "role": P},
-)
+    {
+        "txn_id": P, "document_line_id": P, "manual_ref": P, "line_key_id": P,
+        "role": P, "overrides_decision_id": P,
+    },
+)  # fmt: skip
 
 # --- the pairing graph (derived, stage 8 on; migration 0017) --------------------------
 

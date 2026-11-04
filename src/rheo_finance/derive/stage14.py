@@ -19,7 +19,14 @@ subscription vendor is a spending line only. The paths are in the table above
   period ``inst-<slug>-<n>``, issued on ``agreed_on``; and arrears, below.
 - (5) A manual debt: one ``manual_debt`` per ``obligations.csv`` row, period
   ``debt-<slug>``, with the row's ``issued_on`` and due date, either of which may be
-  null.
+  null; and one per unmatched invoice whose decision in force is ``invoice_unpaid``.
+  That one's period is ``debt-inv-<line key>``, the key of the invoice line, which every
+  re-saved copy of the invoice document shares, so a new copy keeps the id a decision
+  names. It is issued on the invoice's date and due on the decision's date if it gives
+  one; ``invoice_ref`` names the document that counts. Its payee is the first payee
+  whose patterns name the printed payee, else the vendor payee of the invoice's
+  archive directory (``manual.payees``). An invoice a payment matches is paid, not
+  owed, so a match takes the debt away (``evidence``). Only ``CURRENCY``, as below.
 
 A document ``precedence.supersede`` marked as a copy is not parsed, so it makes nothing.
 Two different parsed statements of one card with one closing date have one natural key,
@@ -102,23 +109,32 @@ from decimal import Decimal
 from itertools import pairwise
 from typing import Final, Literal
 
-from sqlalchemy import Row, insert, select
+from sqlalchemy import Row, exists, insert, select
 
 from rheo_finance.context import UnitOfWork
+from rheo_finance.decision import (
+    INVOICE_DECISIONS,
+    DecisionKind,
+    effective,
+    invoice_ref,
+)
 from rheo_finance.derive import precedence
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.accounts import BILL_VENDOR
 from rheo_finance.manual.arrangements import Arrangement
 from rheo_finance.manual.obligations import ManualObligation, bill_period
-from rheo_finance.manual.payees import bill_issuers
+from rheo_finance.manual.payees import Payees, bill_issuers
 from rheo_finance.manual.stage2 import REGISTRY_DATE
+from rheo_finance.storage import refs
 from rheo_finance.storage.ids import derived_id
 from rheo_finance.storage.schema import (
     account,
     document,
+    document_line,
     obligation,
     payee,
     statement_period,
+    txn_source,
 )
 
 ObligationKind = Literal[
@@ -129,6 +145,8 @@ CARD_STATEMENT: Final[ObligationKind] = "card_statement"
 BILL: Final[ObligationKind] = "bill"
 INSTALMENT: Final[ObligationKind] = "arrangement_instalment"
 ARREARS: Final[ObligationKind] = "arrears"
+MANUAL_DEBT: Final[ObligationKind] = "manual_debt"
+DOCUMENT_REF_TYPE: Final = "document"
 CURRENCY: Final = "CAD"
 ZERO: Final = Decimal("0.00")
 
@@ -169,6 +187,7 @@ class _Draft:
     manual_mismatch: Decimal | None = None
     statement_conflict: bool = False
     arrangement_ref: str | None = None
+    invoice_ref: str | None = None
     unjoined: bool = False
 
     @property
@@ -371,6 +390,62 @@ def _manual_drafts(
         )
         for each in manual
     ]
+
+
+def _invoice_debt_drafts(
+    uow: UnitOfWork, payees: Payees, by_slug: Mapping[str, uuid.UUID]
+) -> list[_Draft]:
+    """A debt per invoice no txn holds whose decision in force is ``invoice_unpaid``.
+    The copy of the larger sha256 is the one that counts, as ``evidence`` has it."""
+    line = document_line.c
+    rows = uow.execute(
+        select(
+            line.line_key_id,
+            line.posting_date,
+            line.amount,
+            line.counterparty,
+            document.c.id.label("document_id"),
+            document.c.path,
+            document.c.issuer,
+        )
+        .join(document, document.c.id == line.document_id)
+        .where(
+            document.c.status == "parsed",
+            line.line_kind == "invoice",
+            line.currency == CURRENCY,
+            line.line_key_id.is_not(None),
+            ~exists().where(txn_source.c.line_key_id == line.line_key_id),
+        )
+        .order_by(document.c.sha256.desc(), line.line_no)
+    ).all()
+    seen: set[uuid.UUID] = set()
+    drafts = []
+    for row in rows:
+        if row.line_key_id in seen:
+            continue
+        seen.add(row.line_key_id)
+        decided = effective(uow, INVOICE_DECISIONS, invoice_ref(row.line_key_id))
+        if decided is None or decided.kind is not DecisionKind.INVOICE_UNPAID:
+            continue
+        named = payees.naming(row.counterparty or "")
+        slug = row.issuer.partition("/")[0] if named is None else named.slug
+        drafts.append(
+            _Draft(
+                payee_id=by_slug[slug],
+                kind=MANUAL_DEBT,
+                period_label=f"debt-inv-{row.line_key_id}",
+                statement_date=None,
+                issued_on=row.posting_date,
+                amount_due=cents(-row.amount),
+                minimum_due=None,
+                due_date=decided.effective_on,
+                source=row.path,
+                invoice_ref=refs.format_ref(
+                    refs.FINANCE_SYSTEM, DOCUMENT_REF_TYPE, row.document_id
+                ),
+            )
+        )
+    return drafts
 
 
 def _merged(documents: Iterable[_Draft], manual: Iterable[_Draft]) -> list[_Draft]:
@@ -577,7 +652,7 @@ def _values(
         "unjoined": draft.unjoined,
         "supersedes_id": None if supersedes is None else supersedes.id,
         "arrangement_ref": draft.arrangement_ref,
-        "invoice_ref": None,
+        "invoice_ref": draft.invoice_ref,
         "payments_mismatch": None,
     }
 
@@ -619,13 +694,16 @@ def _rows(drafts: Iterable[_Draft]) -> list[dict[str, object]]:
 #   (4)   an arrangements.csv row           arrangement_instalment  inst-<slug>-<n>
 #   (4)   a parsed bill's arrears line      arrears                 arrears-YYYY-MM[-n]
 #   (5)   an obligations.csv debt row       manual_debt             debt-<slug>
+#   (5)   an invoice_unpaid decision        manual_debt             debt-inv-<line key>
 def create_obligations(
     uow: UnitOfWork,
     manual: Sequence[ManualObligation],
     arrangements: Sequence[Arrangement],
+    payees: Payees,
 ) -> int:
-    """Rebuild ``obligation`` from the parsed statements and bills and stage 2's manual
-    rows and arrangements; how many it made. The caller cleared the table."""
+    """Rebuild ``obligation`` from the parsed statements and bills, stage 2's manual
+    rows and arrangements, and the ``invoice_unpaid`` decisions; how many it made. The
+    caller cleared the table."""
     by_account, by_slug = _payees(uow)
 
     def payee_of(row: Row[tuple[object, ...]], slug: str) -> uuid.UUID:
@@ -641,7 +719,11 @@ def create_obligations(
     periods = _periods(uow)
     cards = [row for row in periods if row.kind == "statement"]
     bills = [row for row in periods if row.kind == "bill"]
-    documents = [*_card_drafts(uow, cards, payee_of), *_bill_drafts(bills, payee_of)]
+    documents = [
+        *_card_drafts(uow, cards, payee_of),
+        *_bill_drafts(bills, payee_of),
+        *_invoice_debt_drafts(uow, payees, by_slug),
+    ]
     holders = _issuer_holders(bills, payee_of, by_slug)
     merged = _merged(documents, _manual_drafts(uow, manual, by_slug, holders))
     chained = _with_manual_chained(

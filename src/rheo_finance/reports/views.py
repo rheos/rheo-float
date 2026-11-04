@@ -24,7 +24,9 @@ row per fact as ``(fact, subject, count, at)``:
 - ``duplicate_bill_month``: per payee with any, its bills past the first of a due
   month (a period label with a ``-<n>`` suffix), by label;
 - ``typed_bill_unjoined``: per payee with any, its typed bills that no account takes
-  beside its parsed bills (``derive.stage14``), by label.
+  beside its parsed bills (``derive.stage14``), by label;
+- ``invoice_decision_superseded``: per decision kind, the invoice decisions a matching
+  payment took over from (``derive.evidence``).
 
 ``report_coverage`` is the matrix: account slug and label, month, state and the reason
 as words (``running_balance_break`` reads ``running balance break``).
@@ -66,10 +68,12 @@ from rheo_finance.storage.schema import (
     account,
     archive_skip,
     coverage,
+    decision,
     document,
     obligation,
     payee,
     source_discrepancy,
+    txn_source,
 )
 
 # The fact names of ``report_status``.
@@ -84,6 +88,7 @@ DUPLICATE_BILL_MONTH: Final = "duplicate_bill_month"
 MANUAL_MISMATCH: Final = "manual_mismatch"
 STATEMENT_CONFLICT: Final = "statement_conflict"
 TYPED_BILL_UNJOINED: Final = "typed_bill_unjoined"
+INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -182,6 +187,18 @@ def report_status_select() -> Select[tuple[object, ...]]:
             STATEMENT_CONFLICT, obligation.c.statement_conflict.is_(True)
         ),
         _obligations_per_payee(TYPED_BILL_UNJOINED, obligation.c.unjoined.is_(True)),
+        select(
+            _fact(INVOICE_DECISION_SUPERSEDED),
+            decision.c.kind.label("subject"),
+            func.count().label("count"),
+            _no_time(),
+        )
+        .select_from(
+            txn_source.join(
+                decision, txn_source.c.overrides_decision_id == decision.c.id
+            )
+        )
+        .group_by(decision.c.kind),
     ]
     # A view's body is one select; the union is wrapped as its only source.
     unioned = union_all(*branches).subquery("facts")

@@ -90,12 +90,24 @@ class Lines:
     # Unmatched receipts left out because the internal account does not take their
     # currency.
     receipts_currency_refused: int = 0
-    # Invoices no payment line matched: no txn.
+    # Invoices no payment line matched and no decision settled: no txn.
     unmatched_invoices: int = 0
+    # Invoices an ``invoice_paid`` decision booked on "Paid outside recorded accounts".
+    from_invoice_decisions: int = 0
+    # Decided invoices left open because the internal account does not take their
+    # currency.
+    invoices_currency_refused: int = 0
+    # Invoice decisions a matching payment took over from: they add nothing.
+    invoice_decisions_superseded: int = 0
 
     @property
     def txns(self) -> int:
-        return self.from_documents + self.from_manual + self.from_receipts
+        return (
+            self.from_documents
+            + self.from_manual
+            + self.from_receipts
+            + self.from_invoice_decisions
+        )
 
 
 class _Occurrences:
@@ -359,4 +371,7 @@ def build_lines(
         from_receipts=linked.receipt_txns,
         receipts_currency_refused=linked.receipts_currency_refused,
         unmatched_invoices=linked.unmatched_invoices,
+        from_invoice_decisions=linked.invoice_txns,
+        invoices_currency_refused=linked.invoices_currency_refused,
+        invoice_decisions_superseded=linked.decisions_superseded,
     )

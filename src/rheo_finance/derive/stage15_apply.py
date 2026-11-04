@@ -1,0 +1,751 @@
+"""Derivation stage 15, application: what each payment paid (FR-21, FR-22; Key decisions
+18 and 20; SPEC Derivation stage 15 "Application"; edge cases 14 to 17, 34 and 66).
+Stage 14 made the obligations and ``stage15`` the payments; this reads both and writes
+``payment_application``, then each obligation's ``paid``, ``remaining``,
+``threshold_remaining``, status and ``payments_mismatch``.
+
+Only an ``active`` payment applies: a ``reversed`` one applies nothing, so whatever it
+had paid reopens, and a ``confirm_only`` one waits for the owner. Each active payment's
+rows add up to its amount, in its currency: what it paid, and the rest as an unapplied
+credit (a row with no obligation) with its reason.
+
+**Order.** Payments go in ``paid_on`` order (then id), the owner's decisions first, then
+the rules, so a decided payment has taken its share before a rule reads a remaining.
+
+**Decisions.** ``payment_apply`` and ``payment_unapply`` name a payment by any line or
+notice it was seen in (``finance.txn:<id>``, ``finance.payment_notice:<key>``). Newest
+first per obligation: a ``payment_apply`` places the payment on the obligation it names,
+for its ``amount`` when it gives one, else up to that obligation's remaining, whatever
+the bound or the window; a ``payment_unapply`` naming an obligation bars it; one naming
+none bars every older decision of that payment. A payment with an apply in force takes
+nothing from the rules, and what is left over is ``excess``. One with only an unapply in
+force applies nothing: the whole of it is a credit of reason ``payment_unapply``, so
+undoing an application restores the remaining it had before. A decision naming an
+obligation that does not exist, or a payment that is not active, changes nothing.
+
+**Cards, with no early_days slack.** A payment to a card's payee belongs to the card's
+statement whose ``statement_date`` is the latest on or before ``paid_on``, whatever its
+status (``disputed`` aside): a minimum paid on statement N's due date stays on N when
+N+1 loads, because N+1's balance already nets it. Paid toward it, the payment fills the
+threshold first, simply because ``threshold_remaining`` is the threshold less what was
+paid. More than the remaining is ``excess``, never carried onto the next statement; less
+is a partial payment, which applies when ``card_statement`` is in
+``finance.payments.partial_auto_kinds`` and is a ``confirm`` credit otherwise. A card
+payment dated before the card's earliest statement is ``no_target``. A superseded
+statement keeps what was applied to it and lends nothing to the newer one.
+
+**Every other kind.** An obligation is a candidate when its ``issued_on`` is on or
+before ``paid_on`` plus ``finance.payments.early_days`` (a null ``issued_on`` is no
+bound), and live when it is also ``open`` or ``partial`` as the payments before this one
+left it. Among the live candidates:
+
+- the ones whose remaining is the amount within ``match_tolerance`` (one live candidate
+  or several, edge case 15): it pays the oldest of them;
+- else, when every live candidate's kind is in the partial set (an arrangement's
+  instalments by default), it fills them oldest first and the rest is ``excess``;
+- else it is a ``confirm`` credit: two candidates and neither fits.
+
+Oldest is by ``issued_on``, then ``period_label``. With no live candidate, an obligation
+the stage left ``superseded`` (or presumed paid) whose own window holds ``paid_on`` is
+the target when the amount fits its ``amount_due`` or its kind is in the partial set:
+the window runs from its ``issued_on`` less ``early_days`` up to, not including, the
+next ``issued_on`` of the payee's same kind plus ``early_days`` (open for the newest;
+one ``issued_on`` shared is one window). Two such targets, the amount picks one, else
+``confirm``; one the amount does not fit, ``confirm``. With none, and a candidate that
+the earlier payments already paid, the payment is ``excess``; with no candidate at all
+it is ``no_target``, with ``bound_on`` the latest issue date a target could have had. So
+a credit never rolls forward onto an obligation issued after it: it leaves that state
+by a decision or by a target that passes the bound loading later. Only ``CAD`` payments
+pay an obligation, since every obligation is in CAD.
+
+**Tolerance.** A payment within ``match_tolerance`` of what is left settles it: a
+remaining (or threshold remaining) at or under the tolerance once something was paid is
+written as zero, so a cent short leaves no overdue cent behind.
+
+**Status.** ``open``, ``partial`` or ``paid`` from what was paid. A status stage 14 set
+otherwise (``superseded``, and later ``disputed`` and ``presumed_paid``) stays: a
+superseded row still shows what was applied to it.
+
+**FR-21.** For each obligation that supersedes another and whose document prints a
+payments figure (a card statement's ``total_payments``), the payments applied to its
+payee dated after the older one's date and on or before its own are compared with that
+figure; applied less printed is ``payments_mismatch`` ("applied X, statement shows Y"),
+null when they agree.
+
+**Arrangements.** ``finished_arrangements`` reads, after an application, the
+arrangements whose every instalment is paid; ``derive.run`` hands them back to stage 14,
+whose arrangement rule then no longer applies to their payee.
+
+**Events.** Each automatic application to an obligation registers one
+``finance.payment.detected`` (``record_detected``): the payment, its payee and the
+obligation, never an amount.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from collections import defaultdict
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from decimal import Decimal
+from types import MappingProxyType
+from typing import Annotated, Final
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import bindparam, insert, select, update
+
+from rheo_finance.context import UnitOfWork
+from rheo_finance.contracts import Tiered
+from rheo_finance.decision import DecisionKind, reversed_clause
+from rheo_finance.derive.stage4 import cents
+from rheo_finance.derive.stage14 import CARD_STATEMENT, CURRENCY, INSTALMENT
+from rheo_finance.derive.stage15 import ACTIVE, NOTICE_KIND
+from rheo_finance.events import record_event
+from rheo_finance.manual.accounts import CREDIT_CARD
+from rheo_finance.storage import refs
+from rheo_finance.storage.ids import derived_id
+from rheo_finance.storage.schema import (
+    account,
+    decision,
+    document,
+    document_line,
+    obligation,
+    payee,
+    payment,
+    payment_application,
+    payment_evidence,
+    statement_period,
+)
+from rheo_finance.tier import Tier
+
+EARLY_DAYS_KEY: Final = "finance.payments.early_days"
+PARTIAL_KINDS_KEY: Final = "finance.payments.partial_auto_kinds"
+
+OPEN: Final = "open"
+PARTIAL: Final = "partial"
+PAID: Final = "paid"
+DISPUTED: Final = "disputed"
+SUPERSEDED: Final = "superseded"
+PRESUMED_PAID: Final = "presumed_paid"
+# Statuses stage 14 sets that a payment does not change.
+KEPT: Final = frozenset({SUPERSEDED, DISPUTED, PRESUMED_PAID})
+# Statuses whose own window can still take a payment, with no live candidate.
+WINDOWED: Final = frozenset({SUPERSEDED, PRESUMED_PAID})
+
+NO_TARGET: Final = "no_target"
+EXCESS: Final = "excess"
+CONFIRM: Final = "confirm"
+UNAPPLIED: Final = DecisionKind.PAYMENT_UNAPPLY.value
+
+OBLIGATION_TYPE: Final = "obligation"
+PAYMENT_TYPE: Final = "payment"
+PAYEE_TYPE: Final = "payee"
+DECISION_TYPE: Final = "decision"
+ZERO: Final = Decimal("0.00")
+
+# --- events ---------------------------------------------------------------------------
+
+PAYMENT_DETECTED: Final = "finance.payment.detected"
+
+
+class PaymentDetected(BaseModel):
+    """A payment a rule applied to an obligation: refs only, never an amount."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    payee_ref: Annotated[str, Tiered(Tier.PUBLIC)]
+    obligation_ref: Annotated[str, Tiered(Tier.PUBLIC)]
+
+
+EVENT_MODELS: Final[Mapping[str, type[BaseModel]]] = MappingProxyType(
+    {PAYMENT_DETECTED: PaymentDetected}
+)
+
+
+@dataclass(frozen=True)
+class Rules:
+    """The settings application reads."""
+
+    tolerance: Decimal
+    early_days: int
+    partial_kinds: frozenset[str]
+
+
+@dataclass
+class _Obligation:
+    id: uuid.UUID
+    payee_id: uuid.UUID
+    kind: str
+    period_label: str
+    statement_date: dt.date | None
+    issued_on: dt.date | None
+    amount_due: Decimal
+    threshold_due: Decimal
+    # As stage 14 set it.
+    base_status: str
+    supersedes_id: uuid.UUID | None
+    arrangement_ref: str | None
+    primary_source: str
+    paid: Decimal = ZERO
+
+    @property
+    def remaining(self) -> Decimal:
+        return max(self.amount_due - self.paid, ZERO)
+
+    def status(self, tolerance: Decimal) -> str:
+        if self.base_status in KEPT:
+            return self.base_status
+        if self.remaining == 0 or (self.paid and self.remaining <= tolerance):
+            return PAID
+        return PARTIAL if self.paid else OPEN
+
+    @property
+    def age(self) -> tuple[dt.date, str]:
+        return (self.issued_on or dt.date.min, self.period_label)
+
+
+@dataclass(frozen=True)
+class _Payment:
+    id: uuid.UUID
+    payee_id: uuid.UUID
+    amount: Decimal
+    currency: str
+    paid_on: dt.date
+
+
+@dataclass
+class _Rows:
+    """The applications being written, one per (payment, obligation or reason)."""
+
+    rows: dict[tuple[uuid.UUID, object], dict[str, object]] = field(
+        default_factory=dict
+    )
+
+    def add(
+        self,
+        paid: _Payment,
+        amount: Decimal,
+        *,
+        target: _Obligation | None = None,
+        reason: str | None = None,
+        bound_on: dt.date | None = None,
+        basis_ref: str | None = None,
+        auto: bool = True,
+    ) -> None:
+        if amount <= 0:
+            return
+        if target is not None:
+            target.paid += amount
+        subject: object = reason if target is None else target.id
+        key = (paid.id, subject)
+        found = self.rows.get(key)
+        if found is not None:
+            found["amount"] = Decimal(str(found["amount"])) + amount
+            return
+        self.rows[key] = {
+            "id": derived_id(paid.paid_on, ("payment_application", paid.id, subject)),
+            "payment_id": paid.id,
+            "obligation_id": None if target is None else target.id,
+            "amount": amount,
+            "reason": reason,
+            "bound_on": bound_on,
+            "basis_ref": basis_ref,
+            "auto": auto,
+        }
+
+
+@dataclass(frozen=True)
+class _Decided:
+    """The decisions in force on one payment."""
+
+    # (obligation id, amount or None, the decision's ref), newest first.
+    applies: tuple[tuple[uuid.UUID, Decimal | None, str], ...]
+    # The newest unapply in force, when no apply is.
+    unapplied: str | None
+
+
+def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
+    o = obligation.c
+    rows = uow.execute(
+        select(
+            o.id,
+            o.payee_id,
+            o.kind,
+            o.period_label,
+            o.statement_date,
+            o.issued_on,
+            o.amount_due,
+            o.threshold_due,
+            o.status,
+            o.supersedes_id,
+            o.arrangement_ref,
+            o.primary_source,
+        )  # fmt: skip
+    ).all()
+    return {
+        row.id: _Obligation(
+            id=row.id,
+            payee_id=row.payee_id,
+            kind=row.kind,
+            period_label=row.period_label,
+            statement_date=row.statement_date,
+            issued_on=row.issued_on,
+            amount_due=row.amount_due,
+            threshold_due=row.threshold_due,
+            base_status=row.status,
+            supersedes_id=row.supersedes_id,
+            arrangement_ref=row.arrangement_ref,
+            primary_source=row.primary_source,
+        )
+        for row in rows
+    }
+
+
+def _payments(uow: UnitOfWork) -> list[_Payment]:
+    """The active payments, in ``paid_on`` order, then id."""
+    rows = uow.execute(
+        select(
+            payment.c.id,
+            payment.c.payee_id,
+            payment.c.amount,
+            payment.c.currency,
+            payment.c.paid_on,
+        )
+        .where(payment.c.state == ACTIVE)
+        .order_by(payment.c.paid_on, payment.c.id)
+    ).all()
+    return [
+        _Payment(row.id, row.payee_id, row.amount, row.currency, row.paid_on)
+        for row in rows
+    ]
+
+
+def _card_payees(uow: UnitOfWork) -> frozenset[uuid.UUID]:
+    return frozenset(
+        uow.scalars(
+            select(payee.c.id)
+            .join(account, payee.c.account_id == account.c.id)
+            .where(account.c.kind == CREDIT_CARD)
+        )
+    )
+
+
+def _payment_of_ref(uow: UnitOfWork, named: Iterable[str]) -> dict[str, uuid.UUID]:
+    """The payment each ref names through a line or a notice it was seen in."""
+    lines: dict[uuid.UUID, str] = {}
+    notices: dict[uuid.UUID, str] = {}
+    for text in named:
+        ref = refs.parse(text)
+        if ref.system != refs.FINANCE_SYSTEM:
+            continue
+        if ref.type == refs.LINE_TYPE:
+            lines[uuid.UUID(ref.id)] = text
+        elif ref.type == NOTICE_KIND:
+            notices[uuid.UUID(ref.id)] = text
+    found: dict[str, uuid.UUID] = {}
+    if lines:
+        for row in uow.execute(
+            select(payment_evidence.c.txn_id, payment_evidence.c.payment_id).where(
+                payment_evidence.c.txn_id.in_(lines)
+            )
+        ):
+            found[lines[row.txn_id]] = row.payment_id
+    if notices:
+        for row in uow.execute(
+            select(document_line.c.line_key_id, payment_evidence.c.payment_id)
+            .join(
+                payment_evidence,
+                payment_evidence.c.document_line_id == document_line.c.id,
+            )
+            .where(document_line.c.line_key_id.in_(notices))
+        ):
+            found[notices[row.line_key_id]] = row.payment_id
+    return found
+
+
+def _obligation_of_ref(text: str | None) -> uuid.UUID | None:
+    if text is None:
+        return None
+    ref = refs.parse(text)
+    if ref.system != refs.FINANCE_SYSTEM or ref.type != OBLIGATION_TYPE:
+        return None
+    return uuid.UUID(ref.id)
+
+
+def _decisions(
+    uow: UnitOfWork, known: Collection[uuid.UUID]
+) -> dict[uuid.UUID, _Decided]:
+    """The ``payment_apply`` and ``payment_unapply`` decisions in force, per payment
+    (module docstring)."""
+    rows = uow.execute(
+        select(
+            decision.c.id,
+            decision.c.kind,
+            decision.c.target_ref,
+            decision.c.obligation_ref,
+            decision.c.amount,
+        )
+        .where(
+            decision.c.kind.in_(
+                [DecisionKind.PAYMENT_APPLY.value, DecisionKind.PAYMENT_UNAPPLY.value]
+            ),
+            ~reversed_clause(decision),
+        )
+        .order_by(decision.c.decided_at.desc(), decision.c.id.desc())
+    ).all()
+    if not rows:
+        return {}
+    of_ref = _payment_of_ref(uow, {row.target_ref for row in rows})
+    by_payment: dict[uuid.UUID, list[tuple[object, ...]]] = defaultdict(list)
+    for row in rows:
+        paid = of_ref.get(row.target_ref)
+        if paid is not None:
+            by_payment[paid].append(tuple(row))
+    decided: dict[uuid.UUID, _Decided] = {}
+    for paid, newest_first in by_payment.items():
+        settled: set[uuid.UUID] = set()
+        applies: list[tuple[uuid.UUID, Decimal | None, str]] = []
+        unapplied: str | None = None
+        for decision_id, kind, _, obligation_ref, amount in newest_first:
+            assert isinstance(decision_id, uuid.UUID)
+            basis = refs.format_ref(refs.FINANCE_SYSTEM, DECISION_TYPE, decision_id)
+            named = _obligation_of_ref(
+                obligation_ref if isinstance(obligation_ref, str) else None
+            )
+            if kind == DecisionKind.PAYMENT_UNAPPLY.value:
+                unapplied = unapplied or basis
+                if named is None:
+                    break
+                settled.add(named)
+            elif named is not None and named not in settled and named in known:
+                settled.add(named)
+                applies.append(
+                    (named, amount if isinstance(amount, Decimal) else None, basis)
+                )
+        if applies or unapplied is not None:
+            decided[paid] = _Decided(tuple(applies), None if applies else unapplied)
+    return decided
+
+
+class _Applier:
+    """The running state of one application: every obligation as the payments so far
+    left it, and the rows."""
+
+    def __init__(
+        self, obligations: Mapping[uuid.UUID, _Obligation], cards: Collection[uuid.UUID]
+    ) -> None:
+        self.obligations = obligations
+        self.cards = cards
+        self.rows = _Rows()
+        self.by_payee: dict[uuid.UUID, list[_Obligation]] = defaultdict(list)
+        for each in sorted(obligations.values(), key=lambda x: x.age):
+            self.by_payee[each.payee_id].append(each)
+
+    # --- decisions --------------------------------------------------------------------
+
+    def decided(self, paid: _Payment, found: _Decided) -> None:
+        left = paid.amount
+        for obligation_id, amount, basis in reversed(found.applies):
+            target = self.obligations[obligation_id]
+            share = min(left, target.remaining if amount is None else amount)
+            self.rows.add(paid, share, target=target, basis_ref=basis, auto=False)
+            left -= max(share, ZERO)
+        if found.unapplied is not None:
+            self.rows.add(
+                paid, left, reason=UNAPPLIED, basis_ref=found.unapplied, auto=False
+            )
+        else:
+            self.rows.add(paid, left, reason=EXCESS, auto=False)
+
+    # --- the rules --------------------------------------------------------------------
+
+    def auto(self, paid: _Payment, rules: Rules) -> None:
+        if paid.payee_id in self.cards:
+            self._card(paid, rules)
+        else:
+            self._other(paid, rules)
+
+    def _fill(
+        self, paid: _Payment, target: _Obligation, rules: Rules, *, partial: bool
+    ) -> None:
+        """Pay ``target`` as much as it has left; more is ``excess``, less is a partial
+        payment when ``partial`` allows one and a ``confirm`` credit when not."""
+        left = target.remaining
+        if (
+            paid.amount <= left + rules.tolerance
+            and paid.amount >= left - rules.tolerance
+        ):
+            self.rows.add(paid, paid.amount, target=target)
+        elif paid.amount > left:
+            self.rows.add(paid, left, target=target)
+            self.rows.add(paid, paid.amount - left, reason=EXCESS)
+        elif partial:
+            self.rows.add(paid, paid.amount, target=target)
+        else:
+            self.rows.add(paid, paid.amount, reason=CONFIRM)
+
+    def _card(self, paid: _Payment, rules: Rules) -> None:
+        statements = [
+            each
+            for each in self.by_payee[paid.payee_id]
+            if each.kind == CARD_STATEMENT
+            and each.base_status != DISPUTED
+            and each.statement_date is not None
+            and each.statement_date <= paid.paid_on
+        ]
+        if paid.currency != CURRENCY or not statements:
+            self.rows.add(paid, paid.amount, reason=NO_TARGET, bound_on=paid.paid_on)
+            return
+        target = max(statements, key=lambda each: (each.statement_date, each.age))
+        self._fill(paid, target, rules, partial=CARD_STATEMENT in rules.partial_kinds)
+
+    def _other(self, paid: _Payment, rules: Rules) -> None:
+        bound = paid.paid_on + dt.timedelta(days=rules.early_days)
+        mine = [
+            each for each in self.by_payee[paid.payee_id] if each.kind != CARD_STATEMENT
+        ]
+        candidates = [
+            each
+            for each in mine
+            if paid.currency == CURRENCY
+            and (each.issued_on is None or each.issued_on <= bound)
+        ]
+        live = [
+            each
+            for each in candidates
+            if each.status(rules.tolerance) in (OPEN, PARTIAL)
+        ]
+        if live:
+            self._live(paid, live, rules)
+            return
+        windowed = [
+            each
+            for each in candidates
+            if each.base_status in WINDOWED and self._in_window(each, mine, paid, rules)
+        ]
+        if windowed:
+            self._windowed(paid, windowed, rules)
+        elif candidates:
+            self.rows.add(paid, paid.amount, reason=EXCESS)
+        else:
+            self.rows.add(paid, paid.amount, reason=NO_TARGET, bound_on=bound)
+
+    def _live(self, paid: _Payment, live: Sequence[_Obligation], rules: Rules) -> None:
+        fits = [
+            each
+            for each in live
+            if abs(each.remaining - paid.amount) <= rules.tolerance
+        ]
+        if fits:
+            self.rows.add(paid, paid.amount, target=fits[0])
+        elif all(each.kind in rules.partial_kinds for each in live):
+            left = paid.amount
+            for each in live:
+                share = min(left, each.remaining)
+                self.rows.add(paid, share, target=each)
+                left -= share
+            self.rows.add(paid, left, reason=EXCESS)
+        else:
+            self.rows.add(paid, paid.amount, reason=CONFIRM)
+
+    @staticmethod
+    def _in_window(
+        target: _Obligation,
+        mine: Sequence[_Obligation],
+        paid: _Payment,
+        rules: Rules,
+    ) -> bool:
+        """Whether ``paid`` is dated before the end of ``target``'s own window. The
+        start, ``issued_on`` less ``early_days``, is the bound candidates passed."""
+        if target.issued_on is None:
+            return False
+        early = dt.timedelta(days=rules.early_days)
+        later = [
+            each.issued_on
+            for each in mine
+            if each.kind == target.kind
+            and each.issued_on is not None
+            and each.issued_on > target.issued_on
+        ]
+        return not later or paid.paid_on < min(later) + early
+
+    def _windowed(
+        self, paid: _Payment, windowed: Sequence[_Obligation], rules: Rules
+    ) -> None:
+        exact = [
+            each
+            for each in windowed
+            if abs(each.amount_due - paid.amount) <= rules.tolerance
+        ]
+        fits = exact or [each for each in windowed if each.kind in rules.partial_kinds]
+        if len(fits) == 1:
+            target = fits[0]
+            self._fill(paid, target, rules, partial=target.kind in rules.partial_kinds)
+        else:
+            self.rows.add(paid, paid.amount, reason=CONFIRM)
+
+
+def _printed_payments(uow: UnitOfWork) -> dict[str, Decimal]:
+    """The payments figure each parsed document prints, by its archive path."""
+    rows = uow.execute(
+        select(document.c.path, statement_period.c.total_payments)
+        .join(statement_period, statement_period.c.document_id == document.c.id)
+        .where(
+            document.c.status == "parsed",
+            statement_period.c.currency == CURRENCY,
+            statement_period.c.total_payments.is_not(None),
+        )
+    ).all()
+    return {row.path: row.total_payments for row in rows}
+
+
+def _mismatches(
+    uow: UnitOfWork,
+    obligations: Mapping[uuid.UUID, _Obligation],
+    payments: Sequence[_Payment],
+    rows: Iterable[Mapping[str, object]],
+) -> dict[uuid.UUID, Decimal]:
+    """FR-21: applied less printed, per newer document that prints a payments figure."""
+    printed = _printed_payments(uow)
+    applied_of: dict[uuid.UUID, Decimal] = defaultdict(lambda: ZERO)
+    for row in rows:
+        if row["reason"] in (None, EXCESS):
+            amount = row["amount"]
+            assert isinstance(amount, Decimal)
+            payment_id = row["payment_id"]
+            assert isinstance(payment_id, uuid.UUID)
+            applied_of[payment_id] += amount
+    found: dict[uuid.UUID, Decimal] = {}
+
+    def dated(each: _Obligation) -> dt.date | None:
+        return each.statement_date or each.issued_on
+
+    for each in obligations.values():
+        figure = printed.get(each.primary_source)
+        older = (
+            None if each.supersedes_id is None else obligations.get(each.supersedes_id)
+        )
+        start, end = (None, None) if older is None else (dated(older), dated(each))
+        if figure is None or start is None or end is None:
+            continue
+        applied = sum(
+            (
+                applied_of[paid.id]
+                for paid in payments
+                if paid.payee_id == each.payee_id and start < paid.paid_on <= end
+            ),
+            ZERO,
+        )
+        if cents(applied) != cents(figure):
+            found[each.id] = cents(applied - figure)
+    return found
+
+
+def apply_payments(uow: UnitOfWork, rules: Rules) -> int:
+    """Write every active payment's applications and each obligation's figures
+    (module docstring); how many application rows it wrote. The caller cleared
+    ``payment_application`` and made the obligations afresh."""
+    obligations = _obligations(uow)
+    payments = _payments(uow)
+    decided = _decisions(uow, obligations.keys())
+    applier = _Applier(obligations, _card_payees(uow))
+    # Only a CAD payment pays an obligation, by decision or by rule.
+    decided = {
+        each.id: decided[each.id]
+        for each in payments
+        if each.id in decided and each.currency == CURRENCY
+    }
+    for paid in payments:
+        found = decided.get(paid.id)
+        if found is not None:
+            applier.decided(paid, found)
+    for paid in payments:
+        if paid.id not in decided:
+            applier.auto(paid, rules)
+    rows = list(applier.rows.rows.values())
+    if rows:
+        uow.execute(insert(payment_application), rows)
+    mismatch = _mismatches(uow, obligations, payments, rows)
+
+    def left(due: Decimal, paid: Decimal) -> Decimal:
+        """What is left of ``due``; a tolerance's worth once something was paid is
+        nothing."""
+        rest = max(due - paid, ZERO)
+        return ZERO if paid and rest <= rules.tolerance else cents(rest)
+
+    figures = [
+        {
+            "b_id": each.id,
+            "b_paid": cents(each.paid),
+            "b_remaining": left(each.amount_due, each.paid),
+            "b_threshold": left(each.threshold_due, each.paid),
+            "b_status": each.status(rules.tolerance),
+            "b_mismatch": mismatch.get(each.id),
+        }
+        for each in obligations.values()
+    ]
+    if figures:
+        uow.execute(
+            update(obligation)
+            .where(obligation.c.id == bindparam("b_id"))
+            .values(
+                paid=bindparam("b_paid"),
+                remaining=bindparam("b_remaining"),
+                threshold_remaining=bindparam("b_threshold"),
+                status=bindparam("b_status"),
+                payments_mismatch=bindparam("b_mismatch"),
+            ),
+            figures,
+        )
+    return len(rows)
+
+
+def finished_arrangements(uow: UnitOfWork) -> frozenset[str]:
+    """The arrangements whose every instalment is paid, as the last application left
+    them."""
+    rows = uow.execute(
+        select(obligation.c.arrangement_ref, obligation.c.status).where(
+            obligation.c.kind == INSTALMENT
+        )
+    ).all()
+    statuses: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        statuses[row.arrangement_ref].add(row.status)
+    return frozenset(slug for slug, found in statuses.items() if found == {PAID})
+
+
+def record_detected(uow: UnitOfWork) -> int:
+    """One ``finance.payment.detected`` per automatic application to an obligation;
+    how many."""
+    rows = uow.execute(
+        select(
+            payment_application.c.payment_id,
+            payment_application.c.obligation_id,
+            payment.c.payee_id,
+            payment.c.paid_on,
+        )
+        .join(payment, payment.c.id == payment_application.c.payment_id)
+        .where(
+            payment_application.c.auto,
+            payment_application.c.obligation_id.is_not(None),
+        )
+    ).all()
+    for row in rows:
+        record_event(
+            uow,
+            EVENT_MODELS,
+            PAYMENT_DETECTED,
+            refs.format_ref(refs.FINANCE_SYSTEM, PAYMENT_TYPE, row.payment_id),
+            row.paid_on,
+            PaymentDetected(
+                payee_ref=refs.format_ref(
+                    refs.FINANCE_SYSTEM, PAYEE_TYPE, row.payee_id
+                ),
+                obligation_ref=refs.format_ref(
+                    refs.FINANCE_SYSTEM, OBLIGATION_TYPE, row.obligation_id
+                ),
+            ),
+            key=(row.obligation_id,),
+        )
+    return len(rows)

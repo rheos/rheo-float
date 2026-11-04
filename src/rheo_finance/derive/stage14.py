@@ -76,7 +76,9 @@ never chains, and a manual row merged into a document is that document's row.
 **Arrangements and arrears.** Every bill period an arrangement ``replaces`` is
 ``superseded``, and names the arrangement in ``arrangement_ref``, from then on: when the
 last instalment is paid the arrangement stops being active, and the replaced periods
-must not come back as owed. While an arrangement of a payee is active, the newest bill
+must not come back as owed. An arrangement is active until stage 15's application has
+paid every one of its instalments (``finished``, handed back by ``derive.run``). While
+an arrangement of a payee is active, the newest bill
 of each of its accounts is owed for its printed current charges only, or for its total
 less its printed arrears when it prints no current charges. A typed-in bill prints
 neither, so it is owed as typed. With none active, a bill that prints an arrears line
@@ -92,8 +94,9 @@ its current charges or its arrears line, and nothing is owed above what the bill
 for: neither figure raises what is owed past the total, and neither takes a bill with a
 total of zero or more below zero.
 
-No payment is applied yet: ``paid`` is zero, and a row with nothing remaining (a card
-at zero or in credit) is ``paid`` rather than open.
+Rows leave here with ``paid`` zero, and a row with nothing remaining (a card at zero or
+in credit) is ``paid`` rather than open; stage 15's application then writes what was
+paid.
 
 The id comes from the natural key alone, on the fixed registry date, so a figure or a
 date that changes keeps the id a decision names.
@@ -530,14 +533,15 @@ def _with_replaced(
 
 
 def _active_payees(
-    arrangements: Iterable[Arrangement], by_slug: Mapping[str, uuid.UUID]
+    arrangements: Iterable[Arrangement],
+    by_slug: Mapping[str, uuid.UUID],
+    finished: Collection[str],
 ) -> set[uuid.UUID]:
-    """The payees with an arrangement that has an instalment not yet paid.
-
-    shortcut: nothing applies a payment before stage 15, so every instalment is unpaid
-    and every loaded arrangement counts; stage 15 narrows this when it lands.
-    """
-    return {by_slug[found.payee] for found in arrangements}
+    """The payees with an arrangement that has an instalment not yet paid: every
+    arrangement but the ``finished`` ones (stage 15's application says which)."""
+    return {
+        by_slug[found.payee] for found in arrangements if found.slug not in finished
+    }
 
 
 def _owed_now(
@@ -666,10 +670,12 @@ def create_obligations(
     arrangements: Sequence[Arrangement],
     payees: Payees,
     unpaid_invoices: Iterable[UnpaidInvoice],
+    finished: Collection[str] = frozenset(),
 ) -> int:
     """Rebuild ``obligation`` from the parsed statements and bills, stage 2's manual
-    rows and arrangements, and the invoices stage 3 found unpaid; how many it made. The
-    caller cleared the table."""
+    rows and arrangements, and the invoices stage 3 found unpaid; how many it made.
+    ``finished`` names the arrangements whose instalments are all paid. The caller
+    cleared the table."""
     by_account, by_slug = _payees(uow)
 
     def payee_of(row: Row[tuple[object, ...]], slug: str) -> uuid.UUID:
@@ -696,7 +702,9 @@ def create_obligations(
         merged, _bill_sources(uow, documents, by_slug), holders
     )
     drafts = _in_issue_order(_with_replaced(chained, arrangements, by_slug))
-    changed, arrears = _owed_now(drafts, _active_payees(arrangements, by_slug))
+    changed, arrears = _owed_now(
+        drafts, _active_payees(arrangements, by_slug, finished)
+    )
     rows = _rows(
         [
             *(changed.get(draft.id, draft) for draft in drafts),

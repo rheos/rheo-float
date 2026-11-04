@@ -1049,13 +1049,6 @@ def test_a_derive_and_a_rebuild_give_the_same_rows(notices: Ledger) -> None:
     assert state() == derived
 
 
-def test_this_stage_applies_nothing(notices: Ledger) -> None:
-    bank(notices, (JUNE, ISP, BANK))
-    notices.derive()
-
-    assert notices.conn.execute(select(payment_application)).all() == []
-
-
 @pytest.mark.parametrize("both", [False, True], ids=["none", "two"])
 def test_evidence_names_exactly_one_thing(notices: Ledger, both: bool) -> None:
     bank(notices, (JUNE, ISP, BANK))
@@ -1301,13 +1294,10 @@ def test_a_payment_of_an_invoice_debts_amount_due_is_a_payment_at_its_remaining(
     (paid,) = seen(ledger)
     builder = ledger.conn.scalar(select(payee.c.id).where(payee.c.slug == "builder"))
     assert debt.payee_id == builder
-    assert debt.remaining == AMOUNT_DUE
+    assert debt.amount_due == AMOUNT_DUE
     assert paid == money(D(2026, 3, 10), name="builder", amount=AMOUNT_DUE)
 
 
-@pytest.mark.xfail(
-    strict=True, reason="application is the next stage 15 step; remove this mark there"
-)
 def test_a_payment_of_an_invoice_debts_amount_due_clears_the_debt(
     ledger: Ledger,
 ) -> None:

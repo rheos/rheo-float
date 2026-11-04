@@ -53,7 +53,12 @@ Order of work, set by what each step reads:
    stored, the manual obligations and arrangements it holds, and the invoices stage 3
    found unpaid; then stage 15, the payments (``stage15``), which read the applied
    edges, the coverage matrix, the notice lines and the owner's decisions on them, and
-   no obligation.
+   no obligation; then their application to the obligations (``stage15_apply``), with
+   the ``payment_apply`` and ``payment_unapply`` decisions. When that application pays
+   off an arrangement, stage 14 runs once more with that arrangement finished (its
+   payee's bills are then owed as with no arrangement) and the application runs again
+   over the new rows; the arrangements it finished are not read a second time. Then
+   one ``finance.payment.detected`` per automatic application.
 6. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -90,6 +95,7 @@ from rheo_finance.derive import (
     stage11,
     stage14,
     stage15,
+    stage15_apply,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -250,13 +256,18 @@ def run(
             decided=decided,
         )
         stage11.resolve(uow, decided)
-        stage14.create_obligations(
-            uow,
-            manual.obligations.obligations,
-            manual.arrangements.arrangements,
-            manual.payees,
-            lines.unpaid_invoices,
-        )
+
+        def obligations(finished: frozenset[str] = frozenset()) -> None:
+            stage14.create_obligations(
+                uow,
+                manual.obligations.obligations,
+                manual.arrangements.arrangements,
+                manual.payees,
+                lines.unpaid_invoices,
+                finished,
+            )
+
+        obligations()
         stage15.build_payments(
             uow,
             manual.payees,
@@ -267,6 +278,23 @@ def run(
                 hold_days=ctx.settings.get_int(stage15.HOLD_KEY),
             ),
         )
+        rules = stage15_apply.Rules(
+            tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
+            early_days=ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
+            partial_kinds=frozenset(
+                ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)
+            ),
+        )
+        stage15_apply.apply_payments(uow, rules)
+        finished = stage15_apply.finished_arrangements(uow)
+        if finished:
+            # A paid-up arrangement no longer sets its payee's bills: make them again
+            # without it, and apply again to what they now owe.
+            uow.execute(delete(payment_application))
+            uow.execute(delete(obligation))
+            obligations(finished)
+            stage15_apply.apply_payments(uow, rules)
+        stage15_apply.record_detected(uow)
 
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))

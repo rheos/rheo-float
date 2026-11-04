@@ -9,6 +9,7 @@ invented dates and amounts written in. Every value is synthetic.
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -104,8 +105,11 @@ def rows(ledger: Ledger) -> list[Row[tuple[object, ...]]]:
     )
 
 
-def payee_id(ledger: Ledger, slug: str) -> object:
-    return ledger.conn.scalar(select(payee.c.id).where(payee.c.slug == slug))
+def payee_id(ledger: Ledger, slug: str) -> uuid.UUID:
+    found: uuid.UUID = ledger.conn.execute(
+        select(payee.c.id).where(payee.c.slug == slug)
+    ).scalar_one()
+    return found
 
 
 def owed_total(ledger: Ledger) -> Decimal:
@@ -550,7 +554,7 @@ def test_the_id_comes_from_the_natural_key_alone(ledger: Ledger) -> None:
     ledger.derive()
     (alone,) = rows(ledger)
     fortis = payee_id(ledger, "fortisbc")
-    assert alone.id == obligation_id(fortis, "bill", "bill-2026-02")  # type: ignore[arg-type]
+    assert alone.id == obligation_id(fortis, "bill", "bill-2026-02")
 
     ledger.file("fortisbc/b.pdf", fortis_bill("February 14, 2026", "March 7, 2026"))
     ledger.derive()

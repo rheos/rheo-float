@@ -24,10 +24,17 @@ refund). A debit elsewhere that names the card is one of three things:
 
 A debit on the card itself that names the card (a returned payment) pays nothing.
 
-**One payment.** Lines joined by applied ``own_transfer`` edges are one payment: the
-card's credit is its money line when one of them is, else the earliest debit naming a
-payee, and the others are ``joined``. Any other money line is its own payment. Nothing
-here merges two lines by amount or date, so two equal payments stay two.
+**A payee standing for an account** is paid only as a card is, or as a vendor when
+its account is a ``bill_vendor`` (an account that holds the vendor's bills and no
+money). Words naming a payee that stands for any other account (chequing, savings, a
+wallet) name nobody to pay: money sent there stays the owner's.
+
+**One payment.** Lines joined by applied ``own_transfer`` edges are one payment when
+one of them is a card's credit: that credit is its money line and the others are
+``joined``. A group with no card credit is money moved between the owner's own
+accounts, with no leg outside them, so it is no payment whatever payee a debit's
+wording names. Any other money line is its own payment. Nothing here merges two lines
+by amount or date, so two equal payments stay two.
 
 **Reversed.** A line stage 8 (or the owner's ``pair``) made the original of an applied
 ``reversal`` edge is a ``reversed`` payment: it applies nothing and still takes its
@@ -76,7 +83,7 @@ from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive import fees, pairing, stage8
 from rheo_finance.derive.evidence import DOCUMENT_ORIGIN, evidence_key
-from rheo_finance.manual.accounts import CREDIT_CARD
+from rheo_finance.manual.accounts import BILL_VENDOR, CREDIT_CARD
 from rheo_finance.manual.payees import Payee, Payees
 from rheo_finance.manual.transfer_hints import TransferHintRow
 from rheo_finance.reference.patterns import reversal_row_matches
@@ -175,12 +182,15 @@ class _Payment:
 
 @dataclass(frozen=True)
 class _Payees:
-    """The stored payees: ids by slug, and the cards both ways."""
+    """The stored payees: ids by slug, the cards both ways, and the payees that stand
+    for one of the owner's own money accounts."""
 
     by_slug: Mapping[str, uuid.UUID]
     of_card: Mapping[uuid.UUID, uuid.UUID]
     # The card account of each card payee.
     card_of: Mapping[uuid.UUID, uuid.UUID]
+    # Payees standing for an account that is neither a card nor a bill vendor's.
+    own_account: frozenset[uuid.UUID]
 
 
 @dataclass(frozen=True)
@@ -202,6 +212,11 @@ def _stored_payees(uow: UnitOfWork) -> _Payees:
         by_slug={row.slug: row.id for row in rows},
         of_card={row.account_id: row.id for row in cards},
         card_of={row.id: row.account_id for row in cards},
+        own_account=frozenset(
+            row.id
+            for row in rows
+            if row.kind is not None and row.kind not in (CREDIT_CARD, BILL_VENDOR)
+        ),
     )
 
 
@@ -317,7 +332,8 @@ def _new_payment(
 
 class _Naming:
     """The payee a line's or a notice's words name, as a stored id. Each text is folded
-    and searched once, because bank wording repeats."""
+    and searched once, because bank wording repeats. Words naming a payee that stands
+    for an own money account name nobody to pay: that money stays the owner's."""
 
     def __init__(self, payees: Payees, stored: _Payees) -> None:
         self._naming: Callable[[str], Payee | None] = cache(payees.naming)
@@ -327,32 +343,24 @@ class _Naming:
         for text in wordings:
             found = self._naming(text)
             if found is not None:
-                return self._stored.by_slug[found.slug]
+                named = self._stored.by_slug[found.slug]
+                return None if named in self._stored.own_account else named
         return None
 
 
-def _joined_payment(
-    members: Sequence[_Line], stored: _Payees, naming: _Naming
-) -> _Payment | None:
-    """The one payment of lines an applied ``own_transfer`` joins, if it is one."""
-    money: _Line | None = None
-    payee_id: uuid.UUID | None = None
+def _joined_payment(members: Sequence[_Line], stored: _Payees) -> _Payment | None:
+    """The one payment of lines an applied ``own_transfer`` joins: money that reached
+    a card. With no card credit among them every line is the owner's own, and the
+    group is an own transfer, whatever payee a debit's wording names."""
     for line in members:
         if line.amount > 0 and line.account_id in stored.of_card:
-            money, payee_id = line, stored.of_card[line.account_id]
-            break
-    if money is None:
-        for line in members:
-            named = None if line.amount > 0 else naming(line.wordings)
-            # A debit naming a card, joined to no credit on it, is an own transfer.
-            if named is not None and named not in stored.card_of:
-                money, payee_id = line, named
-                break
-    if money is None or payee_id is None:
-        return None
-    return _new_payment(
-        money, [each for each in members if each is not money], payee_id, ACTIVE
-    )
+            return _new_payment(
+                line,
+                [each for each in members if each is not line],
+                stored.of_card[line.account_id],
+                ACTIVE,
+            )
+    return None
 
 
 def _single_payment(
@@ -402,7 +410,7 @@ def _money_payments(
         ids = {end for edge in group for end in edge}
         joined |= ids
         members = sorted((lines[end] for end in ids), key=lambda x: (x.day, x.id))
-        made = _joined_payment(members, stored, naming)
+        made = _joined_payment(members, stored)
         if made is not None:
             found.append(made)
     reversal_edges = _edges(uow, REVERSAL)

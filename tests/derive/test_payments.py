@@ -481,6 +481,62 @@ def test_a_purchase_on_a_card_that_names_a_vendor_pays_the_vendor(
     assert seen(notices) == [money(JUNE)]
 
 
+# --- own transfers --------------------------------------------------------------------
+
+SWEEP = "SAMPLE SAVINGS SWEEP 99976"
+
+
+@pytest.mark.parametrize("named", ["vendor", "own account"])
+def test_a_joined_transfer_between_own_accounts_is_no_payment(
+    notices: Ledger, named: str
+) -> None:
+    """No leg leaves the owner's accounts and none reaches a card, so the debit's
+    wording naming a payee pays nobody."""
+    if named == "vendor":
+        notices.manual(PAYEES_FILE, "sweeper,Our sweep,vendor,SAMPLE SAVINGS,,")
+    else:
+        set_cell(notices, "second", "payee_patterns", "SAMPLE SAVINGS")
+    notices.manual(TRANSFER_HINTS_FILE, "sample savings sweep,out,")
+    file_bank(
+        notices,
+        *on(CSV_IDENTIFIER, (D(2025, 6, 2), SWEEP, Decimal("-300.00"))),
+        *on(SECOND, (D(2025, 6, 3), "DEPOSIT SAMPLE SWEEP 99977", Decimal("300.00"))),
+    )
+
+    notices.derive()
+
+    assert {row["transfer_state"] for row in notices.txns()} == {"paired"}
+    assert seen(notices) == []
+
+
+def test_a_debit_naming_a_payee_that_stands_for_an_own_account_is_no_payment(
+    notices: Ledger,
+) -> None:
+    set_cell(notices, "second", "payee_patterns", "SAMPLE SAVINGS")
+    bank(notices, (JUNE, SWEEP, BANK))
+
+    notices.derive()
+
+    assert seen(notices) == []
+
+
+def test_a_debit_naming_a_bill_vendor_accounts_payee_pays_that_vendor(
+    notices: Ledger,
+) -> None:
+    manual = notices.data / "manual"
+    with (manual / ACCOUNTS_FILE).open("a", encoding="utf-8") as out:
+        out.write(
+            "mobile,Mobile,Sample Mobile,bill_vendor,CAD,monthly,,,,,,"
+            "SAMPLE MOBILE,,,\n"
+        )
+    notices.add_identifier("mobile", "999000123")
+    bank(notices, (JUNE, "PRE-AUTHORIZED DEBIT SAMPLE MOBILE 99912", BANK))
+
+    notices.derive()
+
+    assert seen(notices) == [money(JUNE, name="mobile")]
+
+
 # --- which lines ----------------------------------------------------------------------
 
 

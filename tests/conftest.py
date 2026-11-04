@@ -1,8 +1,13 @@
 """Database fixtures: ``finance_test`` migrated once per session, a rolled-back owner
 connection per test, and a reader engine.
 
-The ``ledger`` and ``fx_ledger`` fixtures live here because more than one directory
-uses them (``derive.support`` holds what they build).
+Every fixture of the suite lives in this file. pytest 9 gives a directory's
+``conftest.py`` fixtures only to the first collector of that directory, and a command
+line that goes into a directory, out of it and back in makes a second one, whose tests
+then report the fixture as not found (``tests/guards/test_test_layout.py``). So
+``ledger`` and the fixtures built on it (``derive.support`` and
+``derive.crypto_support`` hold what they build), ``valet_stub`` and ``fake_claude`` are
+here, and a directory's own ``conftest.py`` holds helpers only.
 
 Also the sink fixtures: a settings file under a temporary ``$FINANCE_DATA_DIR``, a
 direct approval record, and a local stub HTTP server; and ``scratch_database``, a
@@ -21,6 +26,8 @@ import datetime as dt
 import hashlib
 import os
 import secrets
+import stat
+import sys
 import threading
 import time
 import uuid
@@ -38,13 +45,28 @@ from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
+from derive.crypto_support import (
+    CRYPTO_INSTITUTION,
+    CRYPTO_ISSUER,
+    CRYPTO_PARSERS,
+    EXCHANGE_ID,
+    WALLET_ID,
+)
 from derive.support import (
+    CARD_ISSUER,
+    CARD_PARSERS,
+    CSV_IDENTIFIER,
+    FX2_IDENTIFIER,
     FX_IDENTIFIER,
     FX_INSTITUTION,
     FX_ISSUER,
     FX_PARSER,
+    SECOND,
+    THIRD,
     Ledger,
 )
+from model.conftest import SCRIPT, FakeClaude
+from rates.conftest import stub_client
 from rheo_finance import db, operations, settings
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import (
@@ -56,6 +78,7 @@ from rheo_finance.context import (
 from rheo_finance.contracts import Role
 from rheo_finance.documents import issuers
 from rheo_finance.parsers import registry
+from rheo_finance.rates import valet
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
@@ -617,3 +640,86 @@ def fx_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
     monkeypatch.setitem(registry.PARSERS, FX_PARSER.parser_id, FX_PARSER)
     ledger.accounts(("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER))
     return ledger
+
+
+@pytest.fixture
+def card_parsers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map ``CARD_ISSUER`` as a statement issuer (a CSV there is an export) and
+    register the card parsers, for this test only."""
+    monkeypatch.setattr(
+        issuers,
+        "ISSUER_DIRS",
+        MappingProxyType(
+            {
+                **issuers.ISSUER_DIRS,
+                CARD_ISSUER: issuers.IssuerDir("statement", {"csv": "export"}),
+            }
+        ),
+    )
+    registry.load_parsers()
+    for parser in CARD_PARSERS:
+        monkeypatch.setitem(registry.PARSERS, parser.parser_id, parser)
+
+
+@pytest.fixture
+def own(fx_ledger: Ledger) -> Ledger:
+    """Three chequing accounts and a Visa card at Vancity, and two accounts at the
+    synthetic FX institution (``FX_LINES`` documents under ``FX_ISSUER``)."""
+    fx_ledger.accounts(
+        ("chequing", "Vancity", "chequing", CSV_IDENTIFIER),
+        ("second", "Vancity", "chequing", SECOND),
+        ("third", "Vancity", "chequing", THIRD),
+        ("visa", "Vancity", "credit_card", "999000009991"),
+        ("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER),
+        ("fx2", FX_INSTITUTION, "chequing", FX2_IDENTIFIER),
+    )
+    return fx_ledger
+
+
+@pytest.fixture
+def crypto_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
+    """``ledger`` with two crypto accounts at ``CRYPTO_INSTITUTION`` (slugs ``wallet``,
+    kind ``crypto_wallet``, and ``exchange``, kind ``exchange``) and the
+    ``CRYPTO_ISSUER`` directory mapped to the crypto fixture parsers, for this test
+    only. Tests that need other accounts write ``accounts.csv`` again."""
+    monkeypatch.setattr(
+        issuers,
+        "ISSUER_DIRS",
+        MappingProxyType(
+            {**issuers.ISSUER_DIRS, CRYPTO_ISSUER: issuers.IssuerDir("export")}
+        ),
+    )
+    registry.load_parsers()
+    for parser in CRYPTO_PARSERS:
+        monkeypatch.setitem(registry.PARSERS, parser.parser_id, parser)
+    ledger.accounts(
+        ("wallet", CRYPTO_INSTITUTION, "crypto_wallet", WALLET_ID),
+        ("exchange", CRYPTO_INSTITUTION, "exchange", EXCHANGE_ID),
+    )
+    return ledger
+
+
+@pytest.fixture
+def valet_stub(stub_server: StubServer, monkeypatch: pytest.MonkeyPatch) -> StubServer:
+    """Valet pointed at the local stub over plain http for one test; the provider then
+    declares the stub's host, so an approval in the test is pinned to that spec.
+    Nothing reaches the real Valet."""
+    monkeypatch.setattr(valet, "ENDPOINT", valet.Endpoint(stub_server.host, "http"))
+    monkeypatch.setattr(valet, "make_client", stub_client)
+    return stub_server
+
+
+@pytest.fixture
+def fake_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[FakeClaude]:
+    """The fake ``claude`` (``model.conftest``), alone on ``PATH``."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    script = bin_dir / "claude"
+    script.write_text(SCRIPT.format(python=sys.executable), encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    fake = FakeClaude(bin_dir)
+    fake.reply({"label": "groceries", "confidence": 0.9})
+    yield fake

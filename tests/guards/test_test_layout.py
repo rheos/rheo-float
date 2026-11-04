@@ -1,12 +1,16 @@
 """No test module or conftest imports a fixture from another module under ``tests/``,
-and the fixtures the directories share resolve under any file order.
+no directory's ``conftest.py`` defines a fixture, and every fixture resolves under any
+file order.
 
 A fixture imported from ``test_a.py`` into ``test_b.py`` is registered in both, so
-what a test finds rests on what its module imports rather than on its directory. A
-phase gate once saw a derive test report its ``ledger`` fixture as not found under one
-file order; that failure did not reproduce later, so this guard removes the arrangement
-instead of pinning the symptom. A fixture more than one directory uses lives in
-``tests/conftest.py``, one directory's in that directory's ``conftest.py``.
+what a test finds rests on what its module imports rather than on its directory.
+
+A fixture in ``tests/derive/conftest.py`` goes missing under one kind of command line.
+pytest 9 parses a conftest's fixtures once, for the first collector of its directory,
+and a command line that goes into a directory, out and back in
+(``tests/derive/a.py tests/b.py tests/derive/c.py``) makes a second collector, which
+never gets them: ``c.py`` reports "fixture not found". So every fixture lives in
+``tests/conftest.py``, and a directory's own ``conftest.py`` holds helpers only.
 
 The static scan parses every ``tests/**/*.py``, collects the functions each decorates
 with ``pytest.fixture``, and checks every import of a module under ``tests/``: relative
@@ -16,7 +20,8 @@ constants may still be imported.
 
 The order test runs pytest's ``--setup-plan`` in a subprocess, which resolves every
 fixture and runs no test and no fixture, over files from three directories, forwards
-and backwards. It needs no database.
+and backwards, and over a command line that goes back into a directory. It needs no
+database.
 """
 
 from __future__ import annotations
@@ -36,6 +41,15 @@ ORDER = (
     "tests/rates/test_fetch.py",
     "tests/derive/test_tuned_defaults.py",
     "tests/derive/test_conversions.py",
+)
+# Into a directory, out of it and back in: the second visit is what lost a fixture.
+BACK_IN = (
+    "tests/derive/test_payee_patterns.py",
+    "tests/test_status_ops.py",
+    "tests/derive/test_supersede.py",
+    "tests/model/test_stub.py",
+    "tests/test_settings.py",
+    "tests/model/test_guard.py",
 )
 SUBPROCESS_SECONDS = 300
 
@@ -98,8 +112,33 @@ def problems(root: Path) -> list[str]:
     return found
 
 
+def in_directory_conftests(root: Path) -> list[str]:
+    """Every fixture defined in a ``conftest.py`` below ``root``'s own."""
+    return [
+        f"{path.relative_to(root)} defines fixture {name}"
+        for path in sorted(root.rglob("conftest.py"))
+        if path.parent != root
+        for name in sorted(_fixtures(ast.parse(path.read_text(encoding="utf-8"))))
+    ]
+
+
 def test_no_module_imports_a_fixture_from_another() -> None:
     assert problems(TESTS) == []
+
+
+def test_no_directory_conftest_defines_a_fixture() -> None:
+    assert in_directory_conftests(TESTS) == []
+
+
+def test_the_scan_finds_a_fixture_in_a_directory_conftest(tmp_path: Path) -> None:
+    fixture = "import pytest\n\n@pytest.fixture\ndef own() -> int:\n    return 1\n"
+    (tmp_path / "derive").mkdir()
+    (tmp_path / "conftest.py").write_text(fixture, encoding="utf-8")
+    (tmp_path / "derive" / "conftest.py").write_text(fixture, encoding="utf-8")
+
+    assert in_directory_conftests(tmp_path) == [
+        "derive/conftest.py defines fixture own"
+    ]
 
 
 def test_the_scan_finds_each_way_of_importing_a_fixture(tmp_path: Path) -> None:
@@ -131,7 +170,9 @@ def test_the_scan_finds_each_way_of_importing_a_fixture(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "order", [ORDER, tuple(reversed(ORDER))], ids=["forwards", "backwards"]
+    "order",
+    [ORDER, tuple(reversed(ORDER)), BACK_IN],
+    ids=["forwards", "backwards", "back-in"],
 )
 def test_every_fixture_resolves_under_either_file_order(
     order: tuple[str, ...],

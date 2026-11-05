@@ -124,6 +124,9 @@ PINNED = {
     "0031_overdrawn_identity.py": (
         "5a0713c42749fa2b87b2d4ae0b3862daaa745411a35a328fd575a60703cdcdc3"
     ),
+    "0032_decision_orphan.py": (
+        "cfba0d4f6e3c6321e6da5ebbbd2b4a6104a8c08719c1c28c2b7a58f2d055fdb7"
+    ),
 }
 
 

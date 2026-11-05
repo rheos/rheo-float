@@ -34,6 +34,8 @@ row per fact as ``(fact, subject, count, at)``:
   payment took over from (``derive.evidence``);
 - ``invoice_decision_refused``: per decision kind, the invoice decisions stage 3 could
   not apply for the invoice's currency (``derive.evidence``).
+- ``decision_orphan``: the number of distinct orphaned decisions, including those
+  without a replacement candidate, for status line 5.
 
 ``report_coverage`` is the matrix: account slug and label, month, state and the reason
 as words (``running_balance_break`` reads ``running balance break``).
@@ -76,6 +78,7 @@ from rheo_finance.storage.schema import (
     archive_skip,
     coverage,
     decision,
+    decision_orphan,
     document,
     document_line,
     obligation,
@@ -100,6 +103,7 @@ ARRANGEMENT_UNSETTLED: Final = "arrangement_unsettled"
 ARRANGEMENT_UNSETTLED_BY: Final = "arrangement_unsettled_by"
 INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
 INVOICE_DECISION_REFUSED: Final = "invoice_decision_refused"
+DECISION_ORPHAN: Final = "decision_orphan"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -148,6 +152,12 @@ def report_status_select() -> Select[tuple[object, ...]]:
     branches = [
         select(
             _fact(SCHEMA), _version.c.version_num.label("subject"), _one(), _no_time()
+        ),
+        select(
+            _fact(DECISION_ORPHAN),
+            cast(null(), Text).label("subject"),
+            func.count(decision_orphan.c.decision_id.distinct()).label("count"),
+            _no_time(),
         ),
         select(
             _fact(LAST_IMPORT),

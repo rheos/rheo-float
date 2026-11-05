@@ -124,6 +124,24 @@ _tiers(
     },
 )  # fmt: skip
 
+decision_orphan = Table(
+    "decision_orphan",
+    metadata,
+    Column("decision_id", Uuid, ForeignKey("finance.decision.id"), nullable=False),
+    Column("candidate_txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("candidate_merchant_key", Text),
+    UniqueConstraint(
+        "decision_id",
+        "candidate_txn_id",
+        "candidate_merchant_key",
+        postgresql_nulls_not_distinct=True,
+    ),
+)
+_tiers(
+    decision_orphan,
+    {"decision_id": P, "candidate_txn_id": P, "candidate_merchant_key": R},
+)
+
 # --- stored exchange rates and fetch coverage (state, inputs of stage 4; 0016) -------
 
 rate = Table(

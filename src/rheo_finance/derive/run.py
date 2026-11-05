@@ -67,7 +67,8 @@ Order of work, set by what each step reads:
    ``finance.payment.detected`` per automatic application, and the obligations due
    before ``finance.reminders.min_due_date`` are marked (``presumed.mark_floor``).
 6. Stage 16, events, persistent notices and actual parser overdrawn spells
-   (``stage16``).
+   (``stage16``), then stage 17's orphan decisions and replacement candidates
+   (``orphans``).
 7. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
@@ -93,6 +94,7 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import (
     coverage,
     crypto_edges,
+    orphans,
     pair_decisions,
     presumed,
     stage1,
@@ -117,6 +119,7 @@ from rheo_finance.storage.schema import (
     coverage as coverage_table,
 )
 from rheo_finance.storage.schema import (
+    decision_orphan,
     document_line,
     event,
     obligation,
@@ -141,6 +144,7 @@ INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 FINISHED_ROUNDS: Final = 3
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
+    decision_orphan,
     overdrawn_spell, parsed_overdrawn,
     payment_application, payment_evidence, payment,
     coverage_table, pair_edge, obligation, txn_source, txn, source_discrepancy,
@@ -340,6 +344,7 @@ def run(
         presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
 
         stage16.build(uow, ctx, statement_ready=statement_ready)
+        orphans.build(uow, overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY))
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
         write_sink_specs(uow)

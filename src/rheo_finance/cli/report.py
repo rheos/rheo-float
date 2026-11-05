@@ -56,6 +56,11 @@ def _cmd_open_items(args: argparse.Namespace) -> int:
         + f"; {row.state}; {row.reason}"
         + (f"; category {row.category}" if row.category is not None else "")
         + (f"; tag {row.tag}" if row.tag is not None else "")
+        + (
+            "; candidates " + ", ".join(row.candidate_refs)
+            if row.candidate_refs
+            else ""
+        )
         for row in out.items
     ]
     emit(Report(headline, detail))

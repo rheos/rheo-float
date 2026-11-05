@@ -689,3 +689,146 @@ def test_partial_counterpart_month_names_coverage_without_inventing_a_first_date
         row.reason
         == "Sample Covered side not loaded: no Sample Covered data for 2035-02"
     )
+
+
+@pytest.mark.parametrize(
+    ("year", "decision_label", "candidate_labels"),
+    [(2028, "orphan", ["candidate"]), (2029, "multiple", ["multiple-0", "multiple-1"])],
+)
+def test_reader_exposes_candidate_line_refs_without_multiplying_money(
+    reader_context: FinanceContext,
+    year: int,
+    decision_label: str,
+    candidate_labels: list[str],
+) -> None:
+    out = listed(reader_context, year, "orphaned_decision")
+    (row,), (summary,) = out.items, out.summary
+    assert row.line_ref == ref("decision", decision_label)
+    assert row.model_dump().get("candidate_refs") == sorted(
+        ref("txn", label) for label in candidate_labels
+    )
+    assert row.candidate_count == len(candidate_labels)
+    assert row.amount == Decimal("-31")
+    assert summary.count == 1 and summary.sums[0].out_amount == Decimal("31")
+
+
+@pytest.mark.parametrize(
+    ("year", "decision_label", "candidate_labels"),
+    [(2028, "orphan", ["candidate"]), (2029, "multiple", ["multiple-0", "multiple-1"])],
+)
+def test_cli_exposes_candidate_line_refs_on_one_financial_row(
+    reader_context: FinanceContext,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    year: int,
+    decision_label: str,
+    candidate_labels: list[str],
+) -> None:
+    monkeypatch.setattr(
+        composition,
+        "build_context",
+        lambda role: dataclasses.replace(reader_context, role=role),
+    )
+    assert main(["report", "open-items", "--year", str(year)]) == 0
+    output = capsys.readouterr().out
+    (line,) = [
+        line
+        for line in output.splitlines()
+        if line.startswith(ref("decision", decision_label) + " ")
+    ]
+    for label in candidate_labels:
+        assert ref("txn", label) in line
+    assert "orphaned_decision: 1; in 0.00 CAD, out 31.00 CAD" in output
+    assert line.count("-31.00 CAD") == 1
+
+
+def test_invoice_decision_reads_do_not_grow_with_the_unmatched_backlog(
+    ledger: Ledger,
+) -> None:
+    from sqlalchemy import event as db_event
+
+    def decision_reads() -> int:
+        statements: list[str] = []
+
+        def observe(
+            _conn: Connection,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _many: bool,
+        ) -> None:
+            normalized = " ".join(statement.casefold().split())
+            if (
+                normalized.startswith("select ")
+                and "from finance.decision " in normalized
+            ):
+                statements.append(normalized)
+
+        db_event.listen(ledger.conn, "before_cursor_execute", observe)
+        try:
+            ledger.derive()
+        finally:
+            db_event.remove(ledger.conn, "before_cursor_execute", observe)
+        return len(statements)
+
+    ledger.file(INVOICE, invoice_text())
+    one = decision_reads()
+    assert one > 0
+    for index in range(5):
+        ledger.file(
+            f"invoices-received/sample-vendor/backlog-{index}.pdf",
+            invoice_text().replace("SP0042", f"SP999{index}"),
+        )
+    many = decision_reads()
+    assert len(ledger.conn.execute(select(open_item)).all()) == 6
+    assert many == one
+
+
+def test_invoice_batch_lookup_keeps_newest_and_bulk_reversal_outcomes(
+    ledger: Ledger,
+) -> None:
+    from rheo_finance.decision import RecordOut, invoice_ref
+    from rheo_finance.manual.stage2 import account_id
+
+    from .test_invoice_decisions import call
+
+    catalogue.load_all()
+    ledger.file(INVOICE, invoice_text())
+    ledger.derive()
+    invoice_key = ledger.conn.scalar(select(document_line.c.line_key_id))
+    assert isinstance(invoice_key, uuid.UUID)
+    target = invoice_ref(invoice_key)
+    older = call(
+        ledger,
+        "finance.decision.record",
+        {
+            "kind": "invoice_unpaid",
+            "target_ref": target,
+        },
+    )
+    assert isinstance(older, RecordOut)
+    call(
+        ledger,
+        "finance.decision.record",
+        {
+            "kind": "invoice_paid",
+            "target_ref": target,
+            "account_ref": format_ref("finance", "account", account_id("paid-outside")),
+            "effective_on": "2026-01-10",
+            "bulk_id": str(key("invoice-bulk")),
+        },
+    )
+    ledger.derive()
+    assert ledger.conn.scalar(select(open_item.c.id)) is None
+    assert len(ledger.txns()) == 1
+    assert ledger.conn.scalar(select(obligation.c.id)) is None
+    call(ledger, "finance.decision.reverse", {"bulk_id": str(key("invoice-bulk"))})
+    ledger.derive()
+    assert ledger.txns() == []
+    assert len(ledger.conn.execute(select(obligation)).all()) == 1
+    assert ledger.conn.scalar(select(open_item.c.id)) is None
+    call(ledger, "finance.decision.reverse", {"decision_id": str(older.decision_id)})
+    ledger.derive()
+    assert ledger.conn.scalar(select(obligation.c.id)) is None
+    assert len(ledger.conn.execute(select(open_item)).all()) == 1

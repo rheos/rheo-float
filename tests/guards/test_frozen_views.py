@@ -130,6 +130,9 @@ PINNED = {
     "0033_open_item.py": (
         "91e7ec909566d2e2c5b235e79e888df66d7623baeb2e5254cfa45e2dcfa5fb34"
     ),
+    "0034_open_item_candidates.py": (
+        "d824cf4593179894bd4766d221302cb72475a0cf273e43f38bb2660e7746596d"
+    ),
 }
 
 

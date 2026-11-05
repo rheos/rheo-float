@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy import insert, select
 
 from rheo_finance.context import UnitOfWork
-from rheo_finance.decision import INVOICE_DECISIONS, effective, invoice_ref
+from rheo_finance.decision import effective_invoices, invoice_ref
 from rheo_finance.derive.stage4 import cents
 from rheo_finance.manual.document_periods import DocumentPeriodRow
 from rheo_finance.manual.stage2 import account_id
@@ -186,15 +186,17 @@ def _invoices(uow: UnitOfWork) -> list[Item]:
             document_line.c.line_key_id.is_not(None),
         )
         .order_by(document.c.sha256.desc(), document_line.c.line_no)
+    ).all()
+    decided = effective_invoices(
+        uow, {row.line_key_id for row in rows if row.line_key_id not in linked}
     )
     for row in rows:
         key = row.line_key_id
         if key in linked or key in seen:
             continue
         seen.add(key)
-        decided = effective(uow, INVOICE_DECISIONS, invoice_ref(key))
         # Stage 3 refuses an unsupported-currency decision and leaves it open.
-        if decided is not None and row.refused_decision_id is None:
+        if key in decided and row.refused_decision_id is None:
             continue
         if row.posting_date is None or row.amount is None or row.currency is None:
             continue

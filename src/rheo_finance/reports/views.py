@@ -69,7 +69,7 @@ from sqlalchemy import (
     table,
     union_all,
 )
-from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by, array
 from sqlalchemy.sql.elements import Label
 
 from rheo_finance.derive.coverage import State
@@ -300,6 +300,24 @@ def report_open_item_select() -> Select[tuple[object, ...]]:
         .correlate(open_item)
         .scalar_subquery()
     )
+    candidate_ref = func.concat("finance.txn:", decision_orphan.c.candidate_txn_id)
+    candidate_refs = (
+        select(
+            func.coalesce(
+                func.array_agg(
+                    aggregate_order_by(candidate_ref.distinct(), candidate_ref)
+                ),
+                array([], type_=Text),
+            )
+        )
+        .select_from(decision_orphan)
+        .where(
+            decision_orphan.c.decision_id == open_item.c.decision_id,
+            decision_orphan.c.candidate_txn_id.is_not(None),
+        )
+        .correlate(open_item)
+        .scalar_subquery()
+    )
     edge_count = (
         select(func.count())
         .select_from(pair_edge)
@@ -420,6 +438,7 @@ def report_open_item_select() -> Select[tuple[object, ...]]:
         open_item.c.category,
         open_item.c.tag,
         count.label("candidate_count"),
+        cast(candidate_refs, ARRAY(Text)).label("candidate_refs"),
     ).select_from(
         open_item.outerjoin(account, open_item.c.account_id == account.c.id)
         .outerjoin(txn, open_item.c.txn_id == txn.c.id)

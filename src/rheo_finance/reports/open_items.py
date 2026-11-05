@@ -50,6 +50,7 @@ class OpenItemRow(BaseModel):
     category: Annotated[str | None, Tiered(P)]
     tag: Annotated[str | None, Tiered(P)]
     candidate_count: Annotated[int, Tiered(P)]
+    candidate_refs: Annotated[list[str], Tiered(P)]
 
 
 class CurrencySums(BaseModel):

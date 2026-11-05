@@ -92,11 +92,9 @@ from sqlalchemy import bindparam, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import (
-    INVOICE_DECISIONS,
     Decision,
     DecisionKind,
-    effective,
-    invoice_ref,
+    effective_invoices,
 )
 from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
 from rheo_finance.manual.payees import Payees, names_any
@@ -439,16 +437,6 @@ def _evidence(
     ]
 
 
-def _invoice_decisions(
-    uow: UnitOfWork, invoices: Iterable[uuid.UUID]
-) -> dict[uuid.UUID, Decision]:
-    """The decision in force on each invoice that has one, by line key."""
-    found = {
-        key: effective(uow, INVOICE_DECISIONS, invoice_ref(key)) for key in invoices
-    }
-    return {key: each for key, each in found.items() if each is not None}
-
-
 def _decided_date(decided: Decision) -> dt.date:
     assert decided.effective_on is not None  # invoice_paid requires it
     return decided.effective_on
@@ -565,7 +553,7 @@ def link(
 
     invoices = by_kind["invoice"]
     paid = match([lines[0] for lines in invoices.values()], payments, invoice_days)
-    decided = _invoice_decisions(uow, invoices)
+    decided = effective_invoices(uow, invoices)
     paid |= _matched_on_decided_date(invoices, decided, paid, payments, invoice_days)
     for key, txn_id in paid.items():
         first, *copies = invoices[key]

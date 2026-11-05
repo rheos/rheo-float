@@ -1003,6 +1003,7 @@ report_open_item = Table(
     Column("category", Text),
     Column("tag", Text),
     Column("candidate_count", BigInteger),
+    Column("candidate_refs", ARRAY(Text)),
 )
 _tiers(
     report_open_item,

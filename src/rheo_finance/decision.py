@@ -24,7 +24,17 @@ from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
-from sqlalchemy import ColumnElement, Table, and_, exists, func, insert, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    Table,
+    and_,
+    exists,
+    func,
+    insert,
+    or_,
+    select,
+)
 
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
@@ -361,6 +371,21 @@ def _bulk_reversed(uow: UnitOfWork, bulk_id: uuid.UUID) -> bool:
     )
 
 
+def _effective_query(
+    kinds: Iterable[DecisionKind], match: ColumnElement[bool]
+) -> Select[tuple[object, ...]]:
+    """The shared reversal filter and newest-first order for effective answers."""
+    return (
+        select(decision)
+        .where(
+            decision.c.kind.in_([each.value for each in kinds]),
+            match,
+            ~reversed_clause(decision),
+        )
+        .order_by(decision.c.decided_at.desc(), decision.c.id.desc())
+    )
+
+
 def effective(
     uow: UnitOfWork,
     kind: DecisionKind | Iterable[DecisionKind],
@@ -393,16 +418,31 @@ def effective(
         match = row.c.merchant_key == target.key
     else:
         match = row.c[columns.pop()] == target
-    statement = (
-        select(row)
-        .where(
-            row.c.kind.in_([each.value for each in kinds]), match, ~reversed_clause(row)
-        )
-        .order_by(row.c.decided_at.desc(), row.c.id.desc())
-        .limit(1)
-    )
+    statement = _effective_query(kinds, match).limit(1)
     found = uow.execute(statement).mappings().first()
     return None if found is None else Decision.model_validate(dict(found))
+
+
+def effective_invoices(
+    uow: UnitOfWork, line_keys: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, Decision]:
+    """Each invoice's newest unreversed paid/unpaid answer, in one query.
+
+    Missing answers are absent. Both invoice evidence and open items share this
+    lookup and effective's canonical reversal filter and ordering.
+    """
+    targets = {invoice_ref(key): key for key in line_keys}
+    if not targets:
+        return {}
+    found: dict[uuid.UUID, Decision] = {}
+    rows = uow.execute(
+        _effective_query(INVOICE_DECISIONS, decision.c.target_ref.in_(targets))
+    ).mappings()
+    for row in rows:
+        key = targets[row["target_ref"]]
+        if key not in found:
+            found[key] = Decision.model_validate(dict(row))
+    return found
 
 
 # --- finance.decision.record ----------------------------------------------------------

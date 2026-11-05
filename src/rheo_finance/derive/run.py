@@ -94,6 +94,7 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import (
     coverage,
     crypto_edges,
+    merchant_keys,
     open_items,
     orphans,
     pair_decisions,
@@ -284,6 +285,7 @@ def run(
             decided=decided,
         )
         stage11.resolve(uow, decided)
+        merchant_keys.build(uow, manual.payees)
 
         rules = stage15_apply.Rules(
             tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),

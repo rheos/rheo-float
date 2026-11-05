@@ -3,7 +3,8 @@
 Snapshots only suggest replacements. A same-kind answer suppresses an orphan only
 when its named replacements match those snapshots. Accountless payment notices
 have no snapshot, so their missing keys remain listed without invented candidates.
-Merchant keys and split decisions belong to their later stages.
+Merchant category answers use the same snapshot matching, while their current
+presence and coverage are scoped by merchant key. Split decisions join later.
 """
 
 from __future__ import annotations
@@ -153,38 +154,47 @@ def _categories(
     uow: UnitOfWork,
     rows: list[Decision],
     resolved: dict[RefKey, uuid.UUID],
+    merchants: dict[uuid.UUID, str],
     inactive: set[uuid.UUID],
 ) -> None:
-    """The minimal line-only application needed by the reattachment contract."""
+    """Apply owner fields only, line answers before their merchant's answers."""
+    units: dict[str, set[uuid.UUID]] = defaultdict(set)
+    for line_id, merchant in merchants.items():
+        units[merchant].add(line_id)
     categories: set[uuid.UUID] = set()
     tags: set[uuid.UUID] = set()
-    for row in rows:
-        if row.kind is not K.CATEGORY or row.id in inactive:
-            continue
-        key = _line_key(row.target_ref)
-        target = resolved.get(key) if key is not None else None
-        if target is None:
-            continue
+    # Rows are already newest first. A line's older answer still outranks a newer
+    # unit answer, independently for category and tag (FR-17).
+    answers = [row for row in rows if row.kind is K.CATEGORY and row.id not in inactive]
+    answers.sort(key=lambda row: row.merchant_key is not None)
+    for row in answers:
+        if row.merchant_key is not None:
+            targets = units[row.merchant_key]
+        else:
+            key = _line_key(row.target_ref)
+            target = resolved.get(key) if key is not None else None
+            targets = {target} if target is not None else set()
         basis = refs.format_ref(refs.FINANCE_SYSTEM, "decision", row.id)
-        changes: dict[str, object] = {}
-        if row.category is not None and target not in categories:
-            changes.update(
-                category=row.category,
-                category_basis_ref=basis,
-                category_basis_class="owner",
-            )
-            categories.add(target)
-        if row.tag is not None and target not in tags:
-            changes.update(
-                tag=row.tag,
-                business_unit=row.business_unit,
-                business_pct=row.business_pct,
-                tag_basis_ref=basis,
-                tag_basis_class="owner",
-            )
-            tags.add(target)
-        if changes:
-            uow.execute(update(txn).where(txn.c.id == target).values(**changes))
+        for target in targets:
+            changes: dict[str, object] = {}
+            if row.category is not None and target not in categories:
+                changes.update(
+                    category=row.category,
+                    category_basis_ref=basis,
+                    category_basis_class="owner",
+                )
+                categories.add(target)
+            if row.tag is not None and target not in tags:
+                changes.update(
+                    tag=row.tag,
+                    business_unit=row.business_unit,
+                    business_pct=row.business_pct,
+                    tag_basis_ref=basis,
+                    tag_basis_class="owner",
+                )
+                tags.add(target)
+            if changes:
+                uow.execute(update(txn).where(txn.c.id == target).values(**changes))
 
 
 def _covers(options: list[set[uuid.UUID]], replacements: set[uuid.UUID]) -> bool:
@@ -227,7 +237,6 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
             .order_by(decision.c.decided_at.desc(), decision.c.id.desc())
         ).mappings()
     ]
-    rows = [row for row in rows if row.kind is not K.CATEGORY or row.target_ref]
     if not any(row.kind in LINE_KINDS | OBLIGATION_KINDS for row in rows):
         return
     legs: dict[uuid.UUID, list[str]] = defaultdict(list)
@@ -241,6 +250,20 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
             .order_by(decision_item.c.seq)
         ):
             legs[leg.decision_id].append(leg.target_ref)
+    snapshots = _snapshots(uow, {row.id for row in rows})
+    merchants = (
+        {
+            row.id: row.merchant_key
+            for row in uow.execute(select(txn.c.id, txn.c.merchant_key))
+            if row.merchant_key is not None
+        }
+        if any(row.merchant_key is not None for row in rows)
+        else {}
+    )
+    merchant_owners: dict[str, set[uuid.UUID]] = defaultdict(set)
+    for row in rows:
+        if row.kind is K.CATEGORY and row.merchant_key is not None:
+            merchant_owners[row.merchant_key].add(row.id)
     named = {
         row.id: [
             key
@@ -253,6 +276,9 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
         ]
         for row in rows
     }
+    for row in rows:
+        if row.merchant_key is not None:
+            named[row.id] = [snapshot.key for snapshot in snapshots.get(row.id, [])]
     wanted = {key for found in named.values() for key in found}
     resolved: dict[RefKey, uuid.UUID] = {}
     present: set[RefKey] = set()
@@ -295,10 +321,16 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
         if obligation_keys
         else set()
     )
+    current_merchants = set(merchants.values())
     orphaned = {
         row.id
         for row in rows
-        if (row.kind in LINE_KINDS and any(key not in present for key in named[row.id]))
+        if (
+            row.kind in LINE_KINDS
+            and row.merchant_key is None
+            and any(key not in present for key in named[row.id])
+        )
+        or (row.merchant_key is not None and row.merchant_key not in current_merchants)
         or (
             row.id in obligation_keys
             and obligation_keys[row.id] is not None
@@ -306,21 +338,22 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
         )
     }
     if not orphaned:
-        _categories(uow, rows, resolved, set())
+        _categories(uow, rows, resolved, merchants, set())
         return
 
     by_id = {row.id: row for row in rows}
     taken: dict[tuple[K, uuid.UUID], set[uuid.UUID]] = defaultdict(set)
     declined: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
     for row in rows:
+        if row.merchant_key is not None:
+            for target, merchant in merchants.items():
+                if merchant == row.merchant_key:
+                    taken[row.kind, target].add(row.id)
         for key in named[row.id]:
-            if key in resolved:
+            if key in resolved and row.merchant_key is None:
                 taken[row.kind, resolved[key]].add(row.id)
                 if row.kind is K.REATTACH_DECLINE and row.about_decision_id is not None:
                     declined[row.about_decision_id].add(resolved[key])
-    snapshots = _snapshots(
-        uow, orphaned | {row.id for row in rows if row.about_decision_id in orphaned}
-    )
     matching = _matches(
         uow,
         {key: found for key, found in snapshots.items() if key in orphaned},
@@ -329,8 +362,9 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
     recorded: dict[tuple[K, RefKey], set[uuid.UUID]] = defaultdict(set)
     declines: dict[uuid.UUID, list[Decision]] = defaultdict(list)
     for row in rows:
-        for key in named[row.id]:
-            recorded[row.kind, key].add(row.id)
+        if row.merchant_key is None:
+            for key in named[row.id]:
+                recorded[row.kind, key].add(row.id)
         if row.kind is K.REATTACH_DECLINE and row.about_decision_id is not None:
             declines[row.about_decision_id].append(row)
     reattached: set[uuid.UUID] = set()
@@ -341,6 +375,7 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
             original is None
             or original.id not in orphaned
             or answer.kind != original.kind
+            or (answer.merchant_key is None) != (original.merchant_key is None)
             or (answer.decided_at, answer.id) <= (original.decided_at, original.id)
         ):
             continue
@@ -368,6 +403,13 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
             owners = recorded[answer.kind, replacement.key] | (
                 taken[answer.kind, current_id] if current_id is not None else set()
             )
+            if answer.merchant_key is not None:
+                owners |= merchant_owners[answer.merchant_key]
+                if (
+                    current_id is not None
+                    and merchants.get(current_id) != answer.merchant_key
+                ):
+                    blocked = True
             if any(
                 other not in (original.id, answer.id)
                 and (by_id[other].decided_at, other) < (answer.decided_at, answer.id)
@@ -399,7 +441,13 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
         for key in orphaned
     }
     values = [
-        {"decision_id": key, "candidate_txn_id": candidate}
+        {
+            "decision_id": key,
+            "candidate_txn_id": candidate,
+            "candidate_merchant_key": merchants.get(candidate)
+            if by_id[key].merchant_key is not None
+            else None,
+        }
         for key in orphaned
         for candidate in (tuple(candidates[key]) or (None,))
     ]
@@ -410,4 +458,4 @@ def build(uow: UnitOfWork, *, overlap_days: int) -> None:
         uow.execute(
             update(txn).where(txn.c.id.in_(marked)).values(orphan_candidate=True)
         )
-    _categories(uow, rows, resolved, orphaned | reattached)
+    _categories(uow, rows, resolved, merchants, orphaned | reattached)

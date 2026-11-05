@@ -89,7 +89,7 @@ P = Tier.PUBLIC
 # --- events ---------------------------------------------------------------------------
 
 # Stored parse shape, also in parse inputs and the derive fingerprint.
-PARSE_CACHE_VERSION: Final = "spells-v1"
+PARSE_CACHE_VERSION: Final = "spells-v2"
 
 DOCUMENT_REJECTED: Final = "finance.document.rejected"
 
@@ -538,11 +538,12 @@ def _store(
             document_id=document_id,
             account_id=period.account.id,
             currency=period.currency,
+            spell_no=number,
             start_date=spell.start,
             end_date=spell.end,
         )
         for period in result.periods
-        for spell in period.overdrawn
+        for number, spell in enumerate(period.overdrawn, start=1)
     ]
     if spells:
         uow.execute(insert(parsed_overdrawn), spells)

@@ -121,6 +121,9 @@ PINNED = {
     "0030_notices.py": (
         "ed5edb752f928a945874a30b9773d0caa7dc5c043e638ddc865cb4033c6b2913"
     ),
+    "0031_overdrawn_identity.py": (
+        "5a0713c42749fa2b87b2d4ae0b3862daaa745411a35a328fd575a60703cdcdc3"
+    ),
 }
 
 

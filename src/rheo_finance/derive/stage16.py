@@ -283,30 +283,19 @@ def _spells(uow: UnitOfWork) -> None:
     """Keep only actual parser spells of current documents. Inferred split-line
     intermediate balances are deliberately never read here. Phase 5 adds the
     running-balance-source recompute and overdraft events on this derived seam."""
-    found: dict[tuple[uuid.UUID, str, dt.date], dt.date | None] = {}
-    rows = uow.execute(
-        select(parsed_overdrawn)
-        .join(document, document.c.id == parsed_overdrawn.c.document_id)
-        .where(document.c.status == "parsed")
-    )
-    for row in rows:
-        key = (row.account_id, row.currency, row.start_date)
-        if key not in found:
-            found[key] = row.end_date
-        elif found[key] is None or row.end_date is None:
-            found[key] = None
-        else:
-            found[key] = max(found[key], row.end_date)
-    if found:
+    # Dates do not identify a spell: multiple recoveries and new negative runs can
+    # share one printed date. Keep the source document and parser ordinal intact.
+    rows = (
         uow.execute(
-            insert(overdrawn_spell),
-            [
-                dict(
-                    account_id=key[0], currency=key[1], start_date=key[2], end_date=end
-                )
-                for key, end in sorted(found.items())
-            ],
+            select(parsed_overdrawn)
+            .join(document, document.c.id == parsed_overdrawn.c.document_id)
+            .where(document.c.status == "parsed")
         )
+        .mappings()
+        .all()
+    )
+    if rows:
+        uow.execute(insert(overdrawn_spell), [dict(row) for row in rows])
 
 
 def build(

@@ -6,9 +6,10 @@ import dataclasses
 import datetime as dt
 import uuid
 from decimal import Decimal
+from importlib import import_module
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 
 from rheo_finance.clock import FakeClock
 from rheo_finance.derive.fingerprint import fingerprint
@@ -23,6 +24,7 @@ from rheo_finance.derive.stage16 import (
     statement_ready_text,
 )
 from rheo_finance.manual.stage2 import account_id
+from rheo_finance.parsers.docextract_adapter import vancity_statement
 from rheo_finance.storage.schema import (
     document_line,
     event,
@@ -303,16 +305,40 @@ def test_actual_parser_spells_survive_cached_derive_and_rebuild(ledger: Ledger) 
     ledger.derive()
     expected = [(account_id("chequing"), "CAD", D(2025, 12, 20), None)]
     assert [
-        tuple(row) for row in ledger.conn.execute(select(overdrawn_spell))
+        tuple(row)
+        for row in ledger.conn.execute(
+            select(
+                overdrawn_spell.c.account_id,
+                overdrawn_spell.c.currency,
+                overdrawn_spell.c.start_date,
+                overdrawn_spell.c.end_date,
+            )
+        )
     ] == expected
     assert ledger.conn.scalar(select(func.count()).select_from(parsed_overdrawn)) == 1
     ledger.derive()
     assert [
-        tuple(row) for row in ledger.conn.execute(select(overdrawn_spell))
+        tuple(row)
+        for row in ledger.conn.execute(
+            select(
+                overdrawn_spell.c.account_id,
+                overdrawn_spell.c.currency,
+                overdrawn_spell.c.start_date,
+                overdrawn_spell.c.end_date,
+            )
+        )
     ] == expected
     run(ledger.uow, ledger.ctx, extract_pdf=read_as_text, reparse=True)
     assert [
-        tuple(row) for row in ledger.conn.execute(select(overdrawn_spell))
+        tuple(row)
+        for row in ledger.conn.execute(
+            select(
+                overdrawn_spell.c.account_id,
+                overdrawn_spell.c.currency,
+                overdrawn_spell.c.start_date,
+                overdrawn_spell.c.end_date,
+            )
+        )
     ] == expected
     (ledger.archive / "vancity/2026-01-10.pdf").unlink()
     ledger.derive()
@@ -398,3 +424,95 @@ def test_payment_alert_notice_is_written_while_all_sinks_are_disabled(
     assert found.kind == "alert" and found.state == "pending"
     assert found.event_date == D(2026, 1, 4)
     assert found.first_seen_at == ledger.ctx.clock.now_utc()
+
+
+@pytest.mark.parametrize("closed_spells", [1, 2])
+def test_same_day_native_parser_spells_preserve_cardinality(
+    ledger: Ledger,
+    closed_spells: int,
+) -> None:
+    # Separate recoveries on the same date must remain separate, even when both
+    # printed dates are equal. The last negative run has no recovery yet.
+    repeat = (
+        "20 DEC SAMPLE CREDIT  200.00  100.00\n"
+        "20 DEC SAMPLE DEBIT AGAIN  200.00  -100.00\n"
+    )
+    withdrawals = 200 * (closed_spells + 1)
+    deposits = 200 * closed_spells
+    layout = (
+        "JANUARY 10, 2026\n"
+        "STATEMENT PERIOD: 11 DEC 2025 to 10 JAN 2026\n"
+        "VANCITY ESSENTIAL CHEQUING #999000000022  "
+        f"100.00  {withdrawals}.00  {deposits}.00  -100.00\n\n"
+        "VANCITY ESSENTIAL CHEQUING #999000000022\n"
+        "OPENING BALANCE  100.00\n"
+        "20 DEC SAMPLE DEBIT  200.00  -100.00\n" + repeat * closed_spells
+    )
+    parsed = vancity_statement(layout)
+    assert parsed.failed_checks == 0
+    spells = parsed.accounts[0].overdrawn
+    expected = [(D(2025, 12, 20), D(2025, 12, 20))] * closed_spells + [
+        (D(2025, 12, 20), None)
+    ]
+    assert [(spell.start, spell.end) for spell in spells] == expected
+    ledger.chequing()
+    source = ledger.file("vancity/same-day-spells.pdf", layout)
+
+    def stored() -> None:
+        for table in (parsed_overdrawn, overdrawn_spell):
+            found = ledger.conn.execute(select(table).order_by(table.c.spell_no)).all()
+            assert [(row.start_date, row.end_date) for row in found] == expected
+            assert [row.spell_no for row in found] == list(range(1, len(expected) + 1))
+            assert {row.document_id for row in found} == {source}
+
+    ledger.derive()
+    stored()
+    cached = ledger.derive()
+    assert cached.parsed_now == 0 and cached.kept == 1
+    stored()
+    run(ledger.uow, ledger.ctx, extract_pdf=read_as_text, reparse=True)
+    stored()
+
+
+def test_forward_spell_migration_preserves_legacy_cache(ledger: Ledger) -> None:
+    ledger.chequing()
+    actual = (
+        "JANUARY 10, 2026\n"
+        "STATEMENT PERIOD: 11 DEC 2025 to 10 JAN 2026\n"
+        "VANCITY ESSENTIAL CHEQUING #999000000022  100.00  400.00  200.00  -100.00\n\n"
+        "VANCITY ESSENTIAL CHEQUING #999000000022\n"
+        "OPENING BALANCE  100.00\n"
+        "20 DEC SAMPLE DEBIT  200.00  -100.00\n"
+        "20 DEC SAMPLE CREDIT  200.00  100.00\n"
+        "21 DEC SAMPLE DEBIT AGAIN  200.00  -100.00\n"
+    )
+    source = ledger.file("vancity/2026-01-10.pdf", actual)
+    ledger.derive()
+    # Recreate the populated 0030 shapes inside the rolled-back test transaction.
+    for sql in (
+        "ALTER TABLE finance.overdrawn_spell "
+        "DROP CONSTRAINT overdrawn_spell_pkey, DROP COLUMN document_id, "
+        "DROP COLUMN spell_no, ADD PRIMARY KEY (account_id, currency, start_date)",
+        "ALTER TABLE finance.parsed_overdrawn "
+        "DROP CONSTRAINT parsed_overdrawn_pkey, DROP COLUMN spell_no, "
+        "ADD PRIMARY KEY (document_id, account_id, currency, start_date)",
+    ):
+        ledger.conn.execute(text(sql))
+    revision = import_module("rheo_finance.migrations.versions.0031_overdrawn_identity")
+    for sql in revision.STATEMENTS:
+        ledger.conn.execute(text(sql))
+    cached = ledger.conn.execute(
+        select(parsed_overdrawn).order_by(parsed_overdrawn.c.spell_no)
+    ).all()
+    assert [(row.spell_no, row.start_date, row.end_date) for row in cached] == [
+        (1, D(2025, 12, 20), D(2025, 12, 20)),
+        (2, D(2025, 12, 21), None),
+    ]
+    assert {row.document_id for row in cached} == {source}
+    assert ledger.conn.scalar(select(func.count()).select_from(overdrawn_spell)) == 0
+    derived = ledger.derive()
+    assert derived.parsed_now == 0 and derived.kept == 1
+    restored = ledger.conn.execute(
+        select(overdrawn_spell).order_by(overdrawn_spell.c.spell_no)
+    ).all()
+    assert [tuple(row) for row in restored] == [tuple(row) for row in cached]

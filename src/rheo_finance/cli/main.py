@@ -20,6 +20,7 @@ from rheo_finance.cli import approve as approve_cli
 from rheo_finance.cli import decision as decision_cli
 from rheo_finance.cli import ledger as ledger_cli
 from rheo_finance.cli import rate as rate_cli
+from rheo_finance.cli import report as report_cli
 from rheo_finance.cli import sink as sink_cli
 from rheo_finance.render import Report, emit, emit_error, failure_line
 
@@ -65,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     ledger_cli.add_parser(commands)
     decision_cli.add_parser(commands)
     rate_cli.add_parser(commands)
+    report_cli.add_parser(commands)
     # cli.approve is imported here and nowhere else (the import-graph guard).
     sink_cli.add_parser(commands, approve=approve_cli.cmd_approve)
     return parser

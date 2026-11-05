@@ -947,3 +947,67 @@ overdrawn_spell = Table(
     Column("end_date", Date),
 )
 _tiers(overdrawn_spell, {name: P for name in overdrawn_spell.c.keys()})
+
+
+# Stage 17's one source of counts and rows left out of totals (migration 0033).
+open_item = Table(
+    "open_item",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("tax_year", Integer, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("subject_ref", Text, nullable=False),
+    Column("txn_id", Uuid, ForeignKey("finance.txn.id")),
+    Column("document_id", Uuid, ForeignKey("finance.document.id")),
+    Column("decision_id", Uuid, ForeignKey("finance.decision.id")),
+    Column("payment_id", Uuid, ForeignKey("finance.payment.id")),
+    Column("occurred_on", Date, nullable=False),
+    Column("account_id", Uuid, _account_fk()),
+    Column("direction", Text),
+    Column("amount", Numeric),
+    Column("currency", Text),
+    Column("cad_amount", Numeric(20, 2)),
+    Column("state", Text, nullable=False),
+    Column("reason_code", Text, nullable=False),
+    Column("reason_account_id", Uuid, _account_fk()),
+    Column("reason_date", Date),
+    Column(
+        "reason_payee_id",
+        Uuid,
+        ForeignKey("finance.payee.id", deferrable=True, initially="DEFERRED"),
+    ),
+    # Orphans retain the answer stored on the decision, never a candidate's answer.
+    Column("category", Text),
+    Column("tag", Text),
+    UniqueConstraint("kind", "subject_ref"),
+)
+_tiers(
+    open_item,
+    {name: R if name in {"amount", "cad_amount"} else P for name in open_item.c.keys()},
+)
+
+report_open_item = Table(
+    "report_open_item",
+    metadata,
+    Column("line_ref", Text),
+    Column("tax_year", Integer),
+    Column("kind", Text),
+    Column("occurred_on", Date),
+    Column("account_label", Text),
+    Column("direction", Text),
+    Column("amount", Numeric),
+    Column("currency", Text),
+    Column("cad_amount", Numeric(20, 2)),
+    Column("state", Text),
+    Column("reason", Text),
+    Column("category", Text),
+    Column("tag", Text),
+    Column("candidate_count", BigInteger),
+)
+_tiers(
+    report_open_item,
+    {
+        name: R if name in {"amount", "cad_amount"} else P
+        for name in report_open_item.c.keys()
+    },
+)

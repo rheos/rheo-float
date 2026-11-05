@@ -127,6 +127,9 @@ PINNED = {
     "0032_decision_orphan.py": (
         "cfba0d4f6e3c6321e6da5ebbbd2b4a6104a8c08719c1c28c2b7a58f2d055fdb7"
     ),
+    "0033_open_item.py": (
+        "91e7ec909566d2e2c5b235e79e888df66d7623baeb2e5254cfa45e2dcfa5fb34"
+    ),
 }
 
 

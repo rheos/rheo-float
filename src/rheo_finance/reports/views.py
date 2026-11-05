@@ -59,6 +59,7 @@ from sqlalchemy import (
     DateTime,
     Select,
     Text,
+    case,
     cast,
     column,
     func,
@@ -68,6 +69,7 @@ from sqlalchemy import (
     table,
     union_all,
 )
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.sql.elements import Label
 
 from rheo_finance.derive.coverage import State
@@ -82,8 +84,12 @@ from rheo_finance.storage.schema import (
     document,
     document_line,
     obligation,
+    open_item,
+    pair_edge,
     payee,
+    payment_application,
     source_discrepancy,
+    txn,
     txn_source,
 )
 
@@ -282,9 +288,150 @@ def report_document_select() -> Select[tuple[object, ...]]:
     )
 
 
+def report_open_item_select() -> Select[tuple[object, ...]]:
+    named = account.alias("reason_account")
+    orphan_count = (
+        select(func.count(decision_orphan.c.candidate_txn_id.distinct()))
+        .select_from(decision_orphan)
+        .where(
+            decision_orphan.c.decision_id == open_item.c.decision_id,
+            decision_orphan.c.candidate_txn_id.is_not(None),
+        )
+        .correlate(open_item)
+        .scalar_subquery()
+    )
+    edge_count = (
+        select(func.count())
+        .select_from(pair_edge)
+        .where(
+            (pair_edge.c.a_txn_id == open_item.c.txn_id)
+            | (pair_edge.c.b_txn_id == open_item.c.txn_id),
+            pair_edge.c.applied.is_(False),
+        )
+        .correlate(open_item)
+        .scalar_subquery()
+    )
+    count = case(
+        (open_item.c.kind == "orphaned_decision", orphan_count),
+        (open_item.c.kind == "ambiguous_transfer", edge_count),
+        else_=0,
+    )
+    overpaid_periods = (
+        select(
+            func.string_agg(
+                obligation.c.period_label,
+                aggregate_order_by(literal(", ", Text), obligation.c.period_label),
+            )
+        )
+        .select_from(
+            payment_application.join(
+                obligation, payment_application.c.obligation_id == obligation.c.id
+            )
+        )
+        .where(payment_application.c.payment_id == open_item.c.payment_id)
+        .correlate(open_item)
+        .scalar_subquery()
+    )
+    label = func.coalesce(named.c.label, "Counterpart")
+    payee_label = func.coalesce(payee.c.display_label, "payee")
+    reason = case(
+        (
+            open_item.c.reason_code == "counterpart_no_data",
+            func.concat(label, " side not loaded: no ", label, " export filed"),
+        ),
+        (
+            open_item.c.reason_code == "counterpart_not_loaded",
+            case(
+                (
+                    open_item.c.reason_date.is_not(None),
+                    func.concat(
+                        label,
+                        " side not loaded: no ",
+                        label,
+                        " statement before ",
+                        cast(open_item.c.reason_date, Text),
+                    ),
+                ),
+                else_=func.concat(
+                    label,
+                    " side not loaded: no ",
+                    label,
+                    " data for ",
+                    func.to_char(txn.c.posting_date, "YYYY-MM"),
+                ),
+            ),
+        ),
+        (open_item.c.reason_code == "candidates", func.concat(count, " candidates")),
+        (open_item.c.reason_code == "no_match", "no matching counterpart"),
+        (open_item.c.reason_code == "no_rate", "no exchange rate"),
+        (open_item.c.reason_code == "no_source", "no usable source"),
+        (open_item.c.reason_code == "unmatched", "invoice has no matching payment"),
+        (
+            open_item.c.reason_code == "orphan_candidate",
+            func.concat("decision orphaned: ", count, " replacement candidates"),
+        ),
+        (
+            open_item.c.reason_code == "orphan_no_candidate",
+            "decision orphaned: no replacement candidate",
+        ),
+        (
+            open_item.c.reason_code == "excess",
+            func.concat(
+                "credit exceeds obligation for ",
+                payee_label,
+                case(
+                    (
+                        overpaid_periods.is_not(None),
+                        func.concat(" (", overpaid_periods, ")"),
+                    ),
+                    else_="",
+                ),
+            ),
+        ),
+        (
+            open_item.c.reason_code == "no_target",
+            case(
+                (
+                    open_item.c.reason_date.is_not(None),
+                    func.concat(
+                        "no target for ",
+                        payee_label,
+                        " issued by ",
+                        cast(open_item.c.reason_date, Text),
+                    ),
+                ),
+                else_=func.concat("credit not applied to ", payee_label),
+            ),
+        ),
+        else_=func.replace(open_item.c.reason_code, "_", " "),
+    )
+    return select(
+        open_item.c.subject_ref.label("line_ref"),
+        open_item.c.tax_year,
+        open_item.c.kind,
+        open_item.c.occurred_on,
+        account.c.label.label("account_label"),
+        open_item.c.direction,
+        open_item.c.amount,
+        open_item.c.currency,
+        open_item.c.cad_amount,
+        open_item.c.state,
+        reason.label("reason"),
+        open_item.c.category,
+        open_item.c.tag,
+        count.label("candidate_count"),
+    ).select_from(
+        open_item.outerjoin(account, open_item.c.account_id == account.c.id)
+        .outerjoin(txn, open_item.c.txn_id == txn.c.id)
+        .outerjoin(named, open_item.c.reason_account_id == named.c.id)
+        .outerjoin(payee, open_item.c.reason_payee_id == payee.c.id)
+    )
+
+
 # Each view this module defines, by name, for the frozen-SQL guard test.
 VIEW_SELECTS: Final[dict[str, Callable[[], Select[tuple[object, ...]]]]] = {
     "report_status": report_status_select,
     "report_coverage": report_coverage_select,
     "report_document": report_document_select,
+    "report_open_item": report_open_item_select,
 }

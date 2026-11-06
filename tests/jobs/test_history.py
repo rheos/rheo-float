@@ -62,7 +62,7 @@ def test_first_success_of_every_job_survives_retention_with_timestamp_ties(
     tick(ctx)
     kept = set(owner_conn.scalars(select(job_run.c.id)))
     assert set(first.values()) <= kept and boundary in kept
-    assert len(kept) == 9
+    assert len(kept) == 10  # Includes the new heartbeat, outside callback jobs.
     for job, id_ in first.items():
         assert (
             owner_conn.scalar(

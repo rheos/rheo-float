@@ -12,16 +12,18 @@ import datetime as dt
 import uuid
 from dataclasses import dataclass
 
+from psycopg import errors as pg_errors
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 from rheo_finance import catalogue
 from rheo_finance.clock import as_utc, local_to_utc
 from rheo_finance.context import FinanceContext
 from rheo_finance.contracts import Role
-from rheo_finance.db import VERSION_TABLE, head_revision
+from rheo_finance.db import VERSION_TABLE, code_revisions, head_revision
 from rheo_finance.derive.fingerprint import fingerprint
 from rheo_finance.jobs.ops import RecordIn
-from rheo_finance.jobs.registry import JOBS, JobResult
+from rheo_finance.jobs.registry import JOBS, TICK_JOB, JobResult
 from rheo_finance.jobs.store import PostgresJobRepository, Run
 from rheo_finance.operations import (
     OperationError,
@@ -50,11 +52,18 @@ def latest_scheduled(ctx: FinanceContext, now: dt.datetime) -> dt.datetime:
     if not 1 <= minutes <= 1440:
         raise OperationError("job interval must be between 1 and 1440 minutes")
     local = now.astimezone(ctx.settings.timezone)
-    passed = local.hour * 60 + local.minute
-    slot = (passed // minutes) * minutes
-    return local_to_utc(
-        local.date(), dt.time(slot // 60, slot % 60), ctx.settings.timezone
-    )
+    day = local.date()
+    while True:
+        # Resolve the whole local day: during a repeated hour a later wall time's
+        # fold=0 boundary can already be past even when wall-flooring misses it.
+        candidates = (
+            local_to_utc(day, dt.time(slot // 60, slot % 60), ctx.settings.timezone)
+            for slot in range(0, 1440, minutes)
+        )
+        eligible = [candidate for candidate in candidates if candidate <= now]
+        if eligible:
+            return max(eligible)
+        day -= dt.timedelta(days=1)
 
 
 def _due(rows: tuple[Run, ...], job: str, scheduled: dt.datetime) -> bool:
@@ -85,6 +94,21 @@ def _prune(ctx: FinanceContext, now: dt.datetime) -> None:
         )
 
 
+def _record_tick(ctx: FinanceContext, started: dt.datetime, result: JobResult) -> None:
+    dispatch(
+        "finance.job.record",
+        RecordIn(
+            job=TICK_JOB,
+            started_at=started,
+            finished_at=as_utc(ctx.clock.now_utc()),
+            ok=result.ok,
+            detail_code=result.detail_code,
+        ),
+        Role.SERVICE,
+        ctx=ctx,
+    )
+
+
 def tick(ctx: FinanceContext) -> TickResult:
     """Run due jobs serially as SERVICE. No job may borrow owner authorization."""
     if ctx.role is not Role.SERVICE:
@@ -92,10 +116,32 @@ def tick(ctx: FinanceContext) -> TickResult:
     catalogue.load_all()
     now = as_utc(ctx.clock.now_utc())
     scheduled = latest_scheduled(ctx, now)
+    try:
+        with owner_transaction(ctx) as uow:
+            version = uow.scalar(
+                text(f"SELECT version_num FROM finance.{VERSION_TABLE}")
+            )
+    except ProgrammingError as exc:
+        if not isinstance(exc.orig, pg_errors.UndefinedTable):
+            raise
+        version = None
+    if version != head_revision():
+        known = code_revisions()
+        if version is not None and version not in known:
+            raise OperationError("schema_unknown: update the code")
+        if version in known and isinstance(version, str):
+            if version == "0040_job_run":
+                with owner_transaction(ctx) as uow:
+                    PostgresJobRepository(uow).add_legacy_tick_refusal(
+                        now, as_utc(ctx.clock.now_utc())
+                    )
+            elif version == "0041_job_identity":
+                # Frozen legacy history cannot represent the new failure detail.
+                _record_tick(ctx, now, JobResult(ok=False, detail_code="failed"))
+            elif version >= "0042_tick_health":
+                _record_tick(ctx, now, JobResult(ok=False, detail_code="schema_behind"))
+        raise OperationError("schema_behind: run finance db migrate")
     with owner_transaction(ctx) as uow:
-        version = uow.scalar(text(f"SELECT version_num FROM finance.{VERSION_TABLE}"))
-        if version != head_revision():
-            raise OperationError("schema_behind")
         rows = PostgresJobRepository(uow).all()
     completed: list[JobRun] = []
     ledger_ready = True
@@ -140,5 +186,6 @@ def tick(ctx: FinanceContext) -> TickResult:
             and result.ok is not True
         ):
             ledger_ready = False
+    _record_tick(ctx, now, JobResult(ok=True))
     _prune(ctx, now)
     return TickResult(as_of=now, runs=tuple(completed))

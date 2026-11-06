@@ -190,7 +190,8 @@ def test_public_fresh_install_off_sinks_and_unset_floor_do_not_fail(
     monkeypatch.setattr(jobs_cli, "_context", lambda: ctx)
     assert main(["jobs", "tick"]) == 0
     rows = owner_conn.execute(select(job_run)).all()
-    assert len(rows) == 4 and not any(row.ok is False for row in rows)
+    assert len(rows) == 5 and not any(row.ok is False for row in rows)
+    assert sum(row.job == "finance.tick" for row in rows) == 1
     reminder = next(row for row in rows if row.job == "finance.reminders_sync")
     assert reminder.ok is None and reminder.detail_code == "skipped: sink off"
     assert owner_conn.execute(select(sink_ticket)).all() == []

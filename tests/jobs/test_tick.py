@@ -162,11 +162,13 @@ def test_configured_schedule_boundaries_and_schema_refusal_are_public(
         "finance.reminders_sync",
         "finance.rates",
     }
-    previous = owner_conn.execute(select(job_run)).all()
+    previous = owner_conn.execute(select(job_run).order_by(job_run.c.seq)).all()
     monkeypatch.setattr(module, "head_revision", lambda: "future")
     with pytest.raises(OperationError, match="schema_behind"):
         tick(ctx)
-    assert owner_conn.execute(select(job_run)).all() == previous
+    after = owner_conn.execute(select(job_run).order_by(job_run.c.seq)).all()
+    assert after[:-1] == previous
+    assert after[-1].job == "finance.tick" and after[-1].detail_code == "schema_behind"
 
 
 def test_failed_derive_prevents_current_sync_and_persists_sanitized_failure(
@@ -206,3 +208,93 @@ def test_tick_refuses_non_service_before_work(
     with pytest.raises(RoleRefused):
         tick(rolled_back_context(role))
     assert owner_conn.execute(select(job_run)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("zone", "minutes", "now", "boundary"),
+    [
+        (
+            "America/Vancouver",
+            150,
+            "2026-03-08T10:05:00+00:00",
+            "2026-03-08T08:00:00+00:00",
+        ),
+        (
+            "America/Vancouver",
+            15,
+            "2026-03-08T10:05:00+00:00",
+            "2026-03-08T10:00:00+00:00",
+        ),
+        (
+            "America/Creston",
+            150,
+            "2026-03-08T10:05:00+00:00",
+            "2026-03-08T09:30:00+00:00",
+        ),
+        (
+            "America/Vancouver",
+            60,
+            "2025-11-02T09:05:00+00:00",
+            "2025-11-02T08:00:00+00:00",
+        ),
+        (
+            "America/Vancouver",
+            30,
+            "2025-11-02T09:05:00+00:00",
+            "2025-11-02T08:30:00+00:00",
+        ),
+        (
+            "America/Vancouver",
+            30,
+            "2025-11-02T08:05:00+00:00",
+            "2025-11-02T08:00:00+00:00",
+        ),
+        (
+            "America/Vancouver",
+            30,
+            "2025-11-02T08:35:00+00:00",
+            "2025-11-02T08:30:00+00:00",
+        ),
+    ],
+)
+def test_public_tick_spring_gap_resolves_past_boundary_and_runs_once(
+    zone: str,
+    minutes: int,
+    now: str,
+    boundary: str,
+    rolled_back_context: Callable[[Role], FinanceContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_finance.jobs.tick import latest_scheduled
+
+    ctx = configured(rolled_back_context(Role.SERVICE), tmp_path)
+    ctx = replace(
+        ctx,
+        settings=parse_settings(
+            f'[finance.paths]\narchive = "{tmp_path / "archive"}"\n'
+            f'[finance.locale]\ntimezone = "{zone}"\n'
+            f"[finance.jobs]\ntick_minutes = {minutes}\n"
+        ),
+    )
+    clock = ctx.clock
+    assert isinstance(clock, FakeClock)
+    clock.set(dt.datetime.fromisoformat(now))
+    scheduled = latest_scheduled(ctx, clock.now_utc())
+    assert scheduled == dt.datetime.fromisoformat(boundary)
+    assert scheduled <= clock.now_utc()
+    calls: list[str] = []
+    for name in tuple(JOBS):
+
+        def run(c: FinanceContext, name: str = name) -> JobResult:
+            calls.append(name)
+            with owner_transaction(c) as uow:
+                taken = fingerprint(uow, c).digest
+            return JobResult(ok=True, input_digest=taken)
+
+        monkeypatch.setitem(JOBS, name, JobSpec(name, run))
+    assert len(tick(ctx).runs) == 4
+    assert len(calls) == 4
+    calls.clear()
+    assert tick(ctx).runs == ()
+    assert calls == []

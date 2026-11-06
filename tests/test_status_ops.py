@@ -83,7 +83,10 @@ from rheo_finance.storage.schema import (
 )
 
 MakeContext = Callable[[Role], FinanceContext]
-CSV_FIXTURE = (FIXTURES / "vancity_chequing_jump.csv").read_text(encoding="utf-8")
+# Keep restricted-description probes distinct from public queue vocabulary.
+CSV_FIXTURE = (FIXTURES / "vancity_chequing_jump.csv").read_text(
+    encoding="utf-8"
+).replace("BILL PAYMENT", "BILL PAYMENTQUASAR")
 SPARE_IDENTIFIER = "999000000088"
 UNKNOWN_IDENTIFIER = "999000000055-999-99901-99902"
 SKIPPED_NAME = f"acct-{STATEMENT_IDENTIFIER}.csv"
@@ -93,7 +96,7 @@ OPENED = "2025-10-01"
 CASH_TEXT = "petty cash envelope"
 SAFE_DISPLAY_LABELS = frozenset({
     "Pos Purchase Sample Grocer 99901", "Deposit Sample Transfer In 99902",
-    "Bill Payment 99903", "Pos Purchase Sample Hardware 99904",
+    "Bill Paymentquasar 99903", "Pos Purchase Sample Hardware 99904",
     "Withdrawal Sample Atm 99905", "Deposit Sample Payroll 99906",
     "Petty Cash Envelope",
 })
@@ -110,6 +113,7 @@ class FixtureLedger:
     # skipped files' names.
     secrets: tuple[str, ...]
     identity_secrets: tuple[str, ...]
+    description_probe: str
     missing_months: int
     # The cash line's txns on the built-in account, and that account's coverage months.
     paid_outside_txns: int
@@ -303,6 +307,9 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
         downloads=downloads,
         secrets=(*identities, "envelope", *words),
         identity_secrets=identities,
+        description_probe=next(
+            text for text in descriptions if "PAYMENTQUASAR" in text
+        ),
         missing_months=int(missing or 0),
         paid_outside_txns=int(paid_outside_txns or 0),
         paid_outside_months=int(paid_outside_months or 0),
@@ -375,10 +382,10 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
 ) -> None:
     lines = status_lines(fixture_ledger)
 
-    assert list(lines) == [1, 2, 3, 4, 7, 9, 10]
+    assert list(lines) == [1, 2, 3, 4, 5, 6, 7, 9, 10]
     assert lines[1].startswith("as of 2026-02-20 ")
     assert lines[1].endswith(", database current")
-    assert lines[2] == "last import: vancity 2026-02-20"
+    assert lines[2] == "last import: vancity 2026-02-20; no tick yet"
     assert (
         lines[3]
         == "documents: 1 unparsed, 1 rejected, 1 needs manual entry, 0 bill gaps"
@@ -408,6 +415,8 @@ def test_status_output_carries_no_identifier_description_or_skipped_path(
 ) -> None:
     out = run(fixture_ledger, "finance.status.get")
     text_ = out.model_dump_json()
+    probe = fixture_ledger.description_probe.swapcase().replace(" ", "   ")
+    assert leaked(fixture_ledger, probe), "the actual description remains detectable"
     assert leaked(fixture_ledger, text_) == []
     assert chr(0x2014) not in text_
 
@@ -419,9 +428,9 @@ def test_status_on_an_empty_ledger_prints_only_the_lines_that_always_apply(
     assert isinstance(out, StatusOut)
     lines = {each.line_no: each.text for each in out.lines}
 
-    assert list(lines) == [1, 2, 3, 4, 7]
+    assert list(lines) == [1, 2, 3, 4, 5, 6, 7]
     assert lines[1].endswith(", database current")
-    assert lines[2] == "last import: none"
+    assert lines[2] == "last import: none; no tick yet"
     assert lines[3] == "documents: 0 unparsed, 0 rejected, 0 bill gaps"
     assert lines[4] == "missing account-months: none"
 
@@ -605,7 +614,8 @@ def test_line_1_says_migrate_when_the_database_is_behind_the_code(
     )
 
     assert status_lines(fixture_ledger)[1].endswith(
-        f", database schema at {HEAD}, code at 0099_later: run finance db migrate"
+        f", database schema at {HEAD}, code at 0099_later;"
+        " schema behind code: run finance db migrate"
     )
 
 

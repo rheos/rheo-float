@@ -90,11 +90,14 @@ from rheo_finance.storage.schema import (
     decision_orphan,
     document,
     document_line,
+    job_run,
     obligation,
     open_item,
     pair_edge,
     payee,
+    payment,
     payment_application,
+    sink_ticket,
     source_discrepancy,
     txn,
     txn_source,
@@ -118,6 +121,11 @@ INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
 INVOICE_DECISION_REFUSED: Final = "invoice_decision_refused"
 DECISION_ORPHAN: Final = "decision_orphan"
 BILL_GAP: Final = "bill_gap"
+TICK: Final = "tick"
+UNTIED_CARD: Final = "untied_card"
+UNAPPLIED_CREDIT: Final = "unapplied_credit"
+REMINDER_RETRY: Final = "reminder_retry"
+REMINDER_ATTEMPT: Final = "reminder_attempt"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -277,6 +285,49 @@ def report_status_select() -> Select[tuple[object, ...]]:
         )
         .group_by(decision.c.kind),
     ]
+    branches.extend(
+        [
+            select(
+                _fact(TICK),
+                cast(null(), Text).label("subject"),
+                func.count().label("count"),
+                func.max(job_run.c.finished_at).label("at"),
+            ).where(job_run.c.job == "finance.tick"),
+            select(
+                _fact(UNTIED_CARD),
+                cast(null(), Text).label("subject"),
+                func.count().label("count"),
+                _no_time(),
+            )
+            .select_from(payment)
+            .where(payment.c.state == "confirm_only", payment.c.source == "money"),
+            select(
+                _fact(UNAPPLIED_CREDIT),
+                cast(null(), Text).label("subject"),
+                func.count().label("count"),
+                _no_time(),
+            )
+            .select_from(open_item)
+            .where(open_item.c.kind == "unapplied_credit"),
+            select(
+                _fact(REMINDER_RETRY),
+                cast(null(), Text).label("subject"),
+                func.count().label("count"),
+                _no_time(),
+            )
+            .select_from(sink_ticket)
+            .where(
+                (sink_ticket.c.state == "post_pending")
+                | sink_ticket.c.last_error_code.is_not(None)
+            ),
+            select(
+                _fact(REMINDER_ATTEMPT),
+                cast(null(), Text).label("subject"),
+                func.count().label("count"),
+                func.min(job_run.c.finished_at).label("at"),
+            ).where(job_run.c.job == "finance.reminders_sync", job_run.c.ok.is_(False)),
+        ]
+    )
     # A view's body is one select; the union is wrapped as its only source.
     unioned = union_all(*branches).subquery("facts")
     return select(unioned.c.fact, unioned.c.subject, unioned.c.count, unioned.c.at)

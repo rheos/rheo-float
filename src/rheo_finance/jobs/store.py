@@ -6,7 +6,7 @@ import datetime as dt
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, text
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.storage.ids import uuid7
@@ -60,6 +60,19 @@ class PostgresJobRepository:
             )
         )
         return run_id
+
+    def add_legacy_tick_refusal(
+        self, started: dt.datetime, finished: dt.datetime
+    ) -> None:
+        """0040 alone allocates an integer id; write only its common columns."""
+        self.uow.execute(
+            text(
+                "INSERT INTO finance.job_run "
+                "(job, started_at, finished_at, ok, detail_code) "
+                "VALUES ('finance.tick', :started, :finished, false, 'failed')"
+            ),
+            {"started": started, "finished": finished},
+        )
 
     def remove(self, ids: list[uuid.UUID]) -> None:
         if ids:

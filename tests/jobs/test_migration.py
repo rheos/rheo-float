@@ -42,6 +42,7 @@ def test_populated_0040_upgrades_preserving_history_and_first_success(
             try:
                 # Only the disposable scratch fixture is touched. Recreate the
                 # precise frozen 0040 shape in a rolled-back DDL transaction.
+                connection.execute(text("DROP VIEW finance.report_status"))
                 connection.execute(text("DROP VIEW finance.report_job"))
                 connection.execute(text("DROP TABLE finance.job_run"))
                 context = MigrationContext.configure(connection)
@@ -93,6 +94,22 @@ def test_populated_0040_upgrades_preserving_history_and_first_success(
                 assert len({row["id"] for row in after}) == 3
                 summary = connection.execute(select(report_job)).one()
                 assert summary.last_success == at and summary.last_detail == "pending"
+                health = chain.get_revision("0042_tick_health")
+                assert health is not None
+                with Operations.context(context):
+                    health.module.upgrade()
+                assert (
+                    connection.execute(select(job_run).order_by(job_run.c.seq))
+                    .mappings()
+                    .all()
+                    == after
+                )
+                connection.execute(
+                    text(
+                        "UPDATE finance.alembic_version_finance "
+                        "SET version_num='0042_tick_health'"
+                    )
+                )
                 ctx = operations.with_databases(
                     make_context(Role.SERVICE),
                     owner_url=scratch_database.owner_url,

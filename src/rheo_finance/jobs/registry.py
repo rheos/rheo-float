@@ -25,7 +25,10 @@ Detail = Literal[
     "pending: current not configured",
     "pending",
     "failed",
+    "schema_behind",
 ]
+
+TICK_JOB = "finance.tick"
 
 
 @dataclass(frozen=True)

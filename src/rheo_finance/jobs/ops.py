@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from rheo_finance.clock import as_utc
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
-from rheo_finance.jobs.registry import JOBS, Detail
+from rheo_finance.jobs.registry import JOBS, TICK_JOB, Detail
 from rheo_finance.jobs.store import PostgresJobRepository
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.tier import Tier
@@ -34,12 +34,19 @@ class RecordIn(BaseModel):
 
     @model_validator(mode="after")
     def valid(self) -> Self:
+        if self.detail_code == "schema_behind" and self.job != TICK_JOB:
+            raise ValueError("schema refusal belongs to the tick")
         if self.finished_at < self.started_at:
             raise ValueError("finish precedes start")
         if (
             (self.ok is True and self.detail_code != "completed")
-            or (self.ok is False and self.detail_code != "failed")
-            or (self.ok is None and self.detail_code in {"completed", "failed"})
+            or (
+                self.ok is False and self.detail_code not in {"failed", "schema_behind"}
+            )
+            or (
+                self.ok is None
+                and self.detail_code in {"completed", "failed", "schema_behind"}
+            )
         ):
             raise ValueError("detail does not match outcome")
         return self
@@ -51,7 +58,7 @@ class RecordOut(BaseModel):
 
 
 def record(_ctx: FinanceContext, uow: UnitOfWork, data: RecordIn) -> RecordOut:
-    if data.job not in JOBS:
+    if data.job not in JOBS and data.job != TICK_JOB:
         raise OperationError("job is not registered")
     return RecordOut(id=PostgresJobRepository(uow).add(**data.model_dump()))
 

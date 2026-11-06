@@ -112,7 +112,7 @@ OUTBOUND_ALLOWED: dict[str, str] = {
     "rheo_finance.mail.imap": "imaplib: the read-only IMAP source",
     "rheo_finance.model.claude_cli": "subprocess: claude -p with tools disabled",
     "rheo_finance.jobs.backup": "subprocess: pg_dump, fdesetup, diskutil, rsync",
-    "rheo_finance.jobs.agent": "subprocess: launchctl bootstrap and bootout",
+    "rheo_finance.jobs.agent": "subprocess: local Git checks and launchctl bootstrap",
     "rheo_finance.db": "subprocess: docker compose up and docker exec (db up, init,"
     " restore)",
     "rheo_finance.parsers.docextract_adapter": "subprocess via docextract: pdftotext",

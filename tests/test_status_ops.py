@@ -377,7 +377,10 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
     assert lines[1].startswith("as of 2026-02-20 ")
     assert lines[1].endswith(", database current")
     assert lines[2] == "last import: vancity 2026-02-20"
-    assert lines[3] == "documents: 1 unparsed, 1 rejected, 1 needs manual entry"
+    assert (
+        lines[3]
+        == "documents: 1 unparsed, 1 rejected, 1 needs manual entry, 0 bill gaps"
+    )
     assert fixture_ledger.missing_months > 0
     assert lines[4] == (
         f"missing account-months: {fixture_ledger.missing_months} across 1 account"
@@ -417,7 +420,7 @@ def test_status_on_an_empty_ledger_prints_only_the_lines_that_always_apply(
     assert list(lines) == [1, 2, 3, 4, 7]
     assert lines[1].endswith(", database current")
     assert lines[2] == "last import: none"
-    assert lines[3] == "documents: 0 unparsed, 0 rejected"
+    assert lines[3] == "documents: 0 unparsed, 0 rejected, 0 bill gaps"
     assert lines[4] == "missing account-months: none"
 
 

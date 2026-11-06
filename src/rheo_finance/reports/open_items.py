@@ -49,6 +49,9 @@ class OpenItemRow(BaseModel):
     reason: Annotated[str, Tiered(P)]
     category: Annotated[str | None, Tiered(P)]
     tag: Annotated[str | None, Tiered(P)]
+    payment_ref: Annotated[str | None, Tiered(P)]
+    payee_slug: Annotated[str | None, Tiered(P)]
+    payee_label: Annotated[str | None, Tiered(P)]
     candidate_count: Annotated[int, Tiered(P)]
     candidate_refs: Annotated[list[str], Tiered(P)]
 

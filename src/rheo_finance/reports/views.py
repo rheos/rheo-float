@@ -75,6 +75,7 @@ from sqlalchemy.sql.elements import Label
 from rheo_finance.derive.coverage import State
 from rheo_finance.documents.registry import SkipReason
 from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
+from rheo_finance.reports.owed_views import report_owed_select, report_owed_trace_select
 from rheo_finance.storage.schema import (
     account,
     archive_skip,
@@ -110,6 +111,7 @@ ARRANGEMENT_UNSETTLED_BY: Final = "arrangement_unsettled_by"
 INVOICE_DECISION_SUPERSEDED: Final = "invoice_decision_superseded"
 INVOICE_DECISION_REFUSED: Final = "invoice_decision_refused"
 DECISION_ORPHAN: Final = "decision_orphan"
+BILL_GAP: Final = "bill_gap"
 
 IDENTIFIER_IN_PATH: Final[SkipReason] = "identifier_in_path"
 MISSING: Final[State] = "missing"
@@ -165,6 +167,14 @@ def report_status_select() -> Select[tuple[object, ...]]:
             func.count(decision_orphan.c.decision_id.distinct()).label("count"),
             _no_time(),
         ),
+        select(
+            _fact(BILL_GAP),
+            document.c.issuer.label("subject"),
+            func.count().label("count"),
+            _no_time(),
+        )
+        .where(*bill_gap_conditions())
+        .group_by(document.c.issuer),
         select(
             _fact(LAST_IMPORT),
             top.label("subject"),
@@ -276,6 +286,23 @@ def report_coverage_select() -> Select[tuple[object, ...]]:
     ).select_from(coverage.join(account, coverage.c.account_id == account.c.id))
 
 
+def source_named() -> ColumnElement[bool]:
+    return (
+        select(obligation.c.id)
+        .where(obligation.c.primary_source == document.c.path)
+        .exists()
+    )
+
+
+def bill_gap_conditions() -> tuple[ColumnElement[bool], ...]:
+    # Issuer-directory policy is applied by both readers to these candidate counts.
+    return (
+        document.c.kind.in_(["bill", "image"]),
+        document.c.status.in_(["needs_manual_entry", "unparsed"]),
+        ~source_named(),
+    )
+
+
 def report_document_select() -> Select[tuple[object, ...]]:
     return select(
         document.c.path,
@@ -285,6 +312,8 @@ def report_document_select() -> Select[tuple[object, ...]]:
         document.c.period_end,
         document.c.official,
         document.c.extraction,
+        document.c.issuer,
+        source_named().label("has_obligation"),
     )
 
 
@@ -439,6 +468,11 @@ def report_open_item_select() -> Select[tuple[object, ...]]:
         open_item.c.tag,
         count.label("candidate_count"),
         cast(candidate_refs, ARRAY(Text)).label("candidate_refs"),
+        func.nullif(
+            func.concat("finance.payment:", open_item.c.payment_id), "finance.payment:"
+        ).label("payment_ref"),
+        payee.c.slug.label("payee_slug"),
+        payee.c.display_label.label("payee_label"),
     ).select_from(
         open_item.outerjoin(account, open_item.c.account_id == account.c.id)
         .outerjoin(txn, open_item.c.txn_id == txn.c.id)
@@ -453,4 +487,6 @@ VIEW_SELECTS: Final[dict[str, Callable[[], Select[tuple[object, ...]]]]] = {
     "report_coverage": report_coverage_select,
     "report_document": report_document_select,
     "report_open_item": report_open_item_select,
+    "report_owed": report_owed_select,
+    "report_owed_trace": report_owed_trace_select,
 }

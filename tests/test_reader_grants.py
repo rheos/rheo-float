@@ -46,6 +46,8 @@ REPORT_VIEWS = frozenset(
         "report_coverage",
         "report_document",
         "report_open_item",
+        "report_owed",
+        "report_owed_trace",
     }
 )
 # Inputs for reader operations whose input model has required fields; {} otherwise.
@@ -171,7 +173,24 @@ def test_no_report_view_column_carries_an_identifier_description_or_merchant() -
     assert {name for name, _ in columns} == REPORT_VIEWS
     for table, column in columns:
         # This report deliberately exposes money, with its restricted tier intact.
-        monetary = table == "report_open_item" and column in {"amount", "cad_amount"}
+        monetary = (
+            table == "report_open_item" and column in {"amount", "cad_amount"}
+        ) or (
+            table in {"report_owed", "report_owed_trace"}
+            and column
+            in {
+                "amount_due",
+                "minimum_due",
+                "threshold_due",
+                "paid",
+                "remaining",
+                "threshold_remaining",
+                "manual_mismatch",
+                "payments_mismatch",
+                "applied_amount",
+                "payment_amount",
+            }
+        )
         assert not restricted_by_name(column) or monetary, (table, column)
         assert column not in NEVER_SHOWN, (table, column)
         assert tier_of(table, column) is (

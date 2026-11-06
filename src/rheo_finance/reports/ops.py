@@ -56,6 +56,7 @@ from rheo_finance.documents.filer import DOWNLOADS_KEY, monitor_files_waiting
 from rheo_finance.operations import OperationSpec, register
 from rheo_finance.render import as_of
 from rheo_finance.reports import views
+from rheo_finance.reports.gaps import bill_issuer
 from rheo_finance.sinks.ops import StateIn
 from rheo_finance.sinks.ops import state as sink_state
 from rheo_finance.storage.schema import report_coverage, report_document, report_status
@@ -154,7 +155,12 @@ def _documents(facts: dict[str, list[Fact]]) -> str:
     manual = counts.get("needs_manual_entry", 0)
     if manual:
         text += f", {manual} need{'s' if manual == 1 else ''} manual entry"
-    return text
+    gaps = sum(
+        each.count
+        for each in facts[views.BILL_GAP]
+        if each.subject is not None and bill_issuer(each.subject)
+    )
+    return text + f", {gaps} bill gaps"
 
 
 def _missing(facts: dict[str, list[Fact]]) -> str:

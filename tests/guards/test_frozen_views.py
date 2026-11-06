@@ -33,6 +33,9 @@ VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
 
 PINNED = {
+    "0035_owed.py": (
+        "0bf5e7b32484f533a2f62237d0ad8d373dcf686c880999a1c5a26df7a9a81ce7"
+    ),
     "0001_finance_schema.py": (
         "0f3e7fdad37e31b8efbfade234d6c3d2bf44d9db10fae40d43b56e2a33e88f4d"
     ),

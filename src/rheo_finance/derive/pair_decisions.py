@@ -67,7 +67,6 @@ from rheo_finance.parsers.base import CRYPTO_TRANSFER, FIAT
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import decision, decision_item, txn, txn_source
 
-LINE_TYPE = "txn"
 KINDS = (DecisionKind.PAIR, DecisionKind.UNPAIR)
 
 Ends = frozenset[uuid.UUID]
@@ -134,7 +133,7 @@ class _LineFacts:
 
 def _line_key(ref: str) -> uuid.UUID | None:
     parsed = refs.parse(ref)
-    if parsed.system != refs.FINANCE_SYSTEM or parsed.type != LINE_TYPE:
+    if parsed.system != refs.FINANCE_SYSTEM or parsed.type != refs.LINE_TYPE:
         return None
     return uuid.UUID(parsed.id)
 

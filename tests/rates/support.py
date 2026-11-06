@@ -1,28 +1,17 @@
-"""Fixtures for the rates tests: the derive ``ledger`` and ``fx_ledger``, and Valet
-pointed at a local stub server.
-
-``valet_stub`` swaps ``rates.valet.ENDPOINT`` for the stub's host over plain http and
-``make_client`` for one that allows http, for one test; the provider then declares the
-stub's host, so an approval in the test is pinned to that spec. Nothing reaches the
-real Valet.
+"""Helpers of the rates tests: Valet's reply shape and a client that allows http. The
+``valet_stub`` fixture that uses them is in ``tests/conftest.py``, with every other
+fixture, and imports from here.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
-import pytest
-
-from derive.conftest import fx_ledger, ledger  # noqa: F401 (shared fixtures)
 from rheo_finance.context import UnitOfWork
 from rheo_finance.http import Client
 from rheo_finance.rates import valet
 from rheo_finance.sinks.spec import SinkSpec
-
-if TYPE_CHECKING:
-    from conftest import StubServer
 
 
 def valet_reply(series: str, rows: Sequence[tuple[str, str | None]]) -> bytes:
@@ -43,10 +32,3 @@ def valet_reply(series: str, rows: Sequence[tuple[str, str | None]]) -> bytes:
 
 def stub_client(uow: UnitOfWork, spec: SinkSpec) -> Client:
     return Client(valet.SINK, spec, valet.ALLOWLIST, uow=uow, allowed_schemes=("http",))
-
-
-@pytest.fixture
-def valet_stub(stub_server: StubServer, monkeypatch: pytest.MonkeyPatch) -> StubServer:
-    monkeypatch.setattr(valet, "ENDPOINT", valet.Endpoint(stub_server.host, "http"))
-    monkeypatch.setattr(valet, "make_client", stub_client)
-    return stub_server

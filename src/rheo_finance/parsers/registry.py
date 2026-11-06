@@ -78,6 +78,7 @@ from rheo_finance.storage.schema import (
     document,
     document_line,
     event,
+    parsed_overdrawn,
     rejected_period,
     statement_period,
 )
@@ -86,6 +87,9 @@ from rheo_finance.tier import Tier
 P = Tier.PUBLIC
 
 # --- events ---------------------------------------------------------------------------
+
+# Stored parse shape, also in parse inputs and the derive fingerprint.
+PARSE_CACHE_VERSION: Final = "spells-v2"
 
 DOCUMENT_REJECTED: Final = "finance.document.rejected"
 
@@ -218,7 +222,7 @@ def account_lookup(uow: UnitOfWork) -> AccountLookup:
 # --- the summary check ----------------------------------------------------------------
 
 # Line kinds a document states as evidence of a payment, with no account of their own.
-EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt"})
+EVIDENCE_KINDS: Final = frozenset({"invoice", "receipt", "payment_notice"})
 # Crypto movement and fee lines carry a quantity of an asset, not money in a currency.
 QUANTITY_KINDS: Final = frozenset(CRYPTO_LINE_KINDS)
 
@@ -227,11 +231,11 @@ def summary_ties_out(result: ParseResult) -> bool:
     """Whether every ``summary`` period reconciles to the cent with its own lines,
     and every money line belongs to a period.
 
-    An ``invoice`` or ``receipt`` line belongs to no account and no period: it is
-    evidence of a payment, read against the payment lines in stage 3, so it is
-    outside this check. So is a crypto movement or fee line: its ``amount`` is a
-    quantity of the asset it names, not money in a period's currency, and no crypto
-    source states a summary to tie it to (its control is ``none``).
+    An ``invoice``, ``receipt`` or ``payment_notice`` line belongs to no account and
+    no period: it is evidence of a payment, read against the payment lines in stage 3
+    or stage 15, so it is outside this check. So is a crypto movement or fee line: its
+    ``amount`` is a quantity of the asset it names, not money in a period's currency,
+    and no crypto source states a summary to tie it to (its control is ``none``).
 
     A period's lines are its account's and currency's lines that carry an amount:
     opening plus their sum is closing, and where the period states them, the debits
@@ -282,6 +286,9 @@ class Parsed:
 
 
 def _clear(uow: UnitOfWork, document_id: uuid.UUID, ref: str) -> None:
+    uow.execute(
+        delete(parsed_overdrawn).where(parsed_overdrawn.c.document_id == document_id)
+    )
     uow.execute(delete(document_line).where(document_line.c.document_id == document_id))
     uow.execute(
         delete(statement_period).where(statement_period.c.document_id == document_id)
@@ -526,6 +533,20 @@ def _store(
     fallback = span[0] if span else dt.date(2000, 1, 1)
     if result.periods:
         uow.execute(insert(statement_period), _period_values(document_id, result))
+    spells = [
+        dict(
+            document_id=document_id,
+            account_id=period.account.id,
+            currency=period.currency,
+            spell_no=number,
+            start_date=spell.start,
+            end_date=spell.end,
+        )
+        for period in result.periods
+        for number, spell in enumerate(period.overdrawn, start=1)
+    ]
+    if spells:
+        uow.execute(insert(parsed_overdrawn), spells)
     if result.lines:
         uow.execute(
             insert(document_line),

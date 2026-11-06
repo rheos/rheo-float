@@ -17,7 +17,13 @@ Each loader rewrites the ``manual_entry_error`` rows of its own files and no oth
 - ``load_own_addresses``: ``own_addresses.csv``, checked against the loaded registry,
   into ``own_address`` (``manual.own_addresses``), keyed by the address itself;
 - ``load_crypto_labels``: ``crypto_labels.csv`` into ``crypto_label``
-  (``manual.crypto_labels``), keyed by the line key each row's line ref names.
+  (``manual.crypto_labels``), keyed by the line key each row's line ref names;
+- ``load_payees``: ``payees.csv``, the account-backed payees of the loaded registry
+  and the bill issuers into ``payee`` (``manual.payees``), keyed by slug, and held in
+  memory for stages 3 and 14;
+- ``load_obligations`` and ``load_arrangements``: ``obligations.csv`` and
+  ``arrangements.csv``, checked against the loaded payees and held in memory for
+  stage 14 (``manual.obligations``, ``manual.arrangements``).
 
 Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
 no date of their own). An account is keyed by its slug. An identifier is keyed by its
@@ -43,6 +49,12 @@ from rheo_finance.manual.accounts import (
     AccountRow,
     Registry,
     build_registry,
+)
+from rheo_finance.manual.arrangements import (
+    ARRANGEMENTS_FILE,
+    ArrangementRow,
+    Arrangements,
+    build_arrangements,
 )
 from rheo_finance.manual.cash_lines import (
     TRANSACTIONS_FILE,
@@ -70,11 +82,24 @@ from rheo_finance.manual.filed_years import (
 )
 from rheo_finance.manual.headers import MANUAL_DIR_NAME
 from rheo_finance.manual.loader import RowError, load_csv
+from rheo_finance.manual.obligations import (
+    OBLIGATIONS_FILE,
+    ManualObligations,
+    ObligationRow,
+    build_obligations,
+)
 from rheo_finance.manual.own_addresses import (
     OWN_ADDRESSES_FILE,
     OwnAddresses,
     OwnAddressRow,
     build_own_addresses,
+)
+from rheo_finance.manual.payees import (
+    PAYEES_FILE,
+    Payee,
+    PayeeRow,
+    Payees,
+    build_payees,
 )
 from rheo_finance.manual.transfer_hints import (
     TRANSFER_HINTS_FILE,
@@ -90,6 +115,7 @@ from rheo_finance.storage.schema import (
     filed_year,
     manual_entry_error,
     own_address,
+    payee,
 )
 
 REGISTRY_DATE: Final = dt.date(2000, 1, 1)
@@ -236,6 +262,63 @@ def load_crypto_labels(uow: UnitOfWork, data_dir: Path) -> CryptoLabels:
             ],
         )
     _rewrite_errors(uow, (CRYPTO_LABELS_FILE,), found.errors)
+    return found
+
+
+def payee_id(slug: str) -> uuid.UUID:
+    return derived_id(REGISTRY_DATE, ("payee", slug))
+
+
+def _payee_values(found: Payee) -> dict[str, object]:
+    return {
+        "id": payee_id(found.slug),
+        "slug": found.slug,
+        "display_label": found.label,
+        "kind": found.kind,
+        "account_id": None if found.account is None else account_id(found.account),
+        "party_ref": found.party,
+        "patterns": list(found.patterns),
+        "paid_from": [account_id(slug) for slug in found.paid_from],
+    }
+
+
+def load_payees(uow: UnitOfWork, data_dir: Path, registry: Registry) -> Payees:
+    """Rewrite ``payee`` from ``payees.csv``, the account-backed payees of
+    ``registry`` and the bill issuers."""
+    found = build_payees(
+        load_csv(data_dir / MANUAL_DIR_NAME / PAYEES_FILE, PayeeRow), registry
+    )
+    uow.execute(delete(payee))
+    if found.payees:
+        uow.execute(insert(payee), [_payee_values(each) for each in found.payees])
+    _rewrite_errors(uow, (PAYEES_FILE,), found.errors)
+    return found
+
+
+def load_obligations(
+    uow: UnitOfWork, data_dir: Path, registry: Registry, payees: Payees
+) -> ManualObligations:
+    """The ``obligations.csv`` rows whose payee is in ``payees``, for stage 14."""
+    found = build_obligations(
+        load_csv(data_dir / MANUAL_DIR_NAME / OBLIGATIONS_FILE, ObligationRow),
+        payees.slugs,
+        registry.path_check(),
+    )
+    _rewrite_errors(uow, (OBLIGATIONS_FILE,), found.errors)
+    return found
+
+
+def load_arrangements(
+    uow: UnitOfWork, data_dir: Path, registry: Registry, payees: Payees
+) -> Arrangements:
+    """The ``arrangements.csv`` instalments whose payee is in ``payees``, for stage
+    14."""
+    found = build_arrangements(
+        load_csv(data_dir / MANUAL_DIR_NAME / ARRANGEMENTS_FILE, ArrangementRow),
+        payees.slugs,
+        registry.path_check(),
+    )
+    _rewrite_errors(uow, (ARRANGEMENTS_FILE,), found.errors)
     return found
 
 

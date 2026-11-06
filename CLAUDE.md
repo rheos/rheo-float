@@ -101,6 +101,12 @@ clone and any worktree alike, shares one container and one database on 127.0.0.1
 
 ## Sinks and the approval boundary
 
+`finance alias draft` prints restricted unmatched e-Transfer names for manual alias and
+payee drafts, writes nothing, and refuses the reader connection. It is owner-only and
+requires terminal stdin and stdout. Only the owner runs it in their own terminal;
+agents must never invoke it, including through pseudo-terminals or terminal tools.
+The current matcher uses stored payee patterns; party attribution is a later feature.
+
 Every sink (every outbound connection: reminders, notifications, rate and price fetches, vendor
 APIs, mail) is off until the owner runs `finance sink approve <sink>` in a terminal and sets
 `finance.sinks.<sink>.enabled = true` in their settings. `finance confirm bulk` is the other
@@ -118,3 +124,22 @@ external-action checkpoint cleared with the owner, plus the permission deny rule
 prefix matches, so they back up the process and do not replace it. The code guarantees the role and the record (no job, sink, model step or
 import path reaches the approval, and every approval is a decision row). It does not guarantee who
 sat at the terminal.
+
+## Scheduled tick and the live install
+
+Docker Desktop must start at login. If Docker is stopped, the tick cannot connect;
+`status` opens with "database unreachable" and the next tick catches up.
+
+Refresh the live install from the primary clone on `main`, after its reviewed merge:
+stop if it has local changes, pull with `--ff-only`, run `uv sync`, start Postgres,
+migrate, rebuild and check `finance status`. A behind schema refuses job work. Do not
+run the installed agent from a worktree. The installation checkpoint is separate;
+`finance jobs install-agent --dry-run` only renders the proposed plist.
+
+Status queue counts are last derive snapshots labeled with their evaluation date.
+Reminder queued retries count persisted pending claims/errors only; the complete
+desired pending total is unavailable to reader status, including while Current is off.
+Frozen job history at 0040/0041 records a schema refusal as generic `failed`; newer
+history records `schema_behind`. Before job history exists, refusal has no history row.
+No schema refusal migrates the database automatically. An unknown revision records
+no history and requires a code update, rather than advising a migration.

@@ -24,6 +24,10 @@ involved:
   views show both, so neither may carry one;
 - an account left with no identifier row (AC-1), checked after the rules above.
 
+An account of kind ``bill_vendor`` is one running bill account with a vendor: each
+bill's total holds the unpaid balance before it, so only the newest is owed (ADR-0013).
+A vendor whose invoices stand alone is a payee, not an account.
+
 The built-in account "Paid outside recorded accounts" (kind ``wallet``, identifier
 ``CASH`` of kind ``internal``) is added here, never read from a file, so it exists
 after every load. Kind ``internal`` is reserved for it.
@@ -56,8 +60,11 @@ from rheo_finance.manual.loader import (
     split_list,
 )
 from rheo_finance.path_check import PathCheck
+from rheo_finance.text import compared
 
 ACCOUNTS_FILE: Final = "accounts.csv"
+CREDIT_CARD: Final = "credit_card"
+BILL_VENDOR: Final = "bill_vendor"
 CARRIES_IDENTIFIER: Final = (
     "carries an account identifier or a run of 8 or more digits; the report views"
     " show it, so change it"
@@ -94,6 +101,16 @@ Currencies = Annotated[
 TextList = Annotated[tuple[Text, ...], BeforeValidator(split_list)]
 
 
+def matchable(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """Payee patterns, each with something left to match once folded."""
+    if not all(compared(each) for each in patterns):
+        raise ValueError("a pattern holds no letter or digit")
+    return patterns
+
+
+PayeePatterns = Annotated[TextList, AfterValidator(matchable)]
+
+
 class AccountRow(BaseModel):
     """One ``accounts.csv`` row. List cells (currencies, mail senders, payee patterns)
     hold ``;``-separated values."""
@@ -111,7 +128,7 @@ class AccountRow(BaseModel):
     closed: dt.date | None = None
     sourced_by: SourcedBy = "documents"
     mail_senders: TextList = ()
-    payee_patterns: TextList = ()
+    payee_patterns: PayeePatterns = ()
     placeholder: bool = False
     missing_before: dt.date | None = None
     missing_reason: MissingReason | None = None
@@ -228,6 +245,13 @@ class Registry:
     accounts: tuple[AccountRow, ...]
     identifiers: tuple[AccountIdentifierRow, ...]
     errors: tuple[RowError, ...]
+
+    def path_check(self) -> PathCheck:
+        """The adopted-path check for words the report views show (a payee's slug and
+        label, a debt's or an arrangement's slug), against these identifiers."""
+        return PathCheck(
+            ident.identifier for ident in self.identifiers if ident.kind != "internal"
+        )
 
 
 def build_registry(

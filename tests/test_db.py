@@ -227,9 +227,11 @@ def test_reader_cannot_read_or_write_any_finance_table(
     assert tables, "the migrated schema has no table to probe"
     for table, column in tables:
         name = f'finance."{table}"'
+        # DEFAULT is valid for GENERATED ALWAYS columns too, so the probe
+        # reaches permission checking rather than a column-assignment refusal.
         for statement in (
             f"INSERT INTO {name} DEFAULT VALUES",
-            f'UPDATE {name} SET "{column}" = "{column}"',
+            f'UPDATE {name} SET "{column}" = DEFAULT',
             f"DELETE FROM {name}",
             f"TRUNCATE {name}",
             f"SELECT * FROM {name}",

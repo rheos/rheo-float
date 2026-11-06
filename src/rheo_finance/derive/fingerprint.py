@@ -24,8 +24,9 @@ Its parts:
   moved; inside one local day it does not.
 
 ``STATE_PARTS`` names the part each input table feeds: every state table
-(``run.STATE``) and the registry the file operation keeps (``run.FILE_OWNED``, which a
-filing changes only by changing the archive), checked by a guard test. A new input
+(``run.STATE`` excluding ``run.OUTPUT_STATE``) and the file registry
+(``run.FILE_OWNED``, which a filing changes only by changing the archive), checked
+by a guard test. A new input
 table (the stored model proposals, Phase 4) adds its part and its row there.
 
 The tick's dirty check compares the fingerprint with the last successful run's (prompt
@@ -55,7 +56,7 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.documents.registry import ARCHIVE_KEY
 from rheo_finance.manual.headers import MANUAL_DIR_NAME, MANUAL_FILES
 from rheo_finance.parsers import docextract_adapter
-from rheo_finance.parsers.registry import load_parsers
+from rheo_finance.parsers.registry import PARSE_CACHE_VERSION, load_parsers
 from rheo_finance.reference import assets, patterns
 from rheo_finance.settings import settings_hash
 from rheo_finance.storage.schema import decision, rate, rate_coverage
@@ -144,6 +145,7 @@ def _parsers() -> str:
     return _sha(
         [
             registered,
+            PARSE_CACHE_VERSION,
             docextract_adapter.docextract_version(),
             patterns.patterns_digest(),
             assets.assets_digest(),

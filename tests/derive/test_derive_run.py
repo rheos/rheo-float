@@ -24,6 +24,7 @@ from rheo_finance.derive import stage3
 from rheo_finance.derive.stage3 import CURRENCY_REFUSED, Lines, build_lines
 from rheo_finance.documents.registry import DocumentRefused
 from rheo_finance.manual.cash_lines import CashLines
+from rheo_finance.manual.payees import Payees
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.parsers.registry import DOCUMENT_REJECTED
 from rheo_finance.settings import parse_settings
@@ -285,7 +286,7 @@ def test_a_transaction_line_missing_a_field_is_counted_not_a_txn(
     lines = build_lines(
         ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
         overlap_days=3, receipt_days=3, invoice_days=30,
-        qty_epsilon=Decimal("1E-9"),
+        qty_epsilon=Decimal("1E-9"), payees=Payees((), ()),
     )  # fmt: skip
 
     assert (lines.from_documents, lines.incomplete_lines) == (3, 3)
@@ -328,6 +329,7 @@ def test_a_derive_that_fails_leaves_every_table_as_it_was(
         receipt_days: int,
         invoice_days: int,
         qty_epsilon: Decimal,
+        payees: Payees,
     ) -> Lines:
         raise RuntimeError("stage 3 failed")
 
@@ -350,7 +352,7 @@ def test_a_line_of_a_document_that_is_not_parsed_is_not_a_txn(ledger: Ledger) ->
     lines = build_lines(
         ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
         overlap_days=3, receipt_days=3, invoice_days=30,
-        qty_epsilon=Decimal("1E-9"),
+        qty_epsilon=Decimal("1E-9"), payees=Payees((), ()),
     )  # fmt: skip
 
     assert lines.txns == 0
@@ -373,11 +375,12 @@ def test_a_violated_constraint_fails_the_derive_itself(
         receipt_days: int,
         invoice_days: int,
         qty_epsilon: Decimal,
+        payees: Payees,
     ) -> Lines:
         lines = real(
             uow, cash, currencies, zone=zone, overlap_days=overlap_days,
             receipt_days=receipt_days, invoice_days=invoice_days,
-            qty_epsilon=qty_epsilon,
+            qty_epsilon=qty_epsilon, payees=payees,
         )  # fmt: skip
         ledger.conn.execute(
             insert(txn).values(
@@ -542,9 +545,17 @@ def test_the_sink_specs_are_rewritten_and_match_the_gate(
 
     ledger.derive()
 
-    stored = ledger.conn.scalar(select(sink_spec.c.spec_digest))
-    assert stored == spec_digest(provider(ledger.uow))
-    assert count(ledger.conn, sink_spec) == 1
+    stored = {
+        row.sink: row.spec_digest
+        for row in ledger.conn.execute(
+            select(sink_spec.c.sink, sink_spec.c.spec_digest)
+        )
+    }
+    assert set(stored) == {"rates", "current"}
+    assert stored == {
+        name: spec_digest(build(ledger.uow)) for name, build in SINK_SPECS.items()
+    }
+    assert count(ledger.conn, sink_spec) == 2
 
 
 def test_every_table_is_cleared_rewritten_state_or_owned_by_the_file_operation() -> (

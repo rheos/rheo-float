@@ -71,16 +71,20 @@ Clarifications made while building it:
    spread nor the rate of an in-leg posted another day reaches the net; the net is
    dated and placed by the first debit among the lines left, never by the conversion's
    own out-leg. The net is keyed to the first edge that is not such a conversion and
-   names no printed fee. A conversion that shares an end with another (one leg fanned
-   out to two on the account, either way round) has no rule of its own, because a
-   spread measured against the whole shared leg would be wrong: the whole pair nets
-   once. When any such fanned conversion names a printed fee (as stored, before the
-   shared ones are cleared), that fee is the only fee line of its date and the pair
-   books no net beside it, the residual booked nowhere, as when every edge names one.
-   The net of a pair with legs is floored at zero, as a conversion spread is: a
-   favourable residual books nothing, never income. The floor is for pairs with legs
-   only: a two-line pair, decided or applied on its own, keeps the signed net of FR-15.
-   Tests pin both, so flooring a two-line pair fails one.
+   names no printed fee. "The only fee line of its date" is per conversion: it rules
+   out a second fee line for that conversion, not the derived net of a transfer in the
+   pair, which may fall on the same date. A conversion that shares an end with another
+   (one leg fanned out to two on the account, either way round) has no rule of its
+   own, because a spread measured against the whole shared leg would be wrong: the
+   whole pair nets once. When any such fanned conversion names a printed fee (as
+   stored, before the shared ones are cleared), that fee is the only fee line of its
+   date and the pair books no net beside it, the residual booked nowhere, as when every
+   edge names one. A printed-fee fan decided together with a transfer leg books no net
+   either: the transfer leg does not bring the net back. The net of a pair with legs is
+   floored at zero, as a conversion spread is: a favourable residual books nothing,
+   never income. The floor is for pairs with legs only: a two-line pair, decided or
+   applied on its own, keeps the signed net of FR-15. Tests pin both, so flooring a
+   two-line pair fails one.
 
 The pairing defaults (transfer window and tolerance, conversion window and spread
 tolerance, reversal window, import overlap tolerance) were tuned at the Phase 3b gate on

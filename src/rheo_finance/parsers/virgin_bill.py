@@ -6,7 +6,10 @@ feeds obligations, not the ledger):
 
 - every amount goes through ``to_money``, so docextract's floats become exact
   two-decimal values;
-- ``balance_due`` is the printed total due and ``due_date`` the "pay by" date;
+- ``balance_due`` is the printed total due, ``due_date`` the "pay by" date,
+  ``bill_date`` the bill date, ``current_charges`` the total current charges and
+  ``arrears`` an ``Arrears`` line when the bill prints one (docextract reads no such
+  field, so this module finds the line in the text);
 - the period is the bill-date month. That is a decision, not something the bill
   states: the only dates a bill prints are its bill date, its next bill date and the
   "pay by" date, never a service period, so the bill-date month is the period;
@@ -40,6 +43,7 @@ from rheo_finance.parsers.base import (
     RegisteredAccount,
     Rejected,
 )
+from rheo_finance.parsers.card import AMOUNT_TEXT, amount
 from rheo_finance.parsers.docextract_adapter import money, reference_bill
 from rheo_finance.parsers.registry import Parser, register_parser
 
@@ -48,6 +52,11 @@ CURRENCY: Final = "CAD"
 # The first "Account Number" line with the number on it (page 1's header block).
 _ACCOUNT_NUMBER: Final = re.compile(
     r"^[ \t]*Account Number[ \t]+(\d[\d -]*\d)[ \t]*$", re.M
+)
+
+
+_ARREARS: Final = re.compile(
+    rf"^[ \t]*Arrears[ \t]+\$(?P<amount>{AMOUNT_TEXT})[ \t]*$", re.M
 )
 
 
@@ -91,9 +100,15 @@ def _tied_out(
     return True
 
 
+def _arrears(text: str) -> Decimal | None:
+    match = _ARREARS.search(text)
+    return None if match is None else amount(match["amount"])
+
+
 def parse(text: str, accounts: AccountLookup) -> ParseResult:
     bill = reference_bill(text)
-    period = _bill_month(_date(bill["bill_date"]))
+    bill_date = _date(bill["bill_date"])
+    period = _bill_month(bill_date)
     registered = _account(text, accounts, period)
     tied_out = _tied_out(bill, period, registered)
     return ParseResult(
@@ -106,6 +121,9 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
                 control_kind="bill_identity",
                 balance_due=money(bill["total_due"]),
                 due_date=_date(bill["due_date"]),
+                bill_date=bill_date,
+                current_charges=money(bill["current_charges"]),
+                arrears=_arrears(text),
                 tied_out=tied_out,
             ),
         ),
@@ -124,7 +142,7 @@ PARSER: Final = register_parser(
         parser_id="virgin_plus.bill",
         issuer="virgin-plus",
         format="pdf",
-        version="1",
+        version="3",
         parse=parse,
         filing_date=filing_date,
     )

@@ -33,6 +33,30 @@ VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
 
 PINNED = {
+    "0042_tick_health.py": (
+        "28d92ec5a882394b1ffa203f767e638f298ce793a8d2e68c85697a77206f9929"
+    ),
+    "0041_job_identity.py": (
+        "c3386f821386953cafafcc294c0b21c8248bfadd2b4d8fa474b17961c3c2419d"
+    ),
+    "0040_job_run.py": (
+        "1873f641521cefc411de739f95e5c64f2da437207deb684be713437eb345b478"
+    ),
+    "0039_reader_boundaries.py": (
+        "4e418d04c9f550f6d7809aaac11d6b2c13d2b32310425eaf0687a756169c53b9"
+    ),
+    "0038_queue_snapshot.py": (
+        "33daf1b12f4a344bc68d369ce7a7f75ce2d7b8c47d2261533d2e3b8d8f4f3bab"
+    ),
+    "0037_reader_views.py": (
+        "3cd92fee5ad51e08d3f60ecd3282b64158fa8c6be44987066af2d5d7a3d616a8"
+    ),
+    "0036_current_sink.py": (
+        "099693c60f50c4a588a3e2c9c8dfac48c86e1f6beb16b1f675f4a44bd494e212"
+    ),
+    "0035_owed.py": (
+        "0bf5e7b32484f533a2f62237d0ad8d373dcf686c880999a1c5a26df7a9a81ce7"
+    ),
     "0001_finance_schema.py": (
         "0f3e7fdad37e31b8efbfade234d6c3d2bf44d9db10fae40d43b56e2a33e88f4d"
     ),
@@ -87,6 +111,51 @@ PINNED = {
     ),
     "0019_crypto_label.py": (
         "952db656af5c1befbe106ad720d52f560d25c176a4855bbc67488dbac4cdfe5c"
+    ),
+    "0020_payee.py": (
+        "aa3612c5a2660e033a7535f90f3e43b53f85de3e4c33322c283e152a2be10be4"
+    ),
+    "0021_obligation.py": (
+        "8175a4001f58ccbe396b0bb55fe8c81d71830c156576858adb526617fe158a9a"
+    ),
+    "0022_bill_figures.py": (
+        "10a9a46bcc724e22f1dfcf408b6563987c6b977b06c95db0578371267da046d1"
+    ),
+    "0023_typed_bill_unjoined.py": (
+        "947b3204f4eacecb655056b49f8813f011e3343b798b1094467f8c93a5af5731"
+    ),
+    "0024_invoice_decisions.py": (
+        "e113205e1160995bd06877132faea3fd042e7ef4b92497f603af8bf178065a8b"
+    ),
+    "0025_invoice_amount_due.py": (
+        "fc3d9f29792605e6252503d8ce1b0df6b29b00fbc76003c5b1512c1bed2814ad"
+    ),
+    "0026_stage15.py": (
+        "a4a56bfd754dc3a19d24b5871f91d9c470a420a2595447ffe2853ebe29f05a8b"
+    ),
+    "0027_arrangement_unsettled.py": (
+        "834a7b77578bb6e12c17590848776727911d59d44bc6ac09024deb93fbebdbc9"
+    ),
+    "0028_unsettled_decision.py": (
+        "b4ccba5141a76a76248282134aa01437cb834d7b1e05a249e158925273d17592"
+    ),
+    "0029_presumed_paid.py": (
+        "a28c59b223e354d16beb0a5f664adc69aeb09f780eaa8365334e3521cad8916c"
+    ),
+    "0030_notices.py": (
+        "ed5edb752f928a945874a30b9773d0caa7dc5c043e638ddc865cb4033c6b2913"
+    ),
+    "0031_overdrawn_identity.py": (
+        "5a0713c42749fa2b87b2d4ae0b3862daaa745411a35a328fd575a60703cdcdc3"
+    ),
+    "0032_decision_orphan.py": (
+        "cfba0d4f6e3c6321e6da5ebbbd2b4a6104a8c08719c1c28c2b7a58f2d055fdb7"
+    ),
+    "0033_open_item.py": (
+        "91e7ec909566d2e2c5b235e79e888df66d7623baeb2e5254cfa45e2dcfa5fb34"
+    ),
+    "0034_open_item_candidates.py": (
+        "d824cf4593179894bd4766d221302cb72475a0cf273e43f38bb2660e7746596d"
     ),
 }
 

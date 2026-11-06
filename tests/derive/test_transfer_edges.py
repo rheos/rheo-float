@@ -17,7 +17,6 @@ import datetime as dt
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
-from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -25,18 +24,15 @@ from sqlalchemy import select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.derive import stage8
-from rheo_finance.documents import issuers
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.manual.transfer_hints import TRANSFER_HINTS_FILE
-from rheo_finance.parsers import registry
 from rheo_finance.storage.schema import pair_edge, txn, txn_source
 
 from .support import (
     CSV_IDENTIFIER,
-    FX_IDENTIFIER,
-    FX_INSTITUTION,
-    FX_ISSUER,
-    FX_PARSER,
+    FX2_IDENTIFIER,
+    SECOND,
+    THIRD,
     Ledger,
     fx_lines,
 )
@@ -45,9 +41,6 @@ from .test_receipts_invoices import CLINIC, RECEIPT, debit_only_receipt
 from .test_reversals import OUTGOING, export
 
 D = dt.date
-SECOND = "999000000088-999-99901-99902"
-THIRD = "999000000099-999-99901-99902"
-FX2_IDENTIFIER = "999000000045"
 CARD_NUMBER = "9999 99•• •••• 9991"
 
 BILL_PAYMENT = "BILL PAYMENT-ONLINE VANCITY VISA 99981"
@@ -56,30 +49,6 @@ REFUND = "SAMPLE SHOP REFUND 99975"
 
 Row = tuple[dt.date, str, Decimal]
 Edge = tuple[dt.date, Decimal, dt.date, Decimal]
-
-
-@pytest.fixture
-def own(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
-    """Three chequing accounts and a Visa card at Vancity, and two accounts at the
-    synthetic FX institution (``FX_LINES`` documents under ``FX_ISSUER``)."""
-    monkeypatch.setattr(
-        issuers,
-        "ISSUER_DIRS",
-        MappingProxyType(
-            {**issuers.ISSUER_DIRS, FX_ISSUER: issuers.IssuerDir("statement")}
-        ),
-    )
-    registry.load_parsers()
-    monkeypatch.setitem(registry.PARSERS, FX_PARSER.parser_id, FX_PARSER)
-    ledger.accounts(
-        ("chequing", "Vancity", "chequing", CSV_IDENTIFIER),
-        ("second", "Vancity", "chequing", SECOND),
-        ("third", "Vancity", "chequing", THIRD),
-        ("visa", "Vancity", "credit_card", "999000009991"),
-        ("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER),
-        ("fx2", FX_INSTITUTION, "chequing", FX2_IDENTIFIER),
-    )
-    return ledger
 
 
 def on(identifier: str, *rows: Row) -> list[tuple[str, dt.date, str, Decimal]]:

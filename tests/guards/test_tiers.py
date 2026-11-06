@@ -99,7 +99,7 @@ RESTRICTED_NAMES = frozenset(
         "amount", "note", "memo", "description", "counterparty", "merchant_key",
         "identifier", "alias", "address", "txid", "cad", "total_cad", "cad_total",
         "balance", "opening_balance", "quantity", "fee", "account_number", "payee",
-        "principal", "alias_norm", "owner",
+        "principal", "alias_norm", "owner", "patterns",
     }
 )  # fmt: skip
 RESTRICTED_PREFIXES = (
@@ -115,9 +115,14 @@ RESTRICTED_SUFFIXES = (
 NUMERIC_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("decision", "business_pct"): "a business-use percentage, not an amount",
     ("txn", "business_pct"): "a business-use percentage, not an amount",
+    ("report_txn", "business_pct"): "a business-use percentage, not an amount",
 }
 # Decimal output fields that are not restricted ("<operation> <Model>.<path>").
-DECIMAL_OUTPUT_EXCEPTIONS: dict[str, str] = {}
+DECIMAL_OUTPUT_EXCEPTIONS: dict[str, str] = {
+    "finance.txn.list ListOut.rows.business_pct": (
+        "a business-use percentage, not an amount"
+    ),
+}
 
 
 def restricted_by_name(name: str) -> bool:
@@ -209,7 +214,7 @@ def test_a_planted_public_numeric_column_and_a_stale_exception_are_found(
     [
         "cad", "total_cad", "cad_total", "balance", "opening_balance", "quantity",
         "fee", "account_number", "payee", "principal", "alias_norm", "net_cad",
-        "card_fee", "closing_balance",
+        "card_fee", "closing_balance", "patterns",
     ],
 )  # fmt: skip
 def test_each_money_and_identity_shape_is_restricted_by_name(name: str) -> None:
@@ -416,7 +421,7 @@ def test_a_planted_unmarked_output_field_is_found(
             description="A fixture operation.",
         )
     )
-    assert output_problems(operations.SPECS) == [
+    assert output_problems(operations.SPECS, {}) == [
         "finance.fixture.view _Out.amount is public, not restricted",
         "finance.fixture.view _Out.rows.hidden has no Tiered marker",
         "finance.fixture.view _Out.maybe.hidden has no Tiered marker",

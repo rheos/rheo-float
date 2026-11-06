@@ -19,6 +19,7 @@ import datetime as dt
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ from sqlalchemy import (
     insert,
     select,
     text,
+    update,
 )
 from sqlalchemy.pool import NullPool
 
@@ -71,13 +73,20 @@ from rheo_finance.storage.ids import uuid7
 from rheo_finance.storage.schema import (
     account,
     coverage,
+    decision,
     document_line,
+    obligation,
+    payee,
     source_discrepancy,
     txn,
+    txn_source,
 )
 
 MakeContext = Callable[[Role], FinanceContext]
-CSV_FIXTURE = (FIXTURES / "vancity_chequing_jump.csv").read_text(encoding="utf-8")
+# Keep restricted-description probes distinct from public queue vocabulary.
+CSV_FIXTURE = (FIXTURES / "vancity_chequing_jump.csv").read_text(
+    encoding="utf-8"
+).replace("BILL PAYMENT", "BILL PAYMENTQUASAR")
 SPARE_IDENTIFIER = "999000000088"
 UNKNOWN_IDENTIFIER = "999000000055-999-99901-99902"
 SKIPPED_NAME = f"acct-{STATEMENT_IDENTIFIER}.csv"
@@ -85,6 +94,12 @@ UNMAPPED_NAME = "unmapped-folder/loose.csv"
 # The chequing account opens four months before the fixture's only month of lines.
 OPENED = "2025-10-01"
 CASH_TEXT = "petty cash envelope"
+SAFE_DISPLAY_LABELS = frozenset({
+    "Pos Purchase Sample Grocer 99901", "Deposit Sample Transfer In 99902",
+    "Bill Paymentquasar 99903", "Pos Purchase Sample Hardware 99904",
+    "Withdrawal Sample Atm 99905", "Deposit Sample Payroll 99906",
+    "Petty Cash Envelope",
+})
 HEAD = head_revision()
 
 
@@ -97,6 +112,8 @@ class FixtureLedger:
     # Every string no reader output may carry: identifiers, descriptions, the
     # skipped files' names.
     secrets: tuple[str, ...]
+    identity_secrets: tuple[str, ...]
+    description_probe: str
     missing_months: int
     # The cash line's txns on the built-in account, and that account's coverage months.
     paid_outside_txns: int
@@ -160,6 +177,72 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
                     kind="unmatched_in_statement_window",
                 )
             )
+            # The second bill of a due month, on the vendor payee stage 2 made.
+            conn.execute(
+                insert(obligation).values(
+                    id=uuid7(NOW),
+                    payee_id=conn.scalar(
+                        select(payee.c.id).where(payee.c.slug == "fortisbc")
+                    ),
+                    kind="bill",
+                    period_label="bill-2026-02-2",
+                    amount_due=Decimal("1.00"),
+                    threshold_due=Decimal("1.00"),
+                    paid=Decimal("0.00"),
+                    remaining=Decimal("1.00"),
+                    threshold_remaining=Decimal("1.00"),
+                    status="open",
+                    primary_source="fortisbc/bill.pdf",
+                )
+            )
+            # A manual row that differs from its document, and two statements that
+            # differ from each other, on the same payee.
+            conn.execute(
+                insert(obligation).values(
+                    id=uuid7(NOW),
+                    payee_id=conn.scalar(
+                        select(payee.c.id).where(payee.c.slug == "fortisbc")
+                    ),
+                    kind="bill",
+                    period_label="bill-2026-03",
+                    amount_due=Decimal("1.00"),
+                    threshold_due=Decimal("1.00"),
+                    paid=Decimal("0.00"),
+                    remaining=Decimal("1.00"),
+                    threshold_remaining=Decimal("1.00"),
+                    status="open",
+                    primary_source="fortisbc/bill.pdf",
+                    manual_mismatch=Decimal("0.50"),
+                    statement_conflict=True,
+                    unjoined=True,
+                )
+            )
+            # An invoice decision a payment took over from.
+            taken_over = uuid7(NOW)
+            conn.execute(
+                insert(decision).values(
+                    id=taken_over,
+                    kind="invoice_unpaid",
+                    target_ref=f"finance.invoice:{uuid7(NOW)}",
+                    decided_at=NOW,
+                )
+            )
+            conn.execute(
+                update(txn_source)
+                .where(
+                    txn_source.c.txn_id
+                    == select(txn_source.c.txn_id).limit(1).scalar_subquery()
+                )
+                .values(overrides_decision_id=taken_over)
+            )
+            conn.execute(
+                update(document_line)
+                .where(
+                    document_line.c.id
+                    == select(document_line.c.id).limit(1).scalar_subquery()
+                )
+                .values(refused_decision_id=taken_over)
+            )
             descriptions = conn.scalars(
                 select(document_line.c.description_raw).where(
                     document_line.c.description_raw.is_not(None)
@@ -212,23 +295,21 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
             if len(word) >= 6 and word.isalpha()
         }
     )
+    identities = (
+        CSV_IDENTIFIER, STATEMENT_IDENTIFIER, SPARE_IDENTIFIER,
+        UNKNOWN_IDENTIFIER, SKIPPED_NAME, "acct-", "loose.csv", "unmapped-folder",
+        "Sample Utility",
+    )
     return FixtureLedger(
         database=database,
         data=root / "data",
         archive=ledger.archive,
         downloads=downloads,
-        secrets=(
-            CSV_IDENTIFIER,
-            STATEMENT_IDENTIFIER,
-            SPARE_IDENTIFIER,
-            UNKNOWN_IDENTIFIER,
-            SKIPPED_NAME,
-            "acct-",
-            "loose.csv",
-            "unmapped-folder",
-            "envelope",
-            *words,
-        ),  # fmt: skip
+        secrets=(*identities, "envelope", *words),
+        identity_secrets=identities,
+        description_probe=next(
+            text for text in descriptions if "PAYMENTQUASAR" in text
+        ),
         missing_months=int(missing or 0),
         paid_outside_txns=int(paid_outside_txns or 0),
         paid_outside_months=int(paid_outside_months or 0),
@@ -301,11 +382,14 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
 ) -> None:
     lines = status_lines(fixture_ledger)
 
-    assert list(lines) == [1, 2, 3, 4, 7, 9, 10]
+    assert list(lines) == [1, 2, 3, 4, 5, 6, 7, 9, 10]
     assert lines[1].startswith("as of 2026-02-20 ")
     assert lines[1].endswith(", database current")
-    assert lines[2] == "last import: vancity 2026-02-20"
-    assert lines[3] == "documents: 1 unparsed, 1 rejected, 1 needs manual entry"
+    assert lines[2] == "last import: vancity 2026-02-20; no tick yet"
+    assert (
+        lines[3]
+        == "documents: 1 unparsed, 1 rejected, 1 needs manual entry, 0 bill gaps"
+    )
     assert fixture_ledger.missing_months > 0
     assert lines[4] == (
         f"missing account-months: {fixture_ledger.missing_months} across 1 account"
@@ -313,7 +397,13 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
     assert lines[7] == "sinks off: " + " ".join(SINKS)
     # Only the identifier skip counts: the unmapped file is skipped for another reason.
     assert lines[9] == (
-        "1 source discrepancy; 1 account with no data: Spare;"
+        "1 source discrepancy; 1 duplicate bill month (fortisbc 1);"
+        " 1 manual bill that differs from its document (fortisbc 1);"
+        " 1 card statement with conflicting copies (fortisbc 1);"
+        " 1 typed bill that joins no parsed bills (fortisbc 1);"
+        " 1 invoice decision superseded by a matched line (invoice_unpaid 1);"
+        " 1 invoice decision refused for its currency (invoice_unpaid 1);"
+        " 1 account with no data: Spare;"
         " 1 archive file skipped: file name carries an identifier, rename them"
         " (vancity 1)"
     )
@@ -325,6 +415,8 @@ def test_status_output_carries_no_identifier_description_or_skipped_path(
 ) -> None:
     out = run(fixture_ledger, "finance.status.get")
     text_ = out.model_dump_json()
+    probe = fixture_ledger.description_probe.swapcase().replace(" ", "   ")
+    assert leaked(fixture_ledger, probe), "the actual description remains detectable"
     assert leaked(fixture_ledger, text_) == []
     assert chr(0x2014) not in text_
 
@@ -336,10 +428,10 @@ def test_status_on_an_empty_ledger_prints_only_the_lines_that_always_apply(
     assert isinstance(out, StatusOut)
     lines = {each.line_no: each.text for each in out.lines}
 
-    assert list(lines) == [1, 2, 3, 4, 7]
+    assert list(lines) == [1, 2, 3, 4, 5, 6, 7]
     assert lines[1].endswith(", database current")
-    assert lines[2] == "last import: none"
-    assert lines[3] == "documents: 0 unparsed, 0 rejected"
+    assert lines[2] == "last import: none; no tick yet"
+    assert lines[3] == "documents: 0 unparsed, 0 rejected, 0 bill gaps"
     assert lines[4] == "missing account-months: none"
 
 
@@ -455,10 +547,38 @@ def test_no_report_view_row_carries_an_identifier_description_or_skipped_path(
             ).all()
             assert "report_status" in names
             seen = 0
+            labels: set[str] = set()
             for name in names:
-                for row in conn.execute(text(f"SELECT * FROM finance.{name}")):
+                for row in conn.execute(
+                    text(f"SELECT * FROM finance.{name}")
+                ).mappings():
                     seen += 1
-                    assert leaked(fixture_ledger, repr(tuple(row))) == [], name
+                    shown = dict(row)
+                    assert not any(
+                        secret.casefold() in repr(shown).casefold()
+                        for secret in fixture_ledger.identity_secrets
+                    ), name
+                    if name == "report_txn":
+                        # Stage 13's safe merchant words may also occur in raw
+                        # descriptions. They are permitted only as display_label.
+                        label = str(shown.pop("display_label"))
+                        labels.add(label)
+                        assert label in SAFE_DISPLAY_LABELS
+                        assert not any(
+                            secret.casefold() in label.casefold()
+                            for secret in fixture_ledger.identity_secrets
+                        )
+                    if name == "report_queue_counts":
+                        # Canonical kind codes can share ordinary description
+                        # words; no other field gets this fixed-code exception.
+                        assert shown.pop("kind") in {
+                            "pairing", "held_notice", "card_debit", "payment",
+                            "presumed_paid", "reattach", "category",
+                        }
+                    assert leaked(fixture_ledger, repr(tuple(shown.values()))) == [], (
+                        name
+                    )
+            assert labels == SAFE_DISPLAY_LABELS
     finally:
         engine.dispose()
     assert seen > 0
@@ -494,7 +614,8 @@ def test_line_1_says_migrate_when_the_database_is_behind_the_code(
     )
 
     assert status_lines(fixture_ledger)[1].endswith(
-        f", database schema at {HEAD}, code at 0099_later: run finance db migrate"
+        f", database schema at {HEAD}, code at 0099_later;"
+        " schema behind code: run finance db migrate"
     )
 
 

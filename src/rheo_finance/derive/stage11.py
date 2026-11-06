@@ -83,7 +83,7 @@ from rheo_finance.derive.pair_decisions import Decided, PairDecision
 from rheo_finance.derive.pairing import StoredEdge
 from rheo_finance.events import record_event
 from rheo_finance.parsers.base import CRYPTO_TRANSFER
-from rheo_finance.storage.refs import FINANCE_SYSTEM, format_ref
+from rheo_finance.storage.refs import FINANCE_SYSTEM, LINE_TYPE, format_ref
 from rheo_finance.storage.schema import pair_edge, txn
 from rheo_finance.tier import Tier
 
@@ -246,7 +246,7 @@ def _flag_withdrawals(uow: UnitOfWork) -> None:
         )
     ).all()
     for row in rows:
-        txn_ref = format_ref(FINANCE_SYSTEM, "txn", row.id)
+        txn_ref = format_ref(FINANCE_SYSTEM, LINE_TYPE, row.id)
         record_event(
             uow,
             EVENT_MODELS,

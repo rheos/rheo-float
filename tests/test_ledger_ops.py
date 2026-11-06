@@ -451,7 +451,7 @@ def test_every_write_time_column_of_a_digested_table_is_left_out() -> None:
         (name, column)
         for name, columns in LEFT_OUT.items()
         for column in columns
-        if column != "parse_inputs"
+        if column not in {"parse_inputs", "as_of_date"}
     }
 
 

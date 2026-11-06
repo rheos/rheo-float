@@ -24,14 +24,29 @@ from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
-from sqlalchemy import ColumnElement, Table, and_, exists, func, insert, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    Table,
+    and_,
+    func,
+    insert,
+    or_,
+    select,
+)
 
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.storage import refs
 from rheo_finance.storage.ids import uuid7
-from rheo_finance.storage.schema import decision, decision_item, decision_target
+from rheo_finance.storage.schema import (
+    account,
+    decision,
+    decision_item,
+    decision_target,
+    document_line,
+)
 from rheo_finance.tier import Tier
 
 
@@ -143,8 +158,15 @@ TARGET_COLUMN: Mapping[DecisionKind, str] = {
 }
 
 # The ref types that name a ledger line (``finance.txn:<uuid>``, prompt 21). A prompt
-# that gives document lines their own ref type adds it here.
-LINE_REF_TYPES = frozenset({"txn"})
+# that gives document lines their own ref type adds it here, unless the line has no
+# account to snapshot, as ``INVOICE_REF_TYPE``'s has not.
+LINE_REF_TYPES = frozenset({refs.LINE_TYPE})
+
+# An invoice line, by its line key (``derive.evidence``): the target of the invoice
+# kinds. It is not a ledger line until a decision or a payment makes it count.
+INVOICE_REF_TYPE = "invoice"
+ACCOUNT_REF_TYPE = "account"
+INVOICE_DECISIONS = (K.INVOICE_PAID, K.INVOICE_UNPAID)
 
 # Kinds keyed to a line or a merchant, which stage 17 can find orphaned.
 LINE_KEYED_KINDS = frozenset(
@@ -327,7 +349,7 @@ def reversed_clause(row: Table) -> ColumnElement[bool]:
     The one statement of what reversed means; ``effective``, ``reverse`` and the sink
     gate all build on it."""
     rev = decision.alias("rev")
-    return exists().where(
+    return select(1).exists().where(
         rev.c.kind == K.REVERSE.value,
         or_(
             rev.c.reverses_id == row.c.id,
@@ -345,6 +367,21 @@ def _bulk_reversed(uow: UnitOfWork, bulk_id: uuid.UUID) -> bool:
                 decision.c.reverses_bulk_id == bulk_id,
             )
         )
+    )
+
+
+def _effective_query(
+    kinds: Iterable[DecisionKind], match: ColumnElement[bool]
+) -> Select[tuple[object, ...]]:
+    """The shared reversal filter and newest-first order for effective answers."""
+    return (
+        select(decision)
+        .where(
+            decision.c.kind.in_([each.value for each in kinds]),
+            match,
+            ~reversed_clause(decision),
+        )
+        .order_by(decision.c.decided_at.desc(), decision.c.id.desc())
     )
 
 
@@ -380,16 +417,31 @@ def effective(
         match = row.c.merchant_key == target.key
     else:
         match = row.c[columns.pop()] == target
-    statement = (
-        select(row)
-        .where(
-            row.c.kind.in_([each.value for each in kinds]), match, ~reversed_clause(row)
-        )
-        .order_by(row.c.decided_at.desc(), row.c.id.desc())
-        .limit(1)
-    )
+    statement = _effective_query(kinds, match).limit(1)
     found = uow.execute(statement).mappings().first()
     return None if found is None else Decision.model_validate(dict(found))
+
+
+def effective_invoices(
+    uow: UnitOfWork, line_keys: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, Decision]:
+    """Each invoice's newest unreversed paid/unpaid answer, in one query.
+
+    Missing answers are absent. Both invoice evidence and open items share this
+    lookup and effective's canonical reversal filter and ordering.
+    """
+    targets = {invoice_ref(key): key for key in line_keys}
+    if not targets:
+        return {}
+    found: dict[uuid.UUID, Decision] = {}
+    rows = uow.execute(
+        _effective_query(INVOICE_DECISIONS, decision.c.target_ref.in_(targets))
+    ).mappings()
+    for row in rows:
+        key = targets[row["target_ref"]]
+        if key not in found:
+            found[key] = Decision.model_validate(dict(row))
+    return found
 
 
 # --- finance.decision.record ----------------------------------------------------------
@@ -458,6 +510,43 @@ def _check_about(uow: UnitOfWork, data: RecordIn) -> None:
         )
 
 
+def invoice_ref(line_key: uuid.UUID) -> str:
+    """The reference an invoice decision targets the invoice line of ``line_key`` by."""
+    return refs.format_ref(refs.FINANCE_SYSTEM, INVOICE_REF_TYPE, line_key)
+
+
+def _check_invoice(uow: UnitOfWork, data: RecordIn) -> None:
+    """An invoice decision names a current invoice line, and ``invoice_paid`` an account
+    on the registry. Stage 3 reads such a decision by its line key alone, so one that
+    names anything else would be stored and change nothing, without a word."""
+    if data.kind not in INVOICE_DECISIONS:
+        return
+    assert data.target_ref is not None  # the kind's required column
+    target = refs.parse(data.target_ref)
+    if target.system != refs.FINANCE_SYSTEM or target.type != INVOICE_REF_TYPE:
+        raise DecisionRefused(f"{data.kind.value}: target_ref is not an invoice line")
+    found = uow.scalar(
+        select(func.count()).where(
+            document_line.c.line_key_id == uuid.UUID(target.id),
+            document_line.c.line_kind == "invoice",
+        )
+    )
+    if not found:
+        raise DecisionRefused(
+            f"{data.kind.value}: target_ref resolves to no current invoice line"
+        )
+    if data.account_ref is None:
+        return
+    paying = refs.parse(data.account_ref)
+    known = (
+        paying.system == refs.FINANCE_SYSTEM
+        and paying.type == ACCOUNT_REF_TYPE
+        and uow.scalar(select(func.count()).where(account.c.id == uuid.UUID(paying.id)))
+    )
+    if not known:
+        raise DecisionRefused(f"{data.kind.value}: account_ref names no account")
+
+
 def is_line_ref(ref: str) -> bool:
     """Whether ``ref`` names a ledger line, the thing a snapshot is taken of."""
     parsed = refs.parse(ref)
@@ -491,6 +580,7 @@ def record(ctx: FinanceContext, uow: UnitOfWork, data: RecordIn) -> RecordOut:
         raise DecisionRefused(f"{data.kind.value}: recorded only by {elsewhere}")
     _check_columns(data)
     _check_about(uow, data)
+    _check_invoice(uow, data)
     if data.bulk_id is not None and _bulk_reversed(uow, data.bulk_id):
         # It would be un-applied from the moment it was recorded.
         raise DecisionRefused(f"{data.kind.value}: that bulk run is already reversed")

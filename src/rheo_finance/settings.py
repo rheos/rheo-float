@@ -36,7 +36,7 @@ from rheo_finance.tier import Tier
 SETTINGS_FILE_NAME: Final = "settings.toml"
 TIMEZONE_KEY: Final = "finance.locale.timezone"
 SINKS: Final[tuple[str, ...]] = (
-    "mot",
+    "current",
     "telegram",
     "imap",
     "rates",
@@ -231,9 +231,9 @@ SPECS: Final[tuple[KeySpec, ...]] = (
     _spec("finance.payments.match_tolerance", DEC, Decimal("0.01"),
           "Amount difference that still counts as an exact payment."),
     _spec("finance.payments.evidence_window_days", INT, 5,
-          "Days around a due date to look for payment evidence."),
+          "Days between a payment and a notice of it that still join as one."),
     _spec("finance.payments.notice_hold_days", INT, 31,
-          "Days a payment notice holds before it is treated as unpaid."),
+          "Days from an equal payment within which a leftover notice is held."),
     _spec("finance.payments.partial_auto_kinds", LIST,
           ("arrangement_instalment", "card_statement"),
           "Obligation kinds whose partial payments apply without a confirm."),
@@ -261,11 +261,16 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           ("classification", "pairing_single", "reattach_single", "presumed_paid"),
           "Confirm kinds `finance confirm bulk` may accept in one step."),
     # reminders and notifications
-    _spec("finance.reminders.mot_base_url", STR, "https://rheo.ca/mot",
-          "Base URL of the ticket tracker."),
+    _spec("finance.reminders.current_base_url", STR, None,
+          "Current endpoint. Unset: read CURRENT_API_URL from the credential file.",
+          tier=_INTERNAL),
+    _spec("finance.reminders.current_credential_file", PATH, None,
+          "Shell env file containing the Current endpoint and token.", tier=_INTERNAL),
+    _spec("finance.reminders.current_token_var", STR, "CURRENT_ALERT_TOKEN",
+          "Exported token variable in the Current credential file."),
     _spec("finance.reminders.min_due_date", DATE, None,
           "Obligations due before this date get no ticket and no nudge. Set it"
-          " before approving the mot sink.", tier=_INTERNAL),
+          " before approving the current sink.", tier=_INTERNAL),
     _spec("finance.reminders.wake_days_before", INT, 5,
           "Days before a due date a reminder ticket wakes."),
     _spec("finance.reminders.wake_time", TIME, dt.time(8, 0),
@@ -287,6 +292,8 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           "Env file holding GMAIL_USER and GMAIL_APP_PASSWORD. Unset until you set"
           " it; mail intake over IMAP needs it.", tier=_INTERNAL),
     # reports and jobs
+    _spec("finance.jobs.tick_minutes", INT, 15,
+          "Minutes between scheduled job moments."),
     _spec("finance.owed.window_days", INT, 14, "Days ahead `owed` looks."),
     _spec("finance.owed.max_rows", INT, 15, "Rows `owed` prints."),
     _spec("finance.backup.stale_days", INT, 7,
@@ -294,6 +301,8 @@ SPECS: Final[tuple[KeySpec, ...]] = (
     _spec("finance.backup.keep_dumps", INT, 30, "Dumps kept on the external volume."),
     _spec("finance.backup.local_keep", INT, 7, "Dumps kept in the data directory."),
     _spec("finance.backup.time", TIME, dt.time(2, 0), "Local time the backup runs."),
+    _spec("finance.statements.availability_lag_days", INT, 2,
+          "Days after the expected period end before a statement is ready."),
     _spec("finance.statements.grace_days", INT, 7,
           "Days past an account's cadence before a statement counts as overdue."),
     _spec("finance.waste.price_increase_pct", DEC, Decimal("5"),

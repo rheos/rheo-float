@@ -18,3 +18,18 @@ first.
 ## Status
 
 In development. Stack: Python 3.12 with uv, Postgres 17 in Docker, a CLI and a launchd job.
+
+## Reminders
+
+Float owns the amount-due Current item for each payee period in the `bills` area.
+The stable `finance:<payee-slug>:<period>` key appears in both `source_ref` and the
+body's `Period-key:` line. Intake can skip a bill already tracked by Float or
+supersede its own duplicate. Float reconciles changes by stored ref, including
+settlement and later returned payments. A complete desired-state read closes
+previously synced keys it omits; a failed read leaves existing items open. The
+Current sink stays off until the owner approves its declared policy and enables it.
+
+Current's preview lists exact pending changes, including priority becoming overdue
+at local midnight. Its confirmation code can change at that boundary; refresh the
+preview if confirmation refuses an older code. This does not invalidate lasting
+sink-spec authorization. Rendered times and relative ages stay outside the digest.

@@ -43,6 +43,9 @@ from rheo_finance.storage.schema import txn
 NOW = dt.datetime(2026, 2, 20, 12, 0, tzinfo=dt.UTC)
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 CSV_IDENTIFIER = "999000000077-999-99901-99902"
+# Two more chequing identifiers at the same bank, for the ``own`` fixture.
+SECOND = "999000000088-999-99901-99902"
+THIRD = "999000000099-999-99901-99902"
 STATEMENT_IDENTIFIER = "999000000022"
 D = dt.date
 
@@ -137,6 +140,7 @@ CARD_PARSERS = tuple(
 FX_ISSUER = "synthetic-fx"
 FX_INSTITUTION = "Sample FX"
 FX_IDENTIFIER = "999000000044"
+FX2_IDENTIFIER = "999000000045"
 FX_LINES = "SYNTHETIC FX LINES"
 
 
@@ -201,6 +205,48 @@ def parse_fx(text: str, accounts: AccountLookup) -> ParseResult:
 
 
 FX_PARSER = Parser("synthetic_fx_txt", FX_ISSUER, "txt", "1", parse_fx)
+
+
+# The notice fixtures: a layout read by ``parse_notice`` under the test-only directory
+# ``NOTICE_ISSUER``, whose sub-directories stand for senders. No parser gives a
+# ``payment_notice`` line until mail intake.
+NOTICE_ISSUER = "synthetic-notice"
+NOTICE_LINES = "SYNTHETIC PAYMENT NOTICES"
+
+
+def parse_notice(text: str, accounts: AccountLookup) -> ParseResult:
+    """``NOTICE_LINES``, then ``NOTICE <date> <amount> <currency> <kind> <printed
+    payee>``, one ``payment_notice`` line each. Any other row is read past, so two
+    documents can print one notice and be two files."""
+    rows = [row.strip() for row in text.splitlines() if row.strip()]
+    if not rows or rows[0] != NOTICE_LINES:
+        raise NotRecognised
+    lines = []
+    for row in rows[1:]:
+        if not row.startswith("NOTICE "):
+            continue
+        _, day, amount, currency, kind, printed = row.split(" ", 5)
+        lines.append(
+            ParsedLine(
+                line_kind="payment_notice",
+                account=None,
+                posting_date=dt.date.fromisoformat(day),
+                amount=Decimal(amount),
+                currency=currency,
+                description_raw="Payment received",
+                counterparty=printed,
+                source_type=kind,
+            )
+        )
+    return ParseResult(periods=(), lines=tuple(lines), control_kind="none")
+
+
+NOTICE_PARSER = Parser("synthetic_notice_txt", NOTICE_ISSUER, "txt", "1", parse_notice)
+
+
+def notice_lines(*rows: str) -> str:
+    """A notice document; a row is ``"<date> <amount> <currency> <kind> <payee>"``."""
+    return "\n".join([NOTICE_LINES, *(f"NOTICE {row}" for row in rows)]) + "\n"
 
 
 def fx_lines(currency: str, *lines: str, account: str = FX_IDENTIFIER) -> str:

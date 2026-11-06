@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from rheo_finance.derive.run import Derived, run
 from rheo_finance.derive.stage3 import build_lines
 from rheo_finance.manual.cash_lines import CashLines
+from rheo_finance.manual.payees import Payees
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.storage.schema import document, document_line, txn, txn_source
 
@@ -501,7 +502,7 @@ def rerun_stage3(ledger: Ledger) -> Any:
     return build_lines(
         ledger.uow, CashLines((), ()), {}, zone=ledger.ctx.settings.timezone,
         overlap_days=3, receipt_days=3, invoice_days=30,
-        qty_epsilon=Decimal("1E-9"),
+        qty_epsilon=Decimal("1E-9"), payees=Payees((), ()),
     )  # fmt: skip
 
 

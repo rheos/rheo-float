@@ -1,4 +1,4 @@
-"""What a sink would send or request, and the clock-free digest an approval pins.
+"""What a sink would send or request, and the typed-list digest approval pins.
 
 Each sink registers a ``SinkPreview`` in ``PREVIEW_BUILDERS``: its ``items`` builder
 (``preview_builder(uow) -> list[PreviewItem]``) and, optionally, a note per item that
@@ -7,11 +7,13 @@ may read the clock (a reminder's wake moment) and a sample for when nothing is p
 A ``PreviewItem`` holds only data-derived fields: what the item is, its stable key, an
 amount and due date where it has them, and other data fields as text (a ticket's title
 and status, a pull's series set and range start, never a range end). It has no field
-for an instant, so nothing that depends on "now" can reach the digest.
+for an instant, so rendered timestamps and relative ages do not reach the digest.
 ``preview_digest`` is sha256 over the canonical JSON of the items, sorted by kind and
 key. The rendered text (the "as of" line, relative ages, each item's note) carries the
-clock and is left out of the digest, so a recomputation a minute later matches, while a
-changed ticket, notice, amount or request item does not.
+clock and is left out of the digest. Current alone lists exact pending changes,
+including overdue priority: its membership and code may change at the local due-date
+boundary (ADR-0015). Other sinks retain clock-free membership. With membership and
+typed fields unchanged, rendering at another instant leaves the digest unchanged.
 
 No builder is registered here; a sink's module registers one, and tests register a
 test-only one with monkeypatch.
@@ -106,7 +108,7 @@ def canonical_items(items: Sequence[PreviewItem]) -> str:
 
 
 def preview_digest(items: Sequence[PreviewItem]) -> str:
-    """sha256 hex of the canonical items. No clock input of any kind."""
+    """sha256 of canonical items; Current membership may reflect overdue priority."""
     return hashlib.sha256(canonical_items(items).encode("ascii")).hexdigest()
 
 

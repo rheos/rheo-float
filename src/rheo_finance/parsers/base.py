@@ -228,6 +228,12 @@ class ParsedPeriod:
     balance_due: Decimal | None = None
     minimum_due: Decimal | None = None
     due_date: dt.date | None = None
+    # The date a bill prints; None for every other document.
+    bill_date: dt.date | None = None
+    # What a bill prints as its current charges and on a line labelled arrears. Each is
+    # inside ``balance_due``; None when the bill prints no such line.
+    current_charges: Decimal | None = None
+    arrears: Decimal | None = None
     # Set by the parser for running_balance, bill_identity and none; a summary period
     # is tied out by the registry's own check.
     tied_out: bool = False
@@ -275,6 +281,8 @@ class ParsedLine:
     funding_fee: Decimal | None = None
     # A receipt payment's own reference, as a digest: never the reference itself.
     payment_ref_digest: str | None = None
+    # What an invoice prints as still due, positive; its ``amount`` stays the total.
+    amount_due: Decimal | None = None
 
 
 @dataclass(frozen=True)

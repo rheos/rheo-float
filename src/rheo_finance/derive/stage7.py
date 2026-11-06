@@ -75,7 +75,7 @@ def _included(uow: UnitOfWork) -> set[uuid.UUID]:
     keys = set()
     for target in targets:
         parsed = refs.parse(target)
-        if parsed.system == refs.FINANCE_SYSTEM and parsed.type == "txn":
+        if parsed.system == refs.FINANCE_SYSTEM and parsed.type == refs.LINE_TYPE:
             keys.add(uuid.UUID(parsed.id))
     if not keys:
         return set()

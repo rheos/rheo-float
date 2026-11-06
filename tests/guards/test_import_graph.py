@@ -1,7 +1,8 @@
 """Key decision 14 and AC-78(c): the interactive commands are reachable from
 ``cli.main`` only.
 
-``rheo_finance.cli.approve`` (``finance sink approve``) and, from Phase 5,
+``rheo_finance.cli.approve`` (``finance sink approve``),
+``rheo_finance.cli.alias`` (``finance alias draft``) and, from Phase 5,
 ``rheo_finance.cli.bulk`` (``finance confirm bulk``) may be imported by
 ``rheo_finance.cli.main`` and by no other module, so no job, sink, model step, mail,
 rates, connector or feature module reaches them. Nothing may import ``cli.main``
@@ -30,7 +31,11 @@ import rheo_finance
 
 PACKAGE = Path(rheo_finance.__file__).resolve().parent
 MAIN = "rheo_finance.cli.main"
-INTERACTIVE = ("rheo_finance.cli.approve", "rheo_finance.cli.bulk")
+INTERACTIVE = (
+    "rheo_finance.cli.approve",
+    "rheo_finance.cli.bulk",
+    "rheo_finance.cli.alias",
+)
 # The packages named by Key decision 14; the test covers every module regardless.
 FORBIDDEN_PACKAGES = (
     "jobs", "sinks", "model", "mail", "rates", "connectors", "features",
@@ -240,6 +245,9 @@ KIND_ALLOWED = {
     "rheo_finance.sinks.views": "the report_sink select compares the kind",
     "rheo_finance.migrations.versions.0002_decisions": "the frozen kind CHECK",
     "rheo_finance.migrations.versions.0004_sink_views": "the frozen view SQL",
+    "rheo_finance.migrations.versions.0039_reader_boundaries": (
+        "the frozen sink view with an explicit constant EXISTS projection"
+    ),
 }
 
 

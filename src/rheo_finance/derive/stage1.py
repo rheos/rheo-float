@@ -48,7 +48,11 @@ from rheo_finance.derive.precedence import supersede
 from rheo_finance.documents.registry import WITHHELD_PATH
 from rheo_finance.parsers import docextract_adapter
 from rheo_finance.parsers.docextract_adapter import pdf_text
-from rheo_finance.parsers.registry import parse_document, parsers_for
+from rheo_finance.parsers.registry import (
+    PARSE_CACHE_VERSION,
+    parse_document,
+    parsers_for,
+)
 from rheo_finance.reference import patterns
 from rheo_finance.storage.schema import account, account_identifier, document
 
@@ -97,7 +101,9 @@ def parse_inputs(
     parsers = [[each.parser_id, each.version] for each in candidates]
     extractor = docextract if fmt == PDF else None
     hints = hint_patterns if any(each.sets_hints for each in candidates) else None
-    body = json.dumps([issuer, fmt, parsers, registry, extractor, hints])
+    body = json.dumps(
+        [issuer, fmt, parsers, registry, extractor, hints, PARSE_CACHE_VERSION]
+    )
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 

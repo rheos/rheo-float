@@ -14,7 +14,7 @@ from rheo_finance.model.client import ModelClient, ModelReplyInvalid
 from rheo_finance.model.guard import PromptGuard, PromptRefused, RefusalKind
 from rheo_finance.model.stub import ImageBytesReceived, StubModelClient
 
-from .conftest import Verdict
+from .support import Verdict
 
 SYSTEM = "Classify the merchant record."
 IMAGES = [

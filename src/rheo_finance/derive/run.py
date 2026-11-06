@@ -11,8 +11,8 @@ either way.
 Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
-   coverage matrix, the pairing graph, the ``txn`` tables, the source discrepancies and
-   the events. The
+   payments, the coverage matrix, the pairing graph, the ``txn`` tables, the source
+   discrepancies, the obligations and the events. The
    parse cache (``PARSE_CACHE``: lines, periods, rejected periods and the rejection
    events) is cleared whole with ``reparse``; otherwise stage 1 clears and rewrites a
    document's rows when it parses that document, and the columns stage 3 writes on a
@@ -29,7 +29,8 @@ Order of work, set by what each step reads:
    document are ``superseded`` (``precedence.supersede``).
 4. Stage 3, lines to txns: documents ranked per account, the overlap matcher, the
    source discrepancies (``stage3``, ``precedence``, ``overlap``), then the receipts
-   and invoices linked to the txns as evidence (``evidence``).
+   and invoices linked to the txns as evidence (``evidence``), by the payee patterns
+   stage 2 loaded, and the ``invoice_paid`` decisions booked.
 5. Stage 4, conversion to CAD from the stored rates (``stage4``); stage 5,
    recognition dates (``stage5``); then stage 6, the coverage matrix (``coverage``),
    which reads the periods, the lines and ``document_periods.csv``; then stage 7, the
@@ -47,11 +48,31 @@ Order of work, set by what each step reads:
    owner's ``pair`` and ``unpair`` decisions apply first, then the
    mutually unique edges apply, every transfer-like line gets its state, a labelled
    crypto line is set aside, an unresolved crypto withdrawal is flagged, and an applied
-   transfer's net or conversion's spread becomes a derived fee line.
-6. Check the deferred constraints now, inside the run, so a violation fails the derive
+   transfer's net or conversion's spread becomes a derived fee line; then stage 14, the
+   obligations (``stage14``), which read the parsed periods and the payees stage 2
+   stored, the manual obligations and arrangements it holds, and the invoices stage 3
+   found unpaid; then stage 15, the payments (``stage15``), which read the applied
+   edges, the coverage matrix, the notice lines and the owner's decisions on them, and
+   no obligation; then their application to the obligations (``stage15_apply``), with
+   the ``payment_apply`` and ``payment_unapply`` decisions. When that application pays
+   off an arrangement, stage 14 runs again with that arrangement finished and the day
+   its last instalment was paid (a bill its payee is issued after that day plus
+   ``finance.payments.early_days`` is owed as with no arrangement), and the
+   application runs again over the new rows, until the finished set no longer changes
+   (``FINISHED_ROUNDS``; a set still changing after that is settled the conservative
+   way, ``stage15_apply.settled``, and the arrangements left out are marked for status
+   line 9, ``stage15_apply.mark_unsettled``). Each time stage 14 makes the
+   obligations, the ``presumed_paid`` decisions mark theirs (``presumed``) before the
+   application reads them, and a payment applied to one reverts it. Then one
+   ``finance.payment.detected`` per automatic application, and the obligations due
+   before ``finance.reminders.min_due_date`` are marked (``presumed.mark_floor``).
+6. Stage 16, events, persistent notices and actual parser overdrawn spells
+   (``stage16``), then stage 17's orphan decisions and replacement candidates
+   (``orphans``), then its open items (``open_items``).
+7. Check the deferred constraints now, inside the run, so a violation fails the derive
    and not a commit nobody is watching; then defer them again, so a second derive in
    the same transaction clears the txn tables as the first did.
-7. Stage 16, the sink specs (``sinks.store.write_sink_specs``), last.
+8. The sink specs (``sinks.store.write_sink_specs``), last.
 
 A stage is a plain import at its step; a feature package that is not built yet has no
 call site (Key decision 14).
@@ -59,8 +80,9 @@ call site (Key decision 14).
 
 from __future__ import annotations
 
+import datetime as dt
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -72,7 +94,12 @@ from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import (
     coverage,
     crypto_edges,
+    merchant_keys,
+    open_items,
+    orphans,
     pair_decisions,
+    presumed,
+    queue_counts,
     stage1,
     stage2,
     stage3,
@@ -82,6 +109,10 @@ from rheo_finance.derive import (
     stage8,
     stage9,
     stage11,
+    stage14,
+    stage15,
+    stage15_apply,
+    stage16,
 )
 from rheo_finance.documents.registry import ARCHIVE_KEY, DocumentRefused
 from rheo_finance.parsers.docextract_adapter import pdf_text
@@ -91,9 +122,18 @@ from rheo_finance.storage.schema import (
     coverage as coverage_table,
 )
 from rheo_finance.storage.schema import (
+    decision_orphan,
     document_line,
     event,
+    obligation,
+    open_item,
+    overdrawn_spell,
     pair_edge,
+    parsed_overdrawn,
+    payment,
+    payment_application,
+    payment_evidence,
+    queue_count,
     rejected_period,
     source_discrepancy,
     statement_period,
@@ -104,29 +144,48 @@ from rheo_finance.storage.schema import (
 OVERLAP_DAYS_KEY: Final = "finance.import.overlap_day_tolerance"
 RECEIPT_DAYS_KEY: Final = "finance.receipts.match_days"
 INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
+# How many times stage 14 may run again for arrangements an application finished: a
+# second round only confirms the first unless finishing one moves a payment off it.
+FINISHED_ROUNDS: Final = 3
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
-    coverage_table, pair_edge, txn_source, txn, source_discrepancy, document_line,
-    statement_period, rejected_period, event,
+    queue_count,
+    open_item,
+    decision_orphan,
+    overdrawn_spell, parsed_overdrawn,
+    payment_application, payment_evidence, payment,
+    coverage_table, pair_edge, obligation, txn_source, txn, source_discrepancy,
+    document_line, statement_period, rejected_period, event,
 )  # fmt: skip
 # Of CLEARED, what stage 1 stores per document: kept for documents a derive does not
 # parse again. ``event`` holds only the rejection events of it (``DOCUMENT_REJECTED``).
-PARSE_CACHE: Final = frozenset({document_line, statement_period, rejected_period})
+PARSE_CACHE: Final = frozenset(
+    {document_line, statement_period, rejected_period, parsed_overdrawn}
+)
 # Written on ``document_line`` by stage 3, null after a parse.
-STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id")
+STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id", "refused_decision_id")
 # Rewritten whole by a loader or a stage.
 REWRITTEN: Final = frozenset(
     {
         "account", "account_identifier", "manual_entry_error", "filed_year",
-        "own_address", "crypto_label", "sink_spec",
+        "own_address", "crypto_label", "payee", "sink_spec",
     }
 )  # fmt: skip
-# State, never truncated (Key decision 3): the decisions, the stored rates and the
-# ranges fetches covered. Each is an input of a derive and feeds a part of the input
-# fingerprint (``fingerprint.STATE_PARTS``).
+# State, never truncated (Key decision 3). Input state feeds the fingerprint;
+# output-only delivery state must not dirty the next derive.
 STATE: Final = frozenset(
-    {"decision", "decision_item", "decision_target", "rate", "rate_coverage"}
+    {
+        "decision",
+        "decision_item",
+        "decision_target",
+        "rate",
+        "rate_coverage",
+        "notice",
+        "sink_ticket",
+        "job_run",
+    }
 )
+OUTPUT_STATE: Final = frozenset({"notice", "sink_ticket", "job_run"})
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 
@@ -165,6 +224,7 @@ def run(
     *,
     extract_pdf: Callable[[Path], str] = pdf_text,
     reparse: bool = False,
+    statement_ready: stage16.ReadyLoader = stage16.load_ready,
 ) -> Derived:
     """Rebuild every derived table from the archive, the manual files and the
     decisions; with ``reparse``, parse every document again instead of keeping the
@@ -198,6 +258,7 @@ def run(
             receipt_days=ctx.settings.get_int(RECEIPT_DAYS_KEY),
             invoice_days=ctx.settings.get_int(INVOICE_DAYS_KEY),
             qty_epsilon=ctx.settings.get_decimal(crypto_edges.EPSILON_KEY),
+            payees=manual.payees,
         )
 
         stage4.convert(uow)
@@ -236,7 +297,73 @@ def run(
             decided=decided,
         )
         stage11.resolve(uow, decided)
+        merchant_keys.build(uow, manual.payees)
 
+        rules = stage15_apply.Rules(
+            tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
+            early_days=ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
+            partial_kinds=frozenset(
+                ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)
+            ),
+        )
+
+        presumed_paid = presumed.presumed(uow)
+
+        def obligations(finished: Mapping[str, dt.date] | None = None) -> None:
+            stage14.create_obligations(
+                uow,
+                manual.obligations.obligations,
+                manual.arrangements.arrangements,
+                manual.payees,
+                lines.unpaid_invoices,
+                finished,
+                early_days=rules.early_days,
+            )
+            presumed.mark_presumed(uow, presumed_paid)
+
+        def obligations_again(finished: Mapping[str, dt.date]) -> None:
+            """Make the obligations again with ``finished`` paid up, and apply again
+            to what they now owe."""
+            uow.execute(delete(payment_application))
+            uow.execute(delete(obligation))
+            obligations(finished)
+            stage15_apply.apply_payments(uow, rules)
+
+        obligations()
+        stage15.build_payments(
+            uow,
+            manual.payees,
+            manual.transfer_hints.rows,
+            stage15.Windows(
+                tolerance=ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
+                evidence_days=ctx.settings.get_int(stage15.WINDOW_KEY),
+                hold_days=ctx.settings.get_int(stage15.HOLD_KEY),
+            ),
+        )
+        stage15_apply.apply_payments(uow, rules)
+        # A paid-up arrangement no longer sets the bills issued after its last
+        # instalment, so make them again until finishing changes nothing more.
+        rounds = [stage15_apply.finished_arrangements(uow)]
+        used: dict[str, dt.date] = {}
+        while rounds[-1] != used and len(rounds) <= FINISHED_ROUNDS:
+            used = rounds[-1]
+            obligations_again(used)
+            rounds.append(stage15_apply.finished_arrangements(uow))
+        if rounds[-1] != used:
+            # Still changing: finishing an arrangement moves a payment off it. Keep
+            # only what every round agreed on, so nothing is owed twice, and say so.
+            settled = stage15_apply.settled(rounds)
+            obligations_again(settled)
+            stage15_apply.mark_unsettled(
+                uow, {slug for each in rounds for slug in each} - settled.keys()
+            )
+        stage15_apply.record_detected(uow)
+        presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
+
+        stage16.build(uow, ctx, statement_ready=statement_ready)
+        orphans.build(uow, overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY))
+        open_items.build(uow, known_periods=manual.document_periods.periods)
+        queue_counts.refresh(ctx, uow, as_of_date=today)
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
         write_sink_specs(uow)

@@ -40,6 +40,7 @@ from rheo_finance.storage.ids import canonical_part
 from rheo_finance.storage.schema import metadata
 
 LEFT_OUT: Final[Mapping[str, frozenset[str]]] = {
+    "queue_count": frozenset({"as_of_date"}),
     "sink_spec": frozenset({"computed_at"}),
     "document": frozenset({"imported_at", "parse_inputs"}),
 }

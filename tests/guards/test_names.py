@@ -61,7 +61,7 @@ _UUID7 = r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 SCHEMA = "finance"
 _NAME = r"[a-z][a-z0-9_]*"
 _IRREGULAR_PAST = (
-    "went|sent|began|paid|rose|fell|held|lost|came|left|ran|won|got|made|took|grew"
+    "became|went|sent|began|paid|rose|fell|held|lost|came|left|ran|won|got|made|took|grew"
     "|brought|bought|spent|split|set|cut|put|read|shut"
 )
 SHAPES: dict[str, re.Pattern[str]] = {
@@ -281,7 +281,7 @@ def test_record_ids_in_the_database_are_found_both_ways(owner_conn: Connection) 
         ("job", "finance.jobs.backup"),
         ("setting", "finance.locale"),
         ("setting", "finance.a.b.c"),
-        ("setting", "finance.sinks.mot.disabled"),
+        ("setting", "finance.sinks.current.disabled"),
         ("setting", "finance.sinks.enabled"),
         ("setting", "finance.Locale.timezone"),
     ],
@@ -307,10 +307,12 @@ def test_the_spec_names_conform() -> None:
 
 def test_a_missing_or_doubled_required_name_is_found() -> None:
     keys = [
-        spec.key for spec in settings.SPECS if spec.key != "finance.sinks.mot.enabled"
+        spec.key
+        for spec in settings.SPECS
+        if spec.key != "finance.sinks.current.enabled"
     ]
     assert name_problems({"setting": keys}) == [
-        "setting 'finance.sinks.mot.enabled' is missing"
+        "setting 'finance.sinks.current.enabled' is missing"
     ]
     assert name_problems({"job": ["finance.derive", "finance.derive"]}, {}) == [
         "job 'finance.derive' is listed twice"
@@ -355,7 +357,11 @@ def test_a_jobs_package_declares_its_jobs() -> None:
 
 def test_a_jobs_package_with_no_jobs_found_fails(tmp_path: Path) -> None:
     root = copy_package(tmp_path)
-    assert job_registry_problems(root, []) == []  # no jobs package yet
+    # Isolate the planted absent/empty registry from the shipped jobs package.
+    import shutil
+
+    shutil.rmtree(root / "jobs")
+    assert job_registry_problems(root, []) == []
     plant(root, "jobs/tick.py", "def tick() -> None: ...\n")
     assert job_registry_problems(root, []) == [
         "rheo_finance.jobs exists but no module in it declares JOBS",

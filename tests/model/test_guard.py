@@ -29,7 +29,7 @@ from rheo_finance.model.guard import (
 from rheo_finance.model.stub import StubModelClient
 from rheo_finance.settings import default_settings
 
-from .conftest import FakeClaude, Verdict, write_manual
+from .support import FakeClaude, Verdict, write_manual
 
 SYSTEM = "Classify the merchant record."
 ADMITTED = "merchant sample grocer, -45.00 CAD, 2026-03-15"

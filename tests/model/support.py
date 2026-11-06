@@ -5,20 +5,17 @@ set to that directory alone, so no test can reach a real ``claude`` (and the sui
 tripwire in ``tests/conftest.py`` shadows it everywhere else). Each run appends what
 it saw (its argv, working directory, the directory's entries, stdin and its
 environment) to a record file beside it, then prints the reply the test set and
-exits with its code.
+exits with its code. The ``fake_claude`` fixture that installs it is in
+``tests/conftest.py``, with every other fixture, and imports from here.
 """
 
 from __future__ import annotations
 
 import json
-import stat
-import sys
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import pytest
 from pydantic import BaseModel
 
 from rheo_finance.init_data import header_line
@@ -88,21 +85,6 @@ class FakeClaude:
             return []
         lines = record.read_text(encoding="utf-8").splitlines()
         return [json.loads(line) for line in lines]
-
-
-@pytest.fixture
-def fake_claude(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[FakeClaude]:
-    bin_dir = tmp_path / "fake-bin"
-    bin_dir.mkdir()
-    script = bin_dir / "claude"
-    script.write_text(SCRIPT.format(python=sys.executable), encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", str(bin_dir))
-    fake = FakeClaude(bin_dir)
-    fake.reply({"label": "groceries", "confidence": 0.9})
-    yield fake
 
 
 def write_manual(data_dir: Path, name: str, *rows: str) -> None:

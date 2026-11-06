@@ -38,6 +38,8 @@ def record_event(
     occurred_on: dt.date,
     data: BaseModel,
     key: tuple[object, ...] = (),
+    *,
+    identity_on: dt.date | None = None,
 ) -> uuid.UUID:
     """Insert one event, or leave the one with its id in place. ``data`` must be an
     instance of the model ``models`` registers for ``event_type``."""
@@ -46,7 +48,8 @@ def record_event(
         raise ValueError(f"{event_type} is not a registered event type")
     if type(data) is not model:
         raise TypeError(f"{event_type} data is a {model.__name__}")
-    new_id = event_id(event_type, subject_ref, occurred_on, key)
+    # Statement identity uses its period even if the availability source changes.
+    new_id = event_id(event_type, subject_ref, identity_on or occurred_on, key)
     uow.execute(
         insert(event)
         .values(

@@ -30,8 +30,8 @@ def write(tmp_path: Path, text: str) -> Path:
 def test_nine_sink_keys_load_false_from_an_empty_file(tmp_path: Path) -> None:
     settings = load_settings(write(tmp_path, ""))
     assert sorted(SINKS) == sorted(
-        ["mot", "telegram", "imap", "rates", "coinstats", "wise", "kraken", "blofin",
-         "stripe"]
+        ["current", "telegram", "imap", "rates", "coinstats", "wise", "kraken",
+         "blofin", "stripe"]
     )  # fmt: skip
     for key in SINK_KEYS:
         assert settings.get(key) is False
@@ -122,7 +122,7 @@ def test_an_unknown_key_is_an_error_naming_it(
     "text",
     [
         'finance.payments.early_days = "ten"\n',
-        "finance.sinks.mot.enabled = 1\n",
+        "finance.sinks.current.enabled = 1\n",
         "finance.payments.early_days = true\n",
         'finance.digest.weekday = "MONDAY"\n',
         'finance.backup.time = "25:00"\n',

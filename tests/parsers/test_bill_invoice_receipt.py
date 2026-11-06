@@ -128,7 +128,7 @@ def test_the_bill_is_one_tied_out_period_over_its_billing_period(setup: Setup) -
 
     assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
     row = setup.document(doc)
-    assert (row.parser_id, row.parser_version) == ("fortisbc.bill", "1")
+    assert (row.parser_id, row.parser_version) == ("fortisbc.bill", "3")
     (period,) = setup.periods(doc)
     assert period.account_id == account_id("hydro")
     assert (period.control_kind, period.tied_out, period.currency) == (
@@ -225,7 +225,7 @@ def test_an_invoice_gives_one_account_less_invoice_line(
     assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=1)
     row = setup.document(doc)
     assert (row.parser_id, row.parser_version, row.kind) == (
-        "invoices_received.invoice", "2", "invoice",
+        "invoices_received.invoice", "3", "invoice",
     )  # fmt: skip
     (line,) = setup.lines(doc)
     assert (line.line_kind, line.account_id, line.posting_date) == (
@@ -233,6 +233,7 @@ def test_an_invoice_gives_one_account_less_invoice_line(
     )  # fmt: skip
     # The fixture is part-paid (100.00 of 750.00): the line is the total all the same.
     assert (line.amount, line.currency) == (Decimal("-750.00"), "CAD")
+    assert line.amount_due == Decimal("650.00")
     assert (line.description_raw, line.counterparty) == (
         "Invoice SP0042", "sample contractor",
     )  # fmt: skip
@@ -248,7 +249,7 @@ def test_an_invoice_line_is_its_total_whatever_is_still_due(
 ) -> None:
     """The line's amount is the invoice total, so a payment of the whole invoice can
     match it even once the invoice prints itself paid in full; what is still due is
-    not the line's amount."""
+    stored beside it."""
     text = changed(INVOICE_TEXT, "Paid   $100.00", f"Paid   ${paid}")
     assert text.count("Amount due   $650.00") == 1
     text = text.replace("Amount due   $650.00", f"Amount due   ${due}")
@@ -257,6 +258,7 @@ def test_an_invoice_line_is_its_total_whatever_is_still_due(
     assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=1)
     (line,) = setup.lines(doc)
     assert (line.amount, line.currency) == (Decimal("-750.00"), "CAD")
+    assert line.amount_due == Decimal(due)
 
 
 @pytest.mark.parametrize(

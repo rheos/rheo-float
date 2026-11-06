@@ -1,6 +1,15 @@
 """Database fixtures: ``finance_test`` migrated once per session, a rolled-back owner
 connection per test, and a reader engine.
 
+Every fixture of the suite lives in this file. pytest 9 gives a directory's
+``conftest.py`` fixtures only to the first collector of that directory, and a command
+line that goes into a directory, out of it and back in makes a second one, whose tests
+then report the fixture as not found (``tests/guards/test_test_layout.py``). So
+``ledger`` and the fixtures built on it (``derive.support`` and
+``derive.crypto_support`` hold what they build), ``valet_stub`` and ``fake_claude`` are
+here (``rates.support`` and ``model.support`` hold theirs), and a directory's own
+``conftest.py`` defines no fixture.
+
 Also the sink fixtures: a settings file under a temporary ``$FINANCE_DATA_DIR``, a
 direct approval record, and a local stub HTTP server; and ``scratch_database``, a
 throwaway database for the one kind of test that must commit rows (reading them back
@@ -18,6 +27,8 @@ import datetime as dt
 import hashlib
 import os
 import secrets
+import stat
+import sys
 import threading
 import time
 import uuid
@@ -25,6 +36,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -34,6 +46,30 @@ from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
+from derive.crypto_support import (
+    CRYPTO_INSTITUTION,
+    CRYPTO_ISSUER,
+    CRYPTO_PARSERS,
+    EXCHANGE_ID,
+    WALLET_ID,
+)
+from derive.support import (
+    CARD_ISSUER,
+    CARD_PARSERS,
+    CSV_IDENTIFIER,
+    FX2_IDENTIFIER,
+    FX_IDENTIFIER,
+    FX_INSTITUTION,
+    FX_ISSUER,
+    FX_PARSER,
+    NOTICE_ISSUER,
+    NOTICE_PARSER,
+    SECOND,
+    THIRD,
+    Ledger,
+)
+from model.support import SCRIPT, FakeClaude
+from rates.support import stub_client
 from rheo_finance import db, operations, settings
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import (
@@ -43,9 +79,13 @@ from rheo_finance.context import (
     UnitOfWork,
 )
 from rheo_finance.contracts import Role
+from rheo_finance.documents import issuers
+from rheo_finance.parsers import registry
+from rheo_finance.rates import valet
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
+from sinks.support import CurrentStub
 
 TEST_REMEDY = (
     "the test database is unreachable: run `uv run finance db up && uv run finance db"
@@ -350,6 +390,156 @@ def reader_engine(test_database: DatabaseUnderTest) -> Iterator[Engine]:
     engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def isolated_current_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Derive loads every provider; none may discover a real Current credential."""
+    from rheo_finance.sinks import current
+
+    monkeypatch.setattr(
+        current,
+        "load_settings",
+        lambda: settings.load_settings(tmp_path / settings.SETTINGS_FILE_NAME),
+    )
+
+
+@pytest.fixture
+def current_stub() -> Iterator[CurrentStub]:
+    stub = CurrentStub()
+    try:
+        yield stub
+    finally:
+        stub.stop()
+
+
+@pytest.fixture
+def current_settings(
+    current_stub: CurrentStub,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> settings.Settings:
+    from rheo_finance.http import Client
+    from rheo_finance.sinks import current
+
+    monkeypatch.setenv("FINANCE_DATA_DIR", str(tmp_path))
+    credential = tmp_path / "synthetic.env"
+    credential.write_text(
+        f'export CURRENT_API_URL="{current_stub.url}"\n'
+        'export CURRENT_ALERT_TOKEN="synthetic-token"\n'
+    )
+    text_ = (
+        f'[finance.reminders]\ncurrent_credential_file = "{credential}"\n'
+        'min_due_date = "2026-01-01"\n[finance.sinks.current]\nenabled = true\n'
+    )
+    (tmp_path / settings.SETTINGS_FILE_NAME).write_text(text_)
+    monkeypatch.setattr(
+        current,
+        "make_client",
+        lambda u, s: Client(
+            "current", s, current.ALLOWLIST, uow=u, allowed_schemes=("http",)
+        ),
+    )
+    return parse_settings(text_)
+
+
+@pytest.fixture
+def current_context(
+    current_settings: settings.Settings,
+    rolled_back_context: Callable[[Role], FinanceContext],
+    record_sink_approval: Callable[..., uuid.UUID],
+    owner_conn: Connection,
+) -> FinanceContext:
+    from dataclasses import replace
+
+    from rheo_finance.sinks import current
+    from rheo_finance.sinks.spec import spec_digest
+
+    ctx = replace(rolled_back_context(Role.SERVICE), settings=current_settings)
+    record_sink_approval(
+        "current",
+        spec_digest(current.spec(UnitOfWork(owner_conn))),
+        at=ctx.clock.now_utc(),
+    )
+    return ctx
+
+
+@pytest.fixture
+def scratch_current_engine(scratch_database: DatabaseUnderTest) -> Iterator[Engine]:
+    from sqlalchemy import delete, select
+
+    engine = create_engine(scratch_database.owner_url, poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        # Per-case committed rows are removed before the shared scratch DB teardown.
+        # This cleanup scope exists before any fixture/test can commit its setup.
+        with engine.begin() as conn:
+            slugs = (
+                "sample-utility",
+                "sample-renamed",
+                "sample-commit",
+                "sample-rollback",
+            )
+            ids = select(schema.payee.c.id).where(schema.payee.c.slug.in_(slugs))
+            conn.execute(
+                delete(schema.obligation).where(schema.obligation.c.payee_id.in_(ids))
+            )
+            conn.execute(delete(schema.payee).where(schema.payee.c.slug.in_(slugs)))
+            conn.execute(
+                delete(schema.sink_ticket).where(
+                    schema.sink_ticket.c.source_ref.in_(
+                        (
+                            "finance:sample-utility:bill-2026-05",
+                            "finance:sample-renamed:bill-2026-05",
+                        )
+                    )
+                )
+            )
+        engine.dispose()
+
+
+@pytest.fixture
+def durable_current_context(
+    scratch_database: DatabaseUnderTest,
+    scratch_current_engine: Engine,
+    current_settings: settings.Settings,
+    make_context: Callable[[Role], FinanceContext],
+) -> FinanceContext:
+    from dataclasses import replace
+
+    from sqlalchemy import func, select
+
+    from rheo_finance.sinks import current
+    from rheo_finance.sinks.spec import spec_digest
+
+    # scratch_database registered its full teardown before this fixture can commit.
+    ctx = operations.with_databases(
+        replace(make_context(Role.SERVICE), settings=current_settings),
+        owner_url=scratch_database.owner_url,
+        reader_url=scratch_database.reader_url,
+    )
+    with operations.owner_transaction(ctx) as uow:
+        newest = uow.scalar(select(func.max(schema.decision.c.decided_at)))
+        at = (
+            max(ctx.clock.now_utc(), newest + dt.timedelta(seconds=1))
+            if newest
+            else ctx.clock.now_utc()
+        )
+        uow.execute(
+            insert(schema.decision).values(
+                id=uuid7(ctx.clock.now_utc()),
+                kind="sink_approve",
+                sink="current",
+                spec_digest=spec_digest(current.spec(uow)),
+                preview_digest="9" * 64,
+                decided_at=at,
+            )
+        )
+    return ctx
+
+
 def no_snapshot(_uow: UnitOfWork, _ref: str) -> LineSnapshot | None:
     """The fixture snapshot provider: no line resolves."""
     return None
@@ -578,3 +768,126 @@ def make_stub_server() -> Iterator[Callable[[], StubServer]]:
 @pytest.fixture
 def stub_server(make_stub_server: Callable[[], StubServer]) -> StubServer:
     return make_stub_server()
+
+
+@pytest.fixture
+def ledger(
+    owner_conn: Connection,
+    rolled_back_context: Callable[[Role], FinanceContext],
+    tmp_path: Path,
+) -> Ledger:
+    return Ledger(owner_conn, rolled_back_context(Role.OWNER), tmp_path)
+
+
+@pytest.fixture
+def fx_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
+    """``ledger`` with one chequing account at ``FX_INSTITUTION`` (slug ``fx``) and
+    the ``FX_ISSUER`` directory mapped to ``parse_fx``, for this test only."""
+    monkeypatch.setattr(
+        issuers,
+        "ISSUER_DIRS",
+        MappingProxyType(
+            {**issuers.ISSUER_DIRS, FX_ISSUER: issuers.IssuerDir("statement")}
+        ),
+    )
+    registry.load_parsers()
+    monkeypatch.setitem(registry.PARSERS, FX_PARSER.parser_id, FX_PARSER)
+    ledger.accounts(("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER))
+    return ledger
+
+
+@pytest.fixture
+def card_parsers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map ``CARD_ISSUER`` as a statement issuer (a CSV there is an export) and
+    register the card parsers, for this test only."""
+    monkeypatch.setattr(
+        issuers,
+        "ISSUER_DIRS",
+        MappingProxyType(
+            {
+                **issuers.ISSUER_DIRS,
+                CARD_ISSUER: issuers.IssuerDir("statement", {"csv": "export"}),
+            }
+        ),
+    )
+    registry.load_parsers()
+    for parser in CARD_PARSERS:
+        monkeypatch.setitem(registry.PARSERS, parser.parser_id, parser)
+
+
+@pytest.fixture
+def notice_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map ``NOTICE_ISSUER`` as a directory of emails, one sub-directory per sender,
+    and register ``parse_notice``, for this test only."""
+    directories = MappingProxyType(
+        {**issuers.ISSUER_DIRS, NOTICE_ISSUER: issuers.IssuerDir("email", nested=True)}
+    )
+    monkeypatch.setattr(issuers, "ISSUER_DIRS", directories)
+    # The registry holds its own name for the map, to find a nested issuer's directory.
+    monkeypatch.setattr(registry, "ISSUER_DIRS", directories)
+    registry.load_parsers()
+    monkeypatch.setitem(registry.PARSERS, NOTICE_PARSER.parser_id, NOTICE_PARSER)
+
+
+@pytest.fixture
+def own(fx_ledger: Ledger) -> Ledger:
+    """Three chequing accounts and a Visa card at Vancity, and two accounts at the
+    synthetic FX institution (``FX_LINES`` documents under ``FX_ISSUER``)."""
+    fx_ledger.accounts(
+        ("chequing", "Vancity", "chequing", CSV_IDENTIFIER),
+        ("second", "Vancity", "chequing", SECOND),
+        ("third", "Vancity", "chequing", THIRD),
+        ("visa", "Vancity", "credit_card", "999000009991"),
+        ("fx", FX_INSTITUTION, "chequing", FX_IDENTIFIER),
+        ("fx2", FX_INSTITUTION, "chequing", FX2_IDENTIFIER),
+    )
+    return fx_ledger
+
+
+@pytest.fixture
+def crypto_ledger(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> Ledger:
+    """``ledger`` with two crypto accounts at ``CRYPTO_INSTITUTION`` (slugs ``wallet``,
+    kind ``crypto_wallet``, and ``exchange``, kind ``exchange``) and the
+    ``CRYPTO_ISSUER`` directory mapped to the crypto fixture parsers, for this test
+    only. Tests that need other accounts write ``accounts.csv`` again."""
+    monkeypatch.setattr(
+        issuers,
+        "ISSUER_DIRS",
+        MappingProxyType(
+            {**issuers.ISSUER_DIRS, CRYPTO_ISSUER: issuers.IssuerDir("export")}
+        ),
+    )
+    registry.load_parsers()
+    for parser in CRYPTO_PARSERS:
+        monkeypatch.setitem(registry.PARSERS, parser.parser_id, parser)
+    ledger.accounts(
+        ("wallet", CRYPTO_INSTITUTION, "crypto_wallet", WALLET_ID),
+        ("exchange", CRYPTO_INSTITUTION, "exchange", EXCHANGE_ID),
+    )
+    return ledger
+
+
+@pytest.fixture
+def valet_stub(stub_server: StubServer, monkeypatch: pytest.MonkeyPatch) -> StubServer:
+    """Valet pointed at the local stub over plain http for one test; the provider then
+    declares the stub's host, so an approval in the test is pinned to that spec.
+    Nothing reaches the real Valet."""
+    monkeypatch.setattr(valet, "ENDPOINT", valet.Endpoint(stub_server.host, "http"))
+    monkeypatch.setattr(valet, "make_client", stub_client)
+    return stub_server
+
+
+@pytest.fixture
+def fake_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[FakeClaude]:
+    """The fake ``claude`` (``model.support``), alone on ``PATH``."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    script = bin_dir / "claude"
+    script.write_text(SCRIPT.format(python=sys.executable), encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    fake = FakeClaude(bin_dir)
+    fake.reply({"label": "groceries", "confidence": 0.9})
+    yield fake

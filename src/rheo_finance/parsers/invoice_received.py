@@ -20,13 +20,13 @@ in stage 3, never a txn by itself), ``posting_date`` the issue date, ``amount`` 
 invoice total signed as the owner's outflow (negative), ``currency`` CAD (the series
 prints dollars and no other currency), ``description_raw`` ``Invoice <number>`` and
 ``counterparty`` (restricted) the payee normalized as descriptions are
-(``text.normalize_description``). Nothing else from the invoice is stored: not the
-item descriptions, the owner's block or the due date.
+(``text.normalize_description``), and ``amount_due`` (restricted) the printed amount
+due. Nothing else from the invoice is stored: not the item descriptions, the owner's
+block or the due date.
 
 The amount is the total, not the amount still due, so a payment of the whole invoice
 matches it in stage 3 even once the invoice prints itself paid in full (amount due
-zero). What is still due on a part-paid invoice is an open-item question for the
-stages that track open items, not this line's amount.
+zero). What a decision that the invoice is unpaid leaves owed is ``amount_due``.
 
 The identity: the items sum to the subtotal, the subtotal is the total (the layout
 prints no tax line; a line it does not know between them makes the invoice
@@ -161,6 +161,7 @@ def parse(text: str, accounts: AccountLookup) -> ParseResult:
         currency=CURRENCY,
         description_raw=f"Invoice {number}",
         counterparty=normalize_description(payee),
+        amount_due=summary["Amount due"],
     )
     return ParseResult(periods=(), lines=(line,), control_kind="none")
 
@@ -176,7 +177,8 @@ PARSER: Final = register_parser(
         issuer=ISSUER,
         format="pdf",
         # 2: the line's amount is the invoice total, no longer the amount due.
-        version="2",
+        # 3: the line also stores the printed amount due.
+        version="3",
         parse=parse,
         filing_date=filing_date,
     )

@@ -3,7 +3,8 @@
 - ``state`` (READ, reader connection) reads ``report_sink`` and ``report_sink_spec``
   only, and adds the ``enabled`` setting from the settings file.
 - ``preview`` (READ, owner connection) builds what the sink would send or request and
-  its clock-free digest, and sends nothing.
+  its typed-list digest, and sends nothing. Current's exact pending membership may
+  change with overdue priority; other sinks retain clock-free membership.
 - ``approve`` (MUTATE, owner only) recomputes the preview and the spec in its own
   transaction and records a ``sink_approve`` decision only when the preview digest
   still starts with the typed prefix and the spec digest is still the one the preview
@@ -280,7 +281,7 @@ register(
         roles=frozenset({Role.OWNER, Role.SERVICE}),
         connection="owner",
         description=(
-            "What a sink would send or request now, with its clock-free digest."
+            "What a sink would send or request now, with its typed-list digest."
             " Sends nothing."
         ),
     )

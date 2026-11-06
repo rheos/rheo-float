@@ -258,12 +258,8 @@ def test_a_ref_that_is_not_a_line_is_stored_without_a_snapshot(
     unpaired = record(owner, kind="unpair", target_ref=NOTICE, counterpart_ref=LINE_B)
     targets = rows(owner_conn, schema.decision_target, unpaired.decision_id)
     assert [t["target_ref"] for t in targets] == [LINE_B]
-    invoice = record(
-        owner, kind="invoice_paid", target_ref=DOCUMENT,
-        account_ref=f"finance.account:{uuid7(START)}",
-        effective_on=dt.date(2026, 1, 20),
-    )  # fmt: skip
-    assert invoice.targets == 0
+    dismissed = record(owner, kind="finding_dismiss", target_ref=DOCUMENT)
+    assert dismissed.targets == 0
     assert calls.refs == [LINE_A, LINE_B]
 
 

@@ -45,6 +45,7 @@ from rheo_finance.derive import crypto_lines, evidence, overlap
 from rheo_finance.derive.precedence import standings
 from rheo_finance.manual.cash_lines import TRANSACTIONS_FILE, CashLines
 from rheo_finance.manual.loader import RowError
+from rheo_finance.manual.payees import Payees
 from rheo_finance.manual.stage2 import account_id, error_id
 from rheo_finance.parsers.base import FIAT
 from rheo_finance.storage.ids import derived_id
@@ -89,12 +90,26 @@ class Lines:
     # Unmatched receipts left out because the internal account does not take their
     # currency.
     receipts_currency_refused: int = 0
-    # Invoices no payment line matched: no txn.
+    # Invoices no payment line matched and no decision settled: no txn.
     unmatched_invoices: int = 0
+    # Invoices an ``invoice_paid`` decision booked on "Paid outside recorded accounts".
+    from_invoice_decisions: int = 0
+    # Decided invoices left open because the internal account does not take their
+    # currency.
+    invoices_currency_refused: int = 0
+    # Invoice decisions a matching payment took over from: they add nothing.
+    invoice_decisions_superseded: int = 0
+    # The invoices stage 14 turns into debts.
+    unpaid_invoices: tuple[evidence.UnpaidInvoice, ...] = ()
 
     @property
     def txns(self) -> int:
-        return self.from_documents + self.from_manual + self.from_receipts
+        return (
+            self.from_documents
+            + self.from_manual
+            + self.from_receipts
+            + self.from_invoice_decisions
+        )
 
 
 class _Occurrences:
@@ -326,6 +341,7 @@ def build_lines(
     receipt_days: int,
     invoice_days: int,
     qty_epsilon: Decimal,
+    payees: Payees,
 ) -> Lines:
     """Write the txns, their sources and the source discrepancies, then link the
     receipts and invoices (``evidence``). ``account_currencies`` maps each loaded
@@ -334,11 +350,14 @@ def build_lines(
     ``overlap_days`` is
     ``finance.import.overlap_day_tolerance``, ``receipt_days`` and ``invoice_days``
     the receipt and invoice matching windows, ``qty_epsilon``
-    ``finance.crypto.qty_epsilon``."""
+    ``finance.crypto.qty_epsilon``, ``payees`` the payees whose patterns the receipts
+    and invoices match by."""
     documents = _document_lines(uow, overlap_days)
     crypto = crypto_lines.build_crypto_lines(uow, zone, qty_epsilon=qty_epsilon)
     manual = _manual_lines(uow, cash, account_currencies)
-    linked = evidence.link(uow, receipt_days=receipt_days, invoice_days=invoice_days)
+    linked = evidence.link(
+        uow, receipt_days=receipt_days, invoice_days=invoice_days, payees=payees
+    )
     return Lines(
         from_documents=documents.from_documents + crypto.txns,
         additional_sources=documents.additional_sources + crypto.additional_sources,
@@ -354,4 +373,8 @@ def build_lines(
         from_receipts=linked.receipt_txns,
         receipts_currency_refused=linked.receipts_currency_refused,
         unmatched_invoices=linked.unmatched_invoices,
+        from_invoice_decisions=linked.invoice_txns,
+        invoices_currency_refused=linked.invoices_currency_refused,
+        invoice_decisions_superseded=linked.decisions_superseded,
+        unpaid_invoices=linked.unpaid_invoices,
     )

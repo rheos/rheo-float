@@ -30,7 +30,7 @@ from rheo_finance.sinks.gate import is_enabled
 from rheo_finance.sinks.ops import CHANGED, Preview, Recorded, SinkRefused
 from rheo_finance.sinks.spec import spec_digest
 from rheo_finance.storage.schema import decision, obligation, payee, sink_ticket
-from sinks.support import CurrentStub
+from sinks.support import CurrentStub, WireFields
 
 
 @pytest.mark.parametrize("credential_state", ["missing", "malformed"])
@@ -119,13 +119,16 @@ def test_cas_field_race_preserves_ack_until_all_desired_fields_converge(
         )
     )
 
-    def edit_matching_field(op: str, inputs: dict[str, object]) -> None:
+    def edit_matching_field(op: str, inputs: WireFields) -> None:
         if op != operation:
             return
         ref = inputs["ref"]
         assert isinstance(ref, str)
         item = current_stub.items[ref]
-        item[field] = "2026-05-22" if field == "due_on" else "low"
+        if field == "due_on":
+            item["due_on"] = "2026-05-22"
+        else:
+            item["priority"] = "low"
         item["revision"] += 1
         current_stub.before_mutation = None
 
@@ -443,6 +446,35 @@ def test_credential_file_change_stales_approval_without_outbound_request(
     assert current_stub.requests == [] and rows(owner_conn) == ()
 
 
+def test_stub_rejects_unexpected_create_fields_without_hiding_them(
+    current_context: FinanceContext,
+    current_stub: CurrentStub,
+    owner_conn: Connection,
+) -> None:
+    add(owner_conn)
+    assert current.sync_reminders(current_context).state == "synced"
+    first = next(body for op, body in current_stub.requests if op == "create")
+    before = {ref: item.copy() for ref, item in current_stub.items.items()}
+    request_count = len(current_stub.requests)
+    client = current.make_client(
+        UnitOfWork(owner_conn), current.spec(UnitOfWork(owner_conn))
+    )
+    response = client.request(
+        "POST",
+        current_stub.url + "/api/v1/operations/current.item.create",
+        headers={
+            "Authorization": "Bearer synthetic-token",
+            "Content-Type": "application/json",
+        },
+        body=json.dumps(
+            {**first, "source_ref": "finance:sample-extra:bill-2026-05", "wake": True}
+        ).encode(),
+    )
+    assert response.status == 422
+    assert current_stub.items == before
+    assert len(current_stub.requests) == request_count
+
+
 def test_stub_seen_fingerprint_is_noop_and_new_fingerprint_reopens_done(
     current_context: FinanceContext,
     current_stub: CurrentStub,
@@ -472,7 +504,8 @@ def test_stub_seen_fingerprint_is_noop_and_new_fingerprint_reopens_done(
     create({**first, "title": "Changed incoming title", "due_on": "2026-07-01"})
     assert item["status"] == "done" and item["title"] == first["title"]
     create({**first, "fingerprint": "new-fingerprint"})
-    assert item["status"] == "open" and len(current_stub.items) == 1
+    assert current_stub.items[item["ref"]]["status"] == "open"
+    assert len(current_stub.items) == 1
 
 
 @pytest.mark.parametrize("change", ["paid", "deleted", "rekeyed"])
@@ -815,7 +848,12 @@ def test_unchanged_desired_keeps_owner_edits_and_sends_no_writes(
     current.sync_reminders(current_context)
     item = next(iter(current_stub.items.values()))
     item.update(
-        title="Owner edited", status="done", due_on="2026-06-01", priority="low"
+        {
+            "title": "Owner edited",
+            "status": "done",
+            "due_on": "2026-06-01",
+            "priority": "low",
+        }
     )
     item["revision"] += 1
     current_stub.requests.clear()
@@ -824,7 +862,8 @@ def test_unchanged_desired_keeps_owner_edits_and_sends_no_writes(
     assert item["title"] == "Owner edited" and item["status"] == "done"
     owner_conn.execute(update(obligation).values(threshold_remaining=Decimal("20.00")))
     current.sync_reminders(current_context)
-    assert item["status"] == "open" and ": 20.00 CAD due " in item["title"]
+    assert current_stub.items[item["ref"]]["status"] == "open"
+    assert ": 20.00 CAD due " in item["title"]
     assert current_stub.operations(writes=True) == ["update", "set_status"]
     current_stub.requests.clear()
     current.sync_reminders(current_context)
@@ -880,6 +919,40 @@ def test_revision_cas_rereads_and_retries_only_once(
         assert rows(owner_conn)[0].last_error_code == "record_stale"
         assert current.sync_reminders(current_context).state == "synced"
     assert current_stub.operations().count("create") == 0
+
+
+@pytest.mark.parametrize("http_status", [200, 400, 403, 500])
+@pytest.mark.parametrize("operation", ["update", "set_status"])
+def test_non_conflict_stale_envelope_stops_without_retry_or_acknowledgement(
+    current_context: FinanceContext,
+    current_stub: CurrentStub,
+    owner_conn: Connection,
+    http_status: int,
+    operation: str,
+) -> None:
+    add(owner_conn)
+    assert current.sync_reminders(current_context).state == "synced"
+    before = rows(owner_conn)[0]
+    if operation == "update":
+        owner_conn.execute(
+            update(obligation).values(threshold_remaining=Decimal("15.00"))
+        )
+    else:
+        owner_conn.execute(delete(obligation))
+    current_stub.requests.clear()
+    current_stub.stale = 1
+    current_stub.stale_http_status = http_status
+
+    assert current.sync_reminders(current_context) == current.SyncResult(
+        "failed", "refused"
+    )
+    assert current_stub.operations() == (
+        ["get", "update"] if operation == "update" else ["get", "get", "set_status"]
+    )
+    after = rows(owner_conn)[0]
+    assert (
+        after.model_copy(update={"last_error_code": before.last_error_code}) == before
+    )
 
 
 @pytest.mark.parametrize("operation", ["get", "set_status"])
@@ -1008,7 +1081,7 @@ def test_create_once_partial_full_and_returned_payment(
         update(obligation).values(threshold_remaining=Decimal("40.00"), status="open")
     )
     current.sync_reminders(current_context)
-    assert item["status"] == "open"
+    assert current_stub.items[item["ref"]]["status"] == "open"
     assert current_stub.operations(writes=True).count("create") == 1
     assert rows(owner_conn)[0].last_status == "open"
 

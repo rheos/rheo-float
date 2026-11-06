@@ -231,7 +231,8 @@ class CurrentSink:
                     elif envelope.error is not None:
                         error = (
                             "record_stale"
-                            if envelope.error.error_code == "record_stale"
+                            if response.status == 409
+                            and envelope.error.error_code == "record_stale"
                             else "refused"
                         )
                     else:

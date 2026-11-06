@@ -6,13 +6,55 @@ import json
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Literal, NotRequired, TypedDict
+
+from pydantic import ConfigDict, TypeAdapter, ValidationError, with_config
+
+
+@with_config(ConfigDict(extra="forbid"))
+class WireFields(TypedDict, total=False):
+    """Fields accepted and returned by the four synthetic Current operations."""
+
+    ref: str
+    revision: int
+    title: str
+    body: str
+    due_on: str | None
+    priority: Literal["critical", "high", "normal", "low"]
+    status: Literal["open", "waiting", "snoozed", "done"]
+    area: str
+    provenance: str
+    source_kind: str
+    source_ref: str
+    fingerprint: str
+    clear: list[Literal["due_on"]]
+
+
+class WireResult(TypedDict, total=False):
+    action: str
+    ref: str
+    item: WireFields
+
+
+class WireError(TypedDict):
+    error_code: str
+    error_text: str
+
+
+class WireEnvelope(TypedDict):
+    state: Literal["succeeded", "failed"]
+    operation_id: str | None
+    result: WireResult | None
+    error: NotRequired[WireError]
+
+
+REQUEST = TypeAdapter(WireFields)
 
 
 class CurrentStub:
     def __init__(self) -> None:
-        self.requests: list[tuple[str, dict[str, Any]]] = []
-        self.items: dict[str, dict[str, Any]] = {}
+        self.requests: list[tuple[str, WireFields]] = []
+        self.items: dict[str, WireFields] = {}
         self.identities: dict[tuple[str, str], str] = {}
         self.fingerprints: dict[str, set[str]] = {}
         self.drop_create = False
@@ -22,13 +64,22 @@ class CurrentStub:
         self.refuse_operation: str | None = None
         self.refuse_source_ref: str | None = None
         self.stale = 0
+        self.stale_http_status = 409
         self.before_create: Callable[[], None] | None = None
-        self.before_mutation: Callable[[str, dict[str, Any]], None] | None = None
+        self.before_mutation: Callable[[str, WireFields], None] | None = None
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                try:
+                    body = REQUEST.validate_json(
+                        self.rfile.read(int(self.headers["Content-Length"])),
+                        strict=True,
+                    )
+                except ValidationError:
+                    self.send_response(422)
+                    self.end_headers()
+                    return
                 op = self.path.removeprefix("/api/v1/operations/current.item.")
                 stub.requests.append((op, body))
                 if (
@@ -74,7 +125,7 @@ class CurrentStub:
                                     "reopened" if item["status"] == "done" else "woke"
                                 )
                                 item.update(
-                                    status="open", revision=item["revision"] + 1
+                                    {"status": "open", "revision": item["revision"] + 1}
                                 )
                     stub.fingerprints[ref].add(body["fingerprint"])
                     if stub.drop_create:
@@ -106,18 +157,20 @@ class CurrentStub:
                     if item["revision"] != body["revision"]:
                         self.answer(None, "record_stale")
                         return
-                    for key, value in body.items():
-                        if key not in {"ref", "revision", "clear"}:
-                            item[key] = value
+                    changes = body.copy()
+                    del changes["ref"]
+                    del changes["revision"]
+                    changes.pop("clear", None)
+                    item.update(changes)
                     for key in body.get("clear", []):
                         item[key] = None
                     item["revision"] += 1
                 self.answer({"item": item})
 
             def answer(
-                self, result: dict[str, Any] | None, code: str | None = None
+                self, result: WireResult | None, code: str | None = None
             ) -> None:
-                envelope = {
+                envelope: WireEnvelope = {
                     "state": "succeeded" if code is None else "failed",
                     "operation_id": None if code else stub.operation_id,
                     "result": result,
@@ -129,7 +182,11 @@ class CurrentStub:
                     }
                 raw = json.dumps(envelope).encode()
                 self.send_response(
-                    409 if code == "record_stale" else 403 if code else 200
+                    stub.stale_http_status
+                    if code == "record_stale"
+                    else 403
+                    if code
+                    else 200
                 )
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()

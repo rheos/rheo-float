@@ -12,6 +12,7 @@ import importlib
 from rheo_finance import operations
 
 MODULES: tuple[str, ...] = (
+    "rheo_finance.alias",
     "rheo_finance.decision",
     "rheo_finance.queue",
     "rheo_finance.sinks.ops",

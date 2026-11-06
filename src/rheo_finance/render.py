@@ -52,6 +52,11 @@ class Writer(Protocol):
     def write(self, text: str, /) -> object: ...
 
 
+def in_terminal() -> bool:
+    """Whether both input and output streams are terminals, without writing."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def guard(text: str) -> str:
     """``text`` with every U+2014 replaced by a plain hyphen, spaces collapsed.
 

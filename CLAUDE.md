@@ -101,6 +101,12 @@ clone and any worktree alike, shares one container and one database on 127.0.0.1
 
 ## Sinks and the approval boundary
 
+`finance alias draft` prints restricted unmatched e-Transfer names for manual alias and
+payee drafts, writes nothing, and refuses the reader connection. It is owner-only and
+requires terminal stdin and stdout. Only the owner runs it in their own terminal;
+agents must never invoke it, including through pseudo-terminals or terminal tools.
+The current matcher uses stored payee patterns; party attribution is a later feature.
+
 Every sink (every outbound connection: reminders, notifications, rate and price fetches, vendor
 APIs, mail) is off until the owner runs `finance sink approve <sink>` in a terminal and sets
 `finance.sinks.<sink>.enabled = true` in their settings. `finance confirm bulk` is the other

@@ -376,6 +376,7 @@ def test_every_reader_spec_runs_green_under_the_reader_dsn(
         ["status", "--json"],
         ["owed", "--json"],
         ["coverage", "--json"],
+        ["lines"],
         ["report", "open-items", "--year", "2026"],
     ],
 )

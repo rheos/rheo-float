@@ -13,6 +13,7 @@ from rheo_finance import operations
 
 MODULES: tuple[str, ...] = (
     "rheo_finance.decision",
+    "rheo_finance.queue",
     "rheo_finance.sinks.ops",
     "rheo_finance.documents.registry",
     "rheo_finance.derive.ops",

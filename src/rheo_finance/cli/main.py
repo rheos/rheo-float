@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from rheo_finance import db, init_data
 from rheo_finance.cli import approve as approve_cli
+from rheo_finance.cli import confirm as confirm_cli
 from rheo_finance.cli import decision as decision_cli
 from rheo_finance.cli import ledger as ledger_cli
 from rheo_finance.cli import owed as owed_cli
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     ledger_cli.add_parser(commands)
     owed_cli.add_parser(commands)
     decision_cli.add_parser(commands)
+    confirm_cli.add_parser(commands)
     rate_cli.add_parser(commands)
     report_cli.add_parser(commands)
     # cli.approve is imported here and nowhere else (the import-graph guard).

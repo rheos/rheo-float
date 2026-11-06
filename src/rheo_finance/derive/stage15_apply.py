@@ -651,6 +651,64 @@ class _Applier:
             self.rows.add(paid, paid.amount, reason=CONFIRM)
 
 
+def confirmation_targets(
+    uow: UnitOfWork, payment_id: uuid.UUID, rules: Rules
+) -> tuple[uuid.UUID, ...]:
+    """Current targets for an explicit payment answer, using the application bounds.
+
+    This reads the post-application remaining amounts rather than replaying payments.
+    The same issue-date and historical-window rules used above bound the choices.
+    """
+    row = uow.execute(select(payment).where(payment.c.id == payment_id)).one()
+    paid = _Payment(row.id, row.payee_id, row.amount, row.currency, row.paid_on)
+    if paid.currency != CURRENCY:
+        return ()
+    obligations = _obligations(uow)
+    cards = _card_payees(uow)
+    mine = [each for each in obligations.values() if each.payee_id == paid.payee_id]
+    if paid.payee_id in cards:
+        statements = [
+            each
+            for each in mine
+            if each.kind == CARD_STATEMENT
+            and each.base_status != DISPUTED
+            and each.statement_date is not None
+            and each.statement_date <= paid.paid_on
+        ]
+        return (
+            (max(statements, key=lambda each: (each.statement_date, each.age)).id,)
+            if statements
+            else ()
+        )
+    bound = paid.paid_on + dt.timedelta(days=rules.early_days)
+    candidates = [
+        each
+        for each in mine
+        if each.kind != CARD_STATEMENT
+        and (each.issued_on is None or each.issued_on <= bound)
+    ]
+    # _obligations is also used before applications, where paid starts at zero.
+    applied = {
+        row.id: row.paid
+        for row in uow.execute(select(obligation.c.id, obligation.c.paid))
+    }
+    for each in candidates:
+        each.paid = applied[each.id]
+    live = [
+        each
+        for each in candidates
+        if each.base_status in (OPEN, PARTIAL) and each.owes(rules.tolerance)
+    ]
+    targets = live or [
+        each
+        for each in candidates
+        if each.base_status in WINDOWED and _Applier._in_window(each, mine, paid, rules)
+    ]
+    return tuple(
+        each.id for each in sorted(targets, key=lambda each: (each.age, each.id))
+    )
+
+
 def _printed_payments(uow: UnitOfWork) -> dict[str, Decimal]:
     """The payments figure each parsed document prints, by its archive path."""
     rows = uow.execute(

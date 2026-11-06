@@ -661,6 +661,41 @@ def _evidence_rows(each: _Payment) -> list[dict[str, object]]:
     ]
 
 
+def _confirm_card_payments(uow: UnitOfWork, money: Sequence[_Payment]) -> None:
+    """An explicit application answer releases a held card debit for stage 15's
+    existing apply/unapply rules. Reversed payments and notices keep their states.
+    """
+    held = {
+        line.id: each
+        for each in money
+        if each.state == CONFIRM_ONLY and each.source == MONEY
+        for line, _ in each.lines
+    }
+    if not held:
+        return
+    of_key = {
+        row.line_key_id: row.txn_id
+        for row in uow.execute(
+            select(txn_source.c.line_key_id, txn_source.c.txn_id).where(
+                txn_source.c.txn_id.in_(held), txn_source.c.role.in_(pairing.LINE_ROLES)
+            )
+        )
+    }
+    for row in uow.execute(
+        select(decision.c.target_ref).where(
+            decision.c.kind.in_(
+                (DecisionKind.PAYMENT_APPLY.value, DecisionKind.PAYMENT_UNAPPLY.value)
+            ),
+            ~reversed_clause(decision),
+        )
+    ):
+        target = refs.parse(row.target_ref)
+        if target.system == refs.FINANCE_SYSTEM and target.type == refs.LINE_TYPE:
+            line_id = of_key.get(uuid.UUID(target.id))
+            if line_id is not None:
+                held[line_id].state = ACTIVE
+
+
 def build_payments(
     uow: UnitOfWork,
     payees: Payees,
@@ -673,6 +708,7 @@ def build_payments(
     naming = _Naming(payees, stored)
     money = _money_payments(uow, _lines(uow, hint_rows), stored, naming)
     own = _join_notices(uow, _key_notices(uow), money, naming, windows)
+    _confirm_card_payments(uow, money)
     made = [*money, *own]
     if made:
         uow.execute(

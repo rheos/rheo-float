@@ -85,6 +85,7 @@ from rheo_finance.rates import valet
 from rheo_finance.settings import parse_settings
 from rheo_finance.storage import schema
 from rheo_finance.storage.ids import uuid7
+from sinks.support import CurrentStub
 
 TEST_REMEDY = (
     "the test database is unreachable: run `uv run finance db up && uv run finance db"
@@ -387,6 +388,156 @@ def reader_engine(test_database: DatabaseUnderTest) -> Iterator[Engine]:
         pytest.fail(f"{TEST_REMEDY} (reader: {exc.orig})", pytrace=False)
     yield engine
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def isolated_current_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Derive loads every provider; none may discover a real Current credential."""
+    from rheo_finance.sinks import current
+
+    monkeypatch.setattr(
+        current,
+        "load_settings",
+        lambda: settings.load_settings(tmp_path / settings.SETTINGS_FILE_NAME),
+    )
+
+
+@pytest.fixture
+def current_stub() -> Iterator[CurrentStub]:
+    stub = CurrentStub()
+    try:
+        yield stub
+    finally:
+        stub.stop()
+
+
+@pytest.fixture
+def current_settings(
+    current_stub: CurrentStub,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> settings.Settings:
+    from rheo_finance.http import Client
+    from rheo_finance.sinks import current
+
+    monkeypatch.setenv("FINANCE_DATA_DIR", str(tmp_path))
+    credential = tmp_path / "synthetic.env"
+    credential.write_text(
+        f'export CURRENT_API_URL="{current_stub.url}"\n'
+        'export CURRENT_ALERT_TOKEN="synthetic-token"\n'
+    )
+    text_ = (
+        f'[finance.reminders]\ncurrent_credential_file = "{credential}"\n'
+        'min_due_date = "2026-01-01"\n[finance.sinks.current]\nenabled = true\n'
+    )
+    (tmp_path / settings.SETTINGS_FILE_NAME).write_text(text_)
+    monkeypatch.setattr(
+        current,
+        "make_client",
+        lambda u, s: Client(
+            "current", s, current.ALLOWLIST, uow=u, allowed_schemes=("http",)
+        ),
+    )
+    return parse_settings(text_)
+
+
+@pytest.fixture
+def current_context(
+    current_settings: settings.Settings,
+    rolled_back_context: Callable[[Role], FinanceContext],
+    record_sink_approval: Callable[..., uuid.UUID],
+    owner_conn: Connection,
+) -> FinanceContext:
+    from dataclasses import replace
+
+    from rheo_finance.sinks import current
+    from rheo_finance.sinks.spec import spec_digest
+
+    ctx = replace(rolled_back_context(Role.SERVICE), settings=current_settings)
+    record_sink_approval(
+        "current",
+        spec_digest(current.spec(UnitOfWork(owner_conn))),
+        at=ctx.clock.now_utc(),
+    )
+    return ctx
+
+
+@pytest.fixture
+def scratch_current_engine(scratch_database: DatabaseUnderTest) -> Iterator[Engine]:
+    from sqlalchemy import delete, select
+
+    engine = create_engine(scratch_database.owner_url, poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        # Per-case committed rows are removed before the shared scratch DB teardown.
+        # This cleanup scope exists before any fixture/test can commit its setup.
+        with engine.begin() as conn:
+            slugs = (
+                "sample-utility",
+                "sample-renamed",
+                "sample-commit",
+                "sample-rollback",
+            )
+            ids = select(schema.payee.c.id).where(schema.payee.c.slug.in_(slugs))
+            conn.execute(
+                delete(schema.obligation).where(schema.obligation.c.payee_id.in_(ids))
+            )
+            conn.execute(delete(schema.payee).where(schema.payee.c.slug.in_(slugs)))
+            conn.execute(
+                delete(schema.sink_ticket).where(
+                    schema.sink_ticket.c.source_ref.in_(
+                        (
+                            "finance:sample-utility:bill-2026-05",
+                            "finance:sample-renamed:bill-2026-05",
+                        )
+                    )
+                )
+            )
+        engine.dispose()
+
+
+@pytest.fixture
+def durable_current_context(
+    scratch_database: DatabaseUnderTest,
+    scratch_current_engine: Engine,
+    current_settings: settings.Settings,
+    make_context: Callable[[Role], FinanceContext],
+) -> FinanceContext:
+    from dataclasses import replace
+
+    from sqlalchemy import func, select
+
+    from rheo_finance.sinks import current
+    from rheo_finance.sinks.spec import spec_digest
+
+    # scratch_database registered its full teardown before this fixture can commit.
+    ctx = operations.with_databases(
+        replace(make_context(Role.SERVICE), settings=current_settings),
+        owner_url=scratch_database.owner_url,
+        reader_url=scratch_database.reader_url,
+    )
+    with operations.owner_transaction(ctx) as uow:
+        newest = uow.scalar(select(func.max(schema.decision.c.decided_at)))
+        at = (
+            max(ctx.clock.now_utc(), newest + dt.timedelta(seconds=1))
+            if newest
+            else ctx.clock.now_utc()
+        )
+        uow.execute(
+            insert(schema.decision).values(
+                id=uuid7(ctx.clock.now_utc()),
+                kind="sink_approve",
+                sink="current",
+                spec_digest=spec_digest(current.spec(uow)),
+                preview_digest="9" * 64,
+                decided_at=at,
+            )
+        )
+    return ctx
 
 
 def no_snapshot(_uow: UnitOfWork, _ref: str) -> LineSnapshot | None:

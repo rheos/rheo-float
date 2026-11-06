@@ -212,7 +212,11 @@ def test_parsing_a_url_or_a_plain_dynamic_import_is_not_outbound(
 
 # The only writes a row may flag as an exception: (sink, method, path or None for any).
 EXCEPTIONS = frozenset(
-    {("mot", "POST", None), ("mot", "PATCH", None), ("telegram", "POST", "/api/mcp")}
+    {
+        ("current", "POST", f"/api/v1/operations/current.item.{operation}")
+        for operation in ("create", "get", "update", "set_status")
+    }
+    | {("telegram", "POST", "/api/mcp")}
 )
 
 
@@ -425,20 +429,24 @@ def test_a_bad_table_row_is_refused(row: str, problem: str) -> None:
     assert any(problem in each for each in problems), problems
 
 
-def test_the_mot_and_telegram_writes_may_carry_exception() -> None:
-    text = (
-        '[[read_path]]\nsink = "mot"\nmethod = "POST"\npath = "/api/tickets"\n'
-        'docs = "https://vendor.invalid/mot"\nwhy = "Creates a reminder ticket."\n'
+def test_only_the_current_operations_and_telegram_write_exceptions_are_allowed() -> (
+    None
+):
+    text = "".join(
+        '[[read_path]]\nsink = "current"\nmethod = "POST"\n'
+        f'path = "/api/v1/operations/current.item.{operation}"\n'
+        'docs = "https://vendor.invalid/current"\nwhy = "Current operation."\n'
         "exception = true\n"
-        '[[read_path]]\nsink = "mot"\nmethod = "PATCH"\npath = "/api/tickets/:id"\n'
-        'docs = "https://vendor.invalid/mot"\nwhy = "Updates the ticket it made."\n'
-        "exception = true\n"
+        for operation in ("create", "get", "update", "set_status")
+    ) + (
         '[[read_path]]\nsink = "telegram"\nmethod = "POST"\npath = "/api/mcp"\n'
         'docs = "https://vendor.invalid/mcp"\nwhy = "The notify tool over JSON-RPC."\n'
         "exception = true\n"
     )
     rows, problems = load_table(text + GOOD_ROW)
-    assert problems == [] and len(rows) == 4
+    assert problems == [] and len(rows) == 6
+    bad = text.replace("current.item.update", "current.item.delete")
+    assert load_table(bad)[1]
 
 
 def planted_provider(_uow: UnitOfWork) -> SinkSpec:

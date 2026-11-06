@@ -43,6 +43,32 @@ def _tiers(table: Table, tiers: dict[str, Tier]) -> None:
         register_column(table.name, name, tier)
 
 
+# --- Current reminder state (migration 0036) ---------------------------------------
+
+sink_ticket = Table(
+    "sink_ticket", metadata,
+    Column("source_ref", Text, primary_key=True),
+    Column("external_id", Text, unique=True),
+    Column("state", Text, nullable=False),
+    Column("create_title", Text, nullable=False),
+    Column("create_body", Text, nullable=False),
+    Column("create_due_on", Date, nullable=False),
+    Column("create_priority", Text, nullable=False),
+    Column("last_title", Text),
+    Column("last_due_on", Date),
+    Column("last_priority", Text),
+    Column("last_status", Text),
+    Column("last_snoozed_until", DateTime(timezone=True)),
+    Column("settled_at", DateTime(timezone=True)),
+    Column("last_attempt_at", DateTime(timezone=True)),
+    Column("last_success_at", DateTime(timezone=True)),
+    Column("last_error_code", Text),
+)
+_tiers(sink_ticket, {column.name: R if column.name in {
+    "create_title", "create_body", "last_title"
+} else P for column in sink_ticket.columns})
+
+
 # --- decisions (state, append-only; migration 0002) -----------------------------------
 
 decision = Table(

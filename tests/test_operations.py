@@ -35,12 +35,60 @@ from rheo_finance.operations import (
     OutputInvalid,
     RoleRefused,
     dispatch,
+    owner_transaction,
     register,
 )
 
 MakeContext = Callable[[Role], FinanceContext]
 ALL_ROLES = frozenset(Role)
 OWNER_AND_SERVICE = frozenset({Role.OWNER, Role.SERVICE})
+
+
+def test_job_owner_transaction_commits_and_rolls_back_in_scratch_database(
+    durable_current_context: FinanceContext,
+    scratch_current_engine: Engine,
+) -> None:
+    from sqlalchemy import insert, select
+
+    from rheo_finance.storage.ids import uuid7
+    from rheo_finance.storage.schema import payee
+
+    ctx = durable_current_context
+    with owner_transaction(ctx) as uow:
+        uow.execute(
+            insert(payee).values(
+                id=uuid7(ctx.clock.now_utc()),
+                slug="sample-commit",
+                display_label="Sample Commit",
+                kind="vendor",
+            )
+        )
+    with scratch_current_engine.connect() as conn:
+        assert conn.scalar(select(payee.c.slug)) == "sample-commit"
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        with owner_transaction(ctx) as uow:
+            uow.execute(
+                insert(payee).values(
+                    id=uuid7(ctx.clock.now_utc()),
+                    slug="sample-rollback",
+                    display_label="Sample Rollback",
+                    kind="vendor",
+                )
+            )
+            raise RuntimeError("synthetic failure")
+    with scratch_current_engine.connect() as conn:
+        assert list(conn.scalars(select(payee.c.slug))) == ["sample-commit"]
+
+
+def test_job_owner_transaction_refuses_member_and_stripped_context(
+    make_context: MakeContext,
+) -> None:
+    with pytest.raises(RoleRefused):
+        with owner_transaction(make_context(Role.MEMBER)):
+            pytest.fail("member entered an owner transaction")
+    with pytest.raises(NoDatabases):
+        with owner_transaction(replace(make_context(Role.SERVICE), _databases=None)):
+            pytest.fail("stripped handler context opened a transaction")
 
 
 class Probe(BaseModel):

@@ -36,7 +36,7 @@ from rheo_finance.tier import Tier
 SETTINGS_FILE_NAME: Final = "settings.toml"
 TIMEZONE_KEY: Final = "finance.locale.timezone"
 SINKS: Final[tuple[str, ...]] = (
-    "mot",
+    "current",
     "telegram",
     "imap",
     "rates",
@@ -261,11 +261,16 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           ("classification", "pairing_single", "reattach_single", "presumed_paid"),
           "Confirm kinds `finance confirm bulk` may accept in one step."),
     # reminders and notifications
-    _spec("finance.reminders.mot_base_url", STR, "https://rheo.ca/mot",
-          "Base URL of the ticket tracker."),
+    _spec("finance.reminders.current_base_url", STR, None,
+          "Current endpoint. Unset: read CURRENT_API_URL from the credential file.",
+          tier=_INTERNAL),
+    _spec("finance.reminders.current_credential_file", PATH, None,
+          "Shell env file containing the Current endpoint and token.", tier=_INTERNAL),
+    _spec("finance.reminders.current_token_var", STR, "CURRENT_ALERT_TOKEN",
+          "Exported token variable in the Current credential file."),
     _spec("finance.reminders.min_due_date", DATE, None,
           "Obligations due before this date get no ticket and no nudge. Set it"
-          " before approving the mot sink.", tier=_INTERNAL),
+          " before approving the current sink.", tier=_INTERNAL),
     _spec("finance.reminders.wake_days_before", INT, 5,
           "Days before a due date a reminder ticket wakes."),
     _spec("finance.reminders.wake_time", TIME, dt.time(8, 0),

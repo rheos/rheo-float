@@ -545,9 +545,17 @@ def test_the_sink_specs_are_rewritten_and_match_the_gate(
 
     ledger.derive()
 
-    stored = ledger.conn.scalar(select(sink_spec.c.spec_digest))
-    assert stored == spec_digest(provider(ledger.uow))
-    assert count(ledger.conn, sink_spec) == 1
+    stored = {
+        row.sink: row.spec_digest
+        for row in ledger.conn.execute(
+            select(sink_spec.c.sink, sink_spec.c.spec_digest)
+        )
+    }
+    assert set(stored) == {"rates", "current"}
+    assert stored == {
+        name: spec_digest(build(ledger.uow)) for name, build in SINK_SPECS.items()
+    }
+    assert count(ledger.conn, sink_spec) == 2
 
 
 def test_every_table_is_cleared_rewritten_state_or_owned_by_the_file_operation() -> (

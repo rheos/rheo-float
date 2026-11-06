@@ -79,16 +79,16 @@ def digest_now(uow: UnitOfWork, provider: TestSink) -> str:
     return spec_digest(provider(uow))
 
 
-# --- production registers only the rates provider; defaults are all off (AC-78a) ------
+# --- production providers are registered; defaults are all off (AC-78a) ---------------
 
 
-def test_only_the_rates_provider_is_registered_and_every_sink_is_disabled(
+def test_rates_and_current_are_registered_and_every_sink_is_disabled(
     uow: UnitOfWork,
     sink_settings: Callable[..., None],
     record_sink_approval: Callable[..., uuid.UUID],
 ) -> None:
     catalogue.load_all()
-    assert set(spec.SINK_SPECS) == {"rates"}
+    assert set(spec.SINK_SPECS) == {"rates", "current"}
     for sink in SINKS:
         assert gate.is_enabled(uow, sink) is False
     # Every setting true and an approval for each, none for the current spec: no
@@ -292,7 +292,8 @@ def test_write_sink_specs_stores_the_digest_the_gate_computes(
 ) -> None:
     write_sink_specs(uow)
     rows = stored(owner_conn)
-    assert set(rows) == {SINK}
+    assert set(rows) == {"rates", "current"}
+    assert rows["current"]["spec_digest"] == spec_digest(SINK_SPECS["current"](uow))
     row = rows[SINK]
     assert row["spec_digest"] == digest_now(uow, provider)
     assert row["hosts"] == "rates.example.test"
@@ -323,10 +324,11 @@ def test_write_sink_specs_drops_a_sink_with_no_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_sink_specs(uow)
-    assert set(stored(owner_conn)) == {SINK}
+    before = stored(owner_conn)
+    assert set(before) == {"rates", "current"}
     monkeypatch.delitem(SINK_SPECS, SINK)
     write_sink_specs(uow)
-    assert stored(owner_conn) == {}
+    assert stored(owner_conn) == {"current": before["current"]}
 
 
 def test_a_provider_for_another_sink_is_an_error(

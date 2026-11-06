@@ -1,7 +1,8 @@
 """The operation registry and ``dispatch`` (FR-52, FR-48, Key decision 21).
 
 Every capability is one ``OperationSpec`` in ``SPECS``, named ``finance.<noun>.<verb>``.
-The CLI, jobs and report commands reach the database only through ``dispatch``.
+Operations reach the database through ``dispatch``. The reminder job root uses
+``owner_transaction`` for durable claims and acknowledgements around outbound calls.
 
 Each spec names its connection. The rules, checked when a spec is built:
 
@@ -15,7 +16,7 @@ alone. Nothing here can check that from the outside: the reader role's grants do
 it can select from the report views and nothing else, so a ``reader`` spec that touches
 a base table fails under the reader DSN in its own test.
 
-Outbound pushes (M.O.T., Telegram) are sink adapters, never registered operations.
+Outbound pushes (Current, Telegram) are sink adapters, never registered operations.
 """
 
 from __future__ import annotations
@@ -224,6 +225,33 @@ def _server_in_transaction(connection: Connection) -> bool:
     if not isinstance(driver, psycopg.Connection):
         raise TypeError("dispatch expects a psycopg 3 connection")
     return driver.info.transaction_status is not pq.TransactionStatus.IDLE
+
+
+@contextmanager
+def owner_transaction(ctx: FinanceContext) -> Iterator[UnitOfWork]:
+    """A job-root owner transaction; never available to stripped handlers.
+
+    Each successful block durably commits in production. Tests injecting an owner
+    connection release only a savepoint inside their rolled-back transaction.
+    """
+    if ctx.role not in {Role.OWNER, Role.SERVICE}:
+        raise RoleRefused("owner transaction refuses this role")
+    databases = ctx._databases
+    if databases is None:
+        raise NoDatabases("owner transaction needs a root context")
+    with _opened(databases, "owner") as (connection, transaction):
+        try:
+            connection.execute(text("SELECT 1"))
+            yield UnitOfWork(connection)
+            if not transaction.is_active or not _server_in_transaction(connection):
+                raise HandlerEndedTransaction(
+                    "owner transaction was ended by its caller"
+                )
+            transaction.commit()
+        except BaseException:
+            if transaction.is_active:
+                transaction.rollback()
+            raise
 
 
 def _location(loc: tuple[int | str, ...]) -> str:

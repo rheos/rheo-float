@@ -171,9 +171,17 @@ REWRITTEN: Final = frozenset(
 # State, never truncated (Key decision 3). Input state feeds the fingerprint;
 # output-only delivery state must not dirty the next derive.
 STATE: Final = frozenset(
-    {"decision", "decision_item", "decision_target", "rate", "rate_coverage", "notice"}
+    {
+        "decision",
+        "decision_item",
+        "decision_target",
+        "rate",
+        "rate_coverage",
+        "notice",
+        "sink_ticket",
+    }
 )
-OUTPUT_STATE: Final = frozenset({"notice"})
+OUTPUT_STATE: Final = frozenset({"notice", "sink_ticket"})
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 

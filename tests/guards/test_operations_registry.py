@@ -31,9 +31,9 @@ from .source_tree import PACKAGE, copy_package, imports, modules, names_module, 
 NAME = re.compile(r"finance\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
 CLASSES = {SafetyClass.READ, SafetyClass.DRAFT, SafetyClass.MUTATE}
 CONNECTIONS = {"owner", "reader"}
-PUSH_NOUNS = {"mot", "telegram", "push", "notify", "notification"}
+PUSH_NOUNS = {"current", "mot", "telegram", "push", "notify", "notification"}
 # A sink adapter module is a module under rheo_finance.sinks named for its sink.
-ADAPTER_MODULE = re.compile(r"rheo_finance\.sinks\.(mot|telegram)(\..+)?")
+ADAPTER_MODULE = re.compile(r"rheo_finance\.sinks\.(current|mot|telegram)(\..+)?")
 
 
 def registry_problems(specs: Iterable[OperationSpec]) -> list[str]:

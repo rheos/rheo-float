@@ -26,7 +26,10 @@ from rheo_finance.context import UnitOfWork
 from rheo_finance.sinks.spec import SINK_SPECS, SinkSpec, current_spec, spec_digest
 from rheo_finance.storage.schema import sink_spec
 
-PROVIDER_MODULES: Final[tuple[str, ...]] = ("rheo_finance.rates.valet",)
+PROVIDER_MODULES: Final[tuple[str, ...]] = (
+    "rheo_finance.rates.valet",
+    "rheo_finance.sinks.current",
+)
 for _module in PROVIDER_MODULES:
     importlib.import_module(_module)
 

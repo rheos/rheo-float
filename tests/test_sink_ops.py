@@ -1,6 +1,6 @@
 """The sink operations, ``finance sink ...`` and ``cli.approve`` (FR-65, AC-78 c, f).
 
-A test-only ``mot`` sink: its provider declares the local stub's host, and its preview
+A test-only ``current`` sink: its provider declares the local stub's host. Its preview
 builder returns one synthetic ticket whose amount a test can change. Its note shows the
 ticket's wake moment against the clock, which the digest must ignore. ``cli.approve``
 runs with fake terminals (``isatty`` and ``read_line`` injected). Every write stays in
@@ -52,7 +52,7 @@ from rheo_finance.storage.ids import uuid7
 if TYPE_CHECKING:
     from conftest import StubServer
 
-SINK = "mot"
+SINK = "current"
 T0 = dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.UTC)  # make_context's fake clock
 DUE = dt.date(2026, 1, 25)
 WAKE_DAYS = 5
@@ -63,7 +63,7 @@ catalogue.load_all()
 
 
 class TicketSink:
-    """The ``mot`` provider (or ``name``'s): the stub's host and two ticket requests."""
+    """The test provider: the stub's host and two synthetic ticket requests."""
 
     __test__ = False
 
@@ -79,7 +79,7 @@ class TicketSink:
                 RequestTemplate(method="POST", path="/api/tickets"),
                 RequestTemplate(method="PATCH", path="/api/tickets/:id"),
             ),
-            key_file="mot.key",
+            key_file="current.key",
             payload_policy_version=1,
         )
 
@@ -224,7 +224,7 @@ def test_the_digest_is_sha256_of_the_canonical_items(
     assert out.digest == preview_digest(out.items)
     assert len(out.items) == 1
     assert out.requests == ["POST /api/tickets", "PATCH /api/tickets/:id"]
-    assert out.key_file == "mot.key"
+    assert out.key_file == "current.key"
     assert out.setting_enabled is False
 
 
@@ -248,7 +248,7 @@ def test_the_preview_sends_nothing_even_with_the_sink_enabled(
     record_sink_approval: Callable[..., uuid.UUID],
     stub_server: StubServer,
 ) -> None:
-    sink_settings(mot=True)
+    sink_settings(current=True)
     record_sink_approval(SINK, spec_digest(provider(UnitOfWork(owner_conn))), at=T0)
     assert gate.is_enabled(UnitOfWork(owner_conn), SINK)
     out = get_preview(owner)
@@ -275,12 +275,12 @@ def test_approve_refuses_without_a_terminal_on_stdin_and_stdout(
     builder: TicketPreview,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    typed = typing("approve mot 00000000")
+    typed = typing("approve current 00000000")
     assert approve.run(SINK, isatty=tty.__getitem__, read_line=typed) == 1
     captured = capsys.readouterr()
     assert captured.out == ""  # no preview was even built
     assert captured.err.startswith(
-        "finance sink approve mot: refused. It runs only in a terminal"
+        "finance sink approve current: refused. It runs only in a terminal"
     )
     assert sink_decisions(owner_conn) == []
 
@@ -312,10 +312,10 @@ def test_approve_refuses_a_wrong_typed_code(
 ) -> None:
     code = get_preview(cli_owner).digest[:8]
     wrong = "0" * 8 if code != "0" * 8 else "1" * 8
-    for line in (f"approve mot {wrong}", f"approve rates {code}", "yes", ""):
+    for line in (f"approve current {wrong}", f"approve rates {code}", "yes", ""):
         assert approve.run(SINK, isatty=terminal, read_line=typing(line)) == 1
         captured = capsys.readouterr()
-        assert f"type exactly: approve mot {code}" in captured.out
+        assert f"type exactly: approve current {code}" in captured.out
         assert "The typed line did not match" in captured.err
     assert sink_decisions(owner_conn) == []
 
@@ -332,10 +332,10 @@ def test_approve_refuses_when_the_pending_items_changed(
     def a_new_amount_arrives() -> None:
         builder.amount = Decimal("130.00")
 
-    typed = typing(f"approve mot {code}", before=a_new_amount_arrives)
+    typed = typing(f"approve current {code}", before=a_new_amount_arrives)
     assert approve.run(SINK, isatty=terminal, read_line=typed) == 1
     err = capsys.readouterr().err
-    assert f"mot: {CHANGED}" in err
+    assert f"current: {CHANGED}" in err
     assert sink_decisions(owner_conn) == []
 
 
@@ -353,9 +353,9 @@ def test_approve_refuses_when_the_spec_widened_after_the_preview(
     def a_build_widens_the_sink() -> None:
         provider.hosts += ("tickets.example.test",)
 
-    typed = typing(f"approve mot {code}", before=a_build_widens_the_sink)
+    typed = typing(f"approve current {code}", before=a_build_widens_the_sink)
     assert approve.run(SINK, isatty=terminal, read_line=typed) == 1
-    assert f"mot: {CHANGED}" in capsys.readouterr().err
+    assert f"current: {CHANGED}" in capsys.readouterr().err
     assert sink_decisions(owner_conn) == []
 
 
@@ -385,7 +385,7 @@ def test_approve_records_one_decision_and_the_sink_then_sends_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     uow = UnitOfWork(owner_conn)
-    sink_settings(mot=True)  # set by hand before approving: still off
+    sink_settings(current=True)  # set by hand before approving: still off
     ticket_client = Client(
         SINK, provider(uow), (TICKETS,), uow=uow, allowed_schemes=("http",)
     )
@@ -393,11 +393,11 @@ def test_approve_records_one_decision_and_the_sink_then_sends_once(
         ticket_client.request("POST", stub_server.url("/api/tickets"), body=b"{}")
 
     preview = get_preview(cli_owner)
-    typed = typing(f"approve mot {preview.digest[:8]}")
+    typed = typing(f"approve current {preview.digest[:8]}")
     assert approve.run(SINK, isatty=terminal, read_line=typed) == 0
     out = capsys.readouterr().out
     assert "this preview sends nothing" in out
-    assert "Setting finance.sinks.mot.enabled is true" in out
+    assert "Setting finance.sinks.current.enabled is true" in out
     assert f"approved against preview digest {preview.digest[:8]}" in out
     assert stub_server.requests == []  # approving sent nothing
 
@@ -420,7 +420,7 @@ def test_approve_with_the_setting_off_says_so_and_does_not_set_it(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     code = get_preview(cli_owner).digest[:8]
-    typed = typing(f"approve mot {code}")
+    typed = typing(f"approve current {code}")
     assert approve.run(SINK, isatty=terminal, read_line=typed) == 0
     out = capsys.readouterr().out
     assert "enabled is false: set it to true in settings.toml" in out
@@ -452,8 +452,9 @@ def test_dispatch_refuses_approve_for_any_role_but_the_owner(
 
 
 def test_approve_refuses_a_sink_with_no_spec(
-    owner: FinanceContext, builder: TicketPreview
+    owner: FinanceContext, builder: TicketPreview, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delitem(SINK_SPECS, SINK, raising=False)
     payload = approval(get_preview(owner))
     assert payload["spec_digest"] is None
     with pytest.raises(SinkRefused, match="nothing to approve"):
@@ -469,7 +470,8 @@ def test_approve_rewrites_sink_spec_so_report_sink_is_current_at_once(
     assert report_row(owner_conn) is None  # no derive has run in this test
     code = get_preview(cli_owner).digest[:8]
     assert (
-        approve.run(SINK, isatty=terminal, read_line=typing(f"approve mot {code}")) == 0
+        approve.run(SINK, isatty=terminal, read_line=typing(f"approve current {code}"))
+        == 0
     )
     row = report_row(owner_conn)
     assert row is not None
@@ -488,10 +490,11 @@ def test_disable_needs_no_terminal_and_turns_the_sink_off(
     sink_settings: Callable[..., None],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    sink_settings(mot=True)
+    sink_settings(current=True)
     code = get_preview(cli_owner).digest[:8]
     assert (
-        approve.run(SINK, isatty=terminal, read_line=typing(f"approve mot {code}")) == 0
+        approve.run(SINK, isatty=terminal, read_line=typing(f"approve current {code}"))
+        == 0
     )
     assert gate.is_enabled(UnitOfWork(owner_conn), SINK)
     fake_clock(cli_owner).advance(dt.timedelta(minutes=1))
@@ -500,7 +503,7 @@ def test_disable_needs_no_terminal_and_turns_the_sink_off(
     provider.hosts += ("tickets.example.test",)
     assert main(["sink", "disable", SINK]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("finance sink disable mot: disabled;")
+    assert out.startswith("finance sink disable current: disabled;")
     assert len(sink_decisions(owner_conn, "sink_disable")) == 1
     assert gate.is_enabled(UnitOfWork(owner_conn), SINK) is False
     # Disable rewrote sink_spec too: it holds the widened spec's digest.
@@ -522,7 +525,7 @@ def test_disable_lands_even_when_the_providers_spec_refresh_fails(
 ) -> None:
     """FR-65: the owner can disable at any time. A provider that raises, or one whose
     SQL fails and would abort the transaction, cannot roll the disable back."""
-    sink_settings(mot=True)
+    sink_settings(current=True)
     dispatch(
         "finance.sink.approve", approval(get_preview(owner)), Role.OWNER, ctx=owner
     )
@@ -557,7 +560,9 @@ def report_row(conn: Connection, sink: str = SINK) -> dict[str, object] | None:
     return None if found is None else dict(found)
 
 
-AGREE_SINK = "telegram"  # not mot: the reader test commits mot rows to the scratch DB
+AGREE_SINK = (
+    "telegram"  # not current: the reader test commits current rows to the scratch DB
+)
 
 
 def test_report_sink_agrees_with_the_gate_case_by_case(
@@ -644,7 +649,7 @@ def test_state_runs_on_the_reader_and_lists_every_sink(
     """``state`` opens the reader DSN, which cannot see this test's uncommitted
     approval: it reads only what is committed. The reader-DSN test below commits."""
     uow = UnitOfWork(owner_conn)
-    sink_settings(mot=True)
+    sink_settings(current=True)
     write_sink_specs(uow)
     record_sink_approval(SINK, spec_digest(provider(uow)), at=T0)
     assert gate.is_enabled(uow, SINK)  # true on the owner's own transaction
@@ -685,7 +690,7 @@ def test_report_sink_under_the_reader_dsn_shows_stale_after_a_provider_change(
     reader_engine = create_engine(scratch.reader_url, poolclass=NullPool)
     owner = scratch_context(scratch, Role.OWNER, tmp_path)
     member = scratch_context(scratch, Role.MEMBER, tmp_path)
-    sink_settings(mot=True)
+    sink_settings(current=True)
 
     def derive() -> None:
         with owner_engine.begin() as conn:
@@ -694,8 +699,8 @@ def test_report_sink_under_the_reader_dsn_shows_stale_after_a_provider_change(
     def mot_state() -> tuple[str, bool]:
         out = dispatch("finance.sink.state", {}, Role.MEMBER, ctx=member)
         assert isinstance(out, StateOut)
-        [mot] = [each for each in out.sinks if each.sink == SINK]
-        return mot.approval, mot.enabled
+        [current] = [each for each in out.sinks if each.sink == SINK]
+        return current.approval, current.enabled
 
     try:
         assert mot_state() == ("none", False)
@@ -711,7 +716,7 @@ def test_report_sink_under_the_reader_dsn_shows_stale_after_a_provider_change(
         assert mot_state() == ("stale", False)
         with reader_engine.connect() as conn:
             stale = conn.execute(
-                text("SELECT stale FROM finance.report_sink WHERE sink = 'mot'")
+                text("SELECT stale FROM finance.report_sink WHERE sink = 'current'")
             ).scalar_one()
             assert stale is True
             # The reader reads the views and nothing else.
@@ -738,10 +743,10 @@ def test_preview_summary_prints_counts_requests_digest8_and_the_setting(
     assert main(["sink", "preview", SINK, "--summary"]) == 0
     out = capsys.readouterr().out
     assert out.splitlines() == [
-        f"finance sink preview mot: 1 item(s) pending, digest {digest[:8]};"
+        f"finance sink preview current: 1 item(s) pending, digest {digest[:8]};"
         " this preview sends nothing.",
         "Requests: POST /api/tickets, PATCH /api/tickets/:id.",
-        "Setting finance.sinks.mot.enabled is false.",
+        "Setting finance.sinks.current.enabled is false.",
     ]
     assert "120.00" not in out and "bill:" not in out
 
@@ -754,7 +759,7 @@ def test_preview_full_prints_the_items(
 ) -> None:
     assert main(["sink", "preview", SINK]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("finance sink preview mot: 1 item(s) pending;")
+    assert out.startswith("finance sink preview current: 1 item(s) pending;")
     assert "- ticket bill:999-water:2026-01: 120.00 CAD; due 2026-01-25" in out
     assert "- POST /api/tickets" in out
     assert chr(0x2014) not in out
@@ -767,7 +772,7 @@ def test_status_names_each_sink(
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == "finance sink status: 0 of 9 sinks enabled."
     assert lines[1] == "Stale approvals: none."
-    assert "mot: off; setting false; no approval." in lines
+    assert "current: off; setting false; no approval." in lines
 
 
 def test_an_unknown_sink_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:

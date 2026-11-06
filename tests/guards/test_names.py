@@ -281,7 +281,7 @@ def test_record_ids_in_the_database_are_found_both_ways(owner_conn: Connection) 
         ("job", "finance.jobs.backup"),
         ("setting", "finance.locale"),
         ("setting", "finance.a.b.c"),
-        ("setting", "finance.sinks.mot.disabled"),
+        ("setting", "finance.sinks.current.disabled"),
         ("setting", "finance.sinks.enabled"),
         ("setting", "finance.Locale.timezone"),
     ],
@@ -307,10 +307,12 @@ def test_the_spec_names_conform() -> None:
 
 def test_a_missing_or_doubled_required_name_is_found() -> None:
     keys = [
-        spec.key for spec in settings.SPECS if spec.key != "finance.sinks.mot.enabled"
+        spec.key
+        for spec in settings.SPECS
+        if spec.key != "finance.sinks.current.enabled"
     ]
     assert name_problems({"setting": keys}) == [
-        "setting 'finance.sinks.mot.enabled' is missing"
+        "setting 'finance.sinks.current.enabled' is missing"
     ]
     assert name_problems({"job": ["finance.derive", "finance.derive"]}, {}) == [
         "job 'finance.derive' is listed twice"

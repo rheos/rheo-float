@@ -91,6 +91,12 @@ UNMAPPED_NAME = "unmapped-folder/loose.csv"
 # The chequing account opens four months before the fixture's only month of lines.
 OPENED = "2025-10-01"
 CASH_TEXT = "petty cash envelope"
+SAFE_DISPLAY_LABELS = frozenset({
+    "Pos Purchase Sample Grocer 99901", "Deposit Sample Transfer In 99902",
+    "Bill Payment 99903", "Pos Purchase Sample Hardware 99904",
+    "Withdrawal Sample Atm 99905", "Deposit Sample Payroll 99906",
+    "Petty Cash Envelope",
+})
 HEAD = head_revision()
 
 
@@ -103,6 +109,7 @@ class FixtureLedger:
     # Every string no reader output may carry: identifiers, descriptions, the
     # skipped files' names.
     secrets: tuple[str, ...]
+    identity_secrets: tuple[str, ...]
     missing_months: int
     # The cash line's txns on the built-in account, and that account's coverage months.
     paid_outside_txns: int
@@ -284,23 +291,18 @@ def _build(database: DatabaseUnderTest, root: Path) -> FixtureLedger:
             if len(word) >= 6 and word.isalpha()
         }
     )
+    identities = (
+        CSV_IDENTIFIER, STATEMENT_IDENTIFIER, SPARE_IDENTIFIER,
+        UNKNOWN_IDENTIFIER, SKIPPED_NAME, "acct-", "loose.csv", "unmapped-folder",
+        "Sample Utility",
+    )
     return FixtureLedger(
         database=database,
         data=root / "data",
         archive=ledger.archive,
         downloads=downloads,
-        secrets=(
-            CSV_IDENTIFIER,
-            STATEMENT_IDENTIFIER,
-            SPARE_IDENTIFIER,
-            UNKNOWN_IDENTIFIER,
-            SKIPPED_NAME,
-            "acct-",
-            "loose.csv",
-            "unmapped-folder",
-            "envelope",
-            *words,
-        ),  # fmt: skip
+        secrets=(*identities, "envelope", *words),
+        identity_secrets=identities,
         missing_months=int(missing or 0),
         paid_outside_txns=int(paid_outside_txns or 0),
         paid_outside_months=int(paid_outside_months or 0),
@@ -536,10 +538,38 @@ def test_no_report_view_row_carries_an_identifier_description_or_skipped_path(
             ).all()
             assert "report_status" in names
             seen = 0
+            labels: set[str] = set()
             for name in names:
-                for row in conn.execute(text(f"SELECT * FROM finance.{name}")):
+                for row in conn.execute(
+                    text(f"SELECT * FROM finance.{name}")
+                ).mappings():
                     seen += 1
-                    assert leaked(fixture_ledger, repr(tuple(row))) == [], name
+                    shown = dict(row)
+                    assert not any(
+                        secret.casefold() in repr(shown).casefold()
+                        for secret in fixture_ledger.identity_secrets
+                    ), name
+                    if name == "report_txn":
+                        # Stage 13's safe merchant words may also occur in raw
+                        # descriptions. They are permitted only as display_label.
+                        label = str(shown.pop("display_label"))
+                        labels.add(label)
+                        assert label in SAFE_DISPLAY_LABELS
+                        assert not any(
+                            secret.casefold() in label.casefold()
+                            for secret in fixture_ledger.identity_secrets
+                        )
+                    if name == "report_queue_counts":
+                        # Canonical kind codes can share ordinary description
+                        # words; no other field gets this fixed-code exception.
+                        assert shown.pop("kind") in {
+                            "pairing", "held_notice", "card_debit", "payment",
+                            "presumed_paid", "reattach", "category",
+                        }
+                    assert leaked(fixture_ledger, repr(tuple(shown.values()))) == [], (
+                        name
+                    )
+            assert labels == SAFE_DISPLAY_LABELS
     finally:
         engine.dispose()
     assert seen > 0

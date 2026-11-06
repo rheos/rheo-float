@@ -240,6 +240,9 @@ KIND_ALLOWED = {
     "rheo_finance.sinks.views": "the report_sink select compares the kind",
     "rheo_finance.migrations.versions.0002_decisions": "the frozen kind CHECK",
     "rheo_finance.migrations.versions.0004_sink_views": "the frozen view SQL",
+    "rheo_finance.migrations.versions.0039_reader_boundaries": (
+        "the frozen sink view with an explicit constant EXISTS projection"
+    ),
 }
 
 

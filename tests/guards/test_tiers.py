@@ -115,9 +115,14 @@ RESTRICTED_SUFFIXES = (
 NUMERIC_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("decision", "business_pct"): "a business-use percentage, not an amount",
     ("txn", "business_pct"): "a business-use percentage, not an amount",
+    ("report_txn", "business_pct"): "a business-use percentage, not an amount",
 }
 # Decimal output fields that are not restricted ("<operation> <Model>.<path>").
-DECIMAL_OUTPUT_EXCEPTIONS: dict[str, str] = {}
+DECIMAL_OUTPUT_EXCEPTIONS: dict[str, str] = {
+    "finance.txn.list ListOut.rows.business_pct": (
+        "a business-use percentage, not an amount"
+    ),
+}
 
 
 def restricted_by_name(name: str) -> bool:
@@ -416,7 +421,7 @@ def test_a_planted_unmarked_output_field_is_found(
             description="A fixture operation.",
         )
     )
-    assert output_problems(operations.SPECS) == [
+    assert output_problems(operations.SPECS, {}) == [
         "finance.fixture.view _Out.amount is public, not restricted",
         "finance.fixture.view _Out.rows.hidden has no Tiered marker",
         "finance.fixture.view _Out.maybe.hidden has no Tiered marker",

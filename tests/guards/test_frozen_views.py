@@ -33,6 +33,15 @@ VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
 
 PINNED = {
+    "0039_reader_boundaries.py": (
+        "4e418d04c9f550f6d7809aaac11d6b2c13d2b32310425eaf0687a756169c53b9"
+    ),
+    "0038_queue_snapshot.py": (
+        "33daf1b12f4a344bc68d369ce7a7f75ce2d7b8c47d2261533d2e3b8d8f4f3bab"
+    ),
+    "0037_reader_views.py": (
+        "3cd92fee5ad51e08d3f60ecd3282b64158fa8c6be44987066af2d5d7a3d616a8"
+    ),
     "0036_current_sink.py": (
         "099693c60f50c4a588a3e2c9c8dfac48c86e1f6beb16b1f675f4a44bd494e212"
     ),

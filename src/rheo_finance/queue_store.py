@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, insert, select
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import Decision, LegIn, reversed_clause
 from rheo_finance.storage import schema as s
+
+
+def replace_counts(uow: UnitOfWork, counts: Mapping[str, int], *,
+                   as_of_date: dt.date) -> None:
+    """Replace the complete last-derive count snapshot in the caller's transaction."""
+    uow.execute(delete(s.queue_count))
+    uow.execute(insert(s.queue_count), [
+        {"kind": kind, "count": count, "as_of_date": as_of_date}
+        for kind, count in counts.items()
+    ])
 
 
 class Line(BaseModel):

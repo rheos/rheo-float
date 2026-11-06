@@ -1045,6 +1045,66 @@ _tiers(
 )
 
 
+report_txn = Table(
+    "report_txn", metadata,
+    Column("line_ref", Text),
+    Column("account", Text),
+    Column("account_label", Text),
+    Column("posting_date", Date),
+    Column("txn_date", Date),
+    Column("occurred_at", DateTime(timezone=True)),
+    Column("recognition_date", Date),
+    Column("amount", Numeric),
+    Column("currency", Text),
+    Column("cad_amount", Numeric(20, 2)),
+    Column("basis", Text),
+    Column("provisional", Boolean),
+    Column("display_label", Text),
+    Column("category", Text),
+    Column("category_basis_class", Text),
+    Column("tag", Text),
+    Column("business_unit", Text),
+    Column("business_pct", Numeric),
+    Column("tag_basis_class", Text),
+    Column("transfer_state", Text),
+    Column("pair_kind", Text),
+    Column("allocation_state", Text),
+    Column("exclusion", Text),
+    Column("decision_state", Text),
+    Column("split_state", Text),
+)
+_tiers(report_txn, {name: R if name in {"amount", "cad_amount"} else P
+                    for name in report_txn.c.keys()})
+
+report_crypto_movement = Table(
+    "report_crypto_movement", metadata,
+    Column("currency", Text),
+    Column("movement_kind", Text),
+    Column("state", Text),
+    Column("pair_kind", Text),
+    Column("count", BigInteger),
+    Column("amount", Numeric),
+    Column("cad_amount", Numeric),
+)
+_tiers(report_crypto_movement, {name: R if name in {"amount", "cad_amount"} else P
+                                for name in report_crypto_movement.c.keys()})
+
+queue_count = Table(
+    "queue_count", metadata,
+    Column("kind", Text, primary_key=True),
+    Column("count", BigInteger, nullable=False),
+    Column("as_of_date", Date, nullable=False),
+)
+_tiers(queue_count, {name: P for name in queue_count.c.keys()})
+
+report_queue_counts = Table(
+    "report_queue_counts", metadata,
+    Column("kind", Text),
+    Column("count", BigInteger),
+    Column("as_of_date", Date),
+)
+_tiers(report_queue_counts, {name: P for name in report_queue_counts.c.keys()})
+
 # Owed report facts, including history used only by the trace (0035).
 report_owed = Table(
     "report_owed",

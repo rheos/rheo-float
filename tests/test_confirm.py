@@ -37,6 +37,7 @@ from rheo_finance.storage.schema import (
     payment,
     payment_application,
     payment_evidence,
+    queue_count,
     txn,
 )
 
@@ -77,6 +78,8 @@ def cli(
     def run(*args: str, answers: str = "") -> tuple[int, str, str]:
         monkeypatch.setattr("sys.stdin", io.StringIO(answers))
         code = main(["confirm", *args])
+        if code == 0 and args[:1] == ("answer",):
+            snapshot_matches(prepared)
         captured = capsys.readouterr()
         return code, captured.out, captured.err
 
@@ -87,6 +90,16 @@ def pending(ledger: Ledger, **payload: object) -> queue.ListOut:
     out = operations.dispatch("finance.queue.list", payload, Role.OWNER, ctx=ledger.ctx)
     assert isinstance(out, queue.ListOut)
     return out
+
+
+def snapshot_matches(ledger: Ledger) -> None:
+    complete = pending(ledger, counts_only=True)
+    snapshot = {kind: count for kind, count in ledger.conn.execute(
+        select(queue_count.c.kind, queue_count.c.count)
+    )}
+    assert set(snapshot) == set(queue.KINDS)
+    assert snapshot == {row.kind: row.count for row in complete.counts}
+    assert sum(snapshot.values()) == complete.total
 
 
 def ambiguous(ledger: Ledger) -> None:
@@ -100,6 +113,7 @@ def ambiguous(ledger: Ledger) -> None:
 
 
 def pick(ledger: Ledger, kind: str) -> queue.Item:
+    snapshot_matches(ledger)
     return next(each for each in pending(ledger).items if each.kind == kind)
 
 
@@ -177,6 +191,7 @@ def test_amount_order_and_ten_item_interactive_cap(
 ) -> None:
     with_settings(prepared, "[finance.classify]\nbatch_size = 25\n")
     transfers(prepared)
+    snapshot_matches(prepared)
     out = pending(prepared)
     assert out.total == 12
     assert out.batch_size == 10
@@ -338,6 +353,7 @@ def test_orphan_category_and_pair_offer_stored_fields_and_complete_replacements(
     parser_change(monkeypatch)
     prepared.derive()
     out = pending(prepared, orphans=True)
+    snapshot_matches(prepared)
     assert len(out.items) == 2
     assert {each.kind for each in out.items} == {"reattach"}
     assert all(each.recommendation == "yes" for each in out.items)

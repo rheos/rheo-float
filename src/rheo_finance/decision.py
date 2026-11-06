@@ -29,7 +29,6 @@ from sqlalchemy import (
     Select,
     Table,
     and_,
-    exists,
     func,
     insert,
     or_,
@@ -350,7 +349,7 @@ def reversed_clause(row: Table) -> ColumnElement[bool]:
     The one statement of what reversed means; ``effective``, ``reverse`` and the sink
     gate all build on it."""
     rev = decision.alias("rev")
-    return exists().where(
+    return select(1).exists().where(
         rev.c.kind == K.REVERSE.value,
         or_(
             rev.c.reverses_id == row.c.id,

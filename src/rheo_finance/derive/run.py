@@ -99,6 +99,7 @@ from rheo_finance.derive import (
     orphans,
     pair_decisions,
     presumed,
+    queue_counts,
     stage1,
     stage2,
     stage3,
@@ -132,6 +133,7 @@ from rheo_finance.storage.schema import (
     payment,
     payment_application,
     payment_evidence,
+    queue_count,
     rejected_period,
     source_discrepancy,
     statement_period,
@@ -147,6 +149,7 @@ INVOICE_DAYS_KEY: Final = "finance.invoices.match_days"
 FINISHED_ROUNDS: Final = 3
 # Emptied before anything is rebuilt, children first.
 CLEARED: Final = (
+    queue_count,
     open_item,
     decision_orphan,
     overdrawn_spell, parsed_overdrawn,
@@ -359,6 +362,7 @@ def run(
         stage16.build(uow, ctx, statement_ready=statement_ready)
         orphans.build(uow, overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY))
         open_items.build(uow, known_periods=manual.document_periods.periods)
+        queue_counts.refresh(ctx, uow, as_of_date=today)
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
         write_sink_specs(uow)

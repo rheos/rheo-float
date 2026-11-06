@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import itertools
 import json
@@ -459,14 +460,17 @@ def _orphans(ctx: FinanceContext, facts: queue_store.Facts) -> list[Prepared]:
 
 
 def compute(
-    ctx: FinanceContext, uow: UnitOfWork, *, orphans: bool = False
+    ctx: FinanceContext, uow: UnitOfWork, *, orphans: bool = False,
+    as_of_date: dt.date | None = None,
 ) -> list[Prepared]:
     facts = queue_store.read(uow)
     found = _orphans(ctx, facts)
     if not orphans:
         found.extend(_pairings(facts, pair_decisions.read(uow)))
         found.extend(_payments(ctx, uow, facts))
-        today = ctx.clock.now_utc().astimezone(ctx.settings.timezone).date()
+        today = as_of_date or (
+            ctx.clock.now_utc().astimezone(ctx.settings.timezone).date()
+        )
         for candidate in presumed.presumed_paid_candidates(uow, today):
             if any(
                 row.kind is K.PRESUMED_PAID
@@ -536,8 +540,9 @@ def compute(
     )
 
 
-def list_items(ctx: FinanceContext, uow: UnitOfWork, data: ListIn) -> ListOut:
-    found = compute(ctx, uow, orphans=data.orphans)
+def list_items(ctx: FinanceContext, uow: UnitOfWork, data: ListIn, *,
+               as_of_date: dt.date | None = None) -> ListOut:
+    found = compute(ctx, uow, orphans=data.orphans, as_of_date=as_of_date)
     counts = Counter(each.item.kind for each in found)
     return ListOut(
         items=[] if data.counts_only else [each.item for each in found],

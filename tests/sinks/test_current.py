@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -27,8 +28,72 @@ from rheo_finance.sinks import current
 from rheo_finance.sinks.current_store import PostgresCurrentTicketRepository, SinkTicket
 from rheo_finance.sinks.gate import is_enabled
 from rheo_finance.sinks.ops import CHANGED, Preview, Recorded, SinkRefused
+from rheo_finance.sinks.spec import spec_digest
 from rheo_finance.storage.schema import decision, obligation, payee, sink_ticket
 from sinks.support import CurrentStub
+
+
+@pytest.mark.parametrize("credential_state", ["missing", "malformed"])
+@pytest.mark.parametrize(
+    "operation", ["finance.ledger.derive", "finance.ledger.rebuild"]
+)
+def test_public_ledger_stays_offline_with_unavailable_current_credentials(
+    own: Ledger,
+    current_context: FinanceContext,
+    current_stub: CurrentStub,
+    sink_settings: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
+    credential_state: str,
+    operation: str,
+) -> None:
+    from derive.support import read_as_text
+    from derive.test_payment_application import statement_n, with_settings
+    from rheo_finance.parsers import docextract_adapter
+
+    monkeypatch.setattr(docextract_adapter, "pdf_text", read_as_text)
+    own.ctx = replace(own.ctx, settings=current_context.settings)
+    with_settings(own, '[finance.reminders]\nmin_due_date = "2025-01-01"\n')
+    statement_n(own)
+    own.derive()
+    catalogue.load_all()
+    assert current.sync_reminders(own.ctx).state == "synced"
+    delivery = rows(own.conn)
+    ledger_rows = own.txns()
+    obligations = tuple(own.conn.execute(select(obligation)).mappings())
+    available_digest = spec_digest(current.spec(own.uow))
+    current_stub.requests.clear()
+
+    # The existing fixture owns settings writes; only synthetic env files change.
+    sink_settings(current=False)
+    disabled = replace(
+        current_context.settings,
+        values={
+            **current_context.settings.values,
+            "finance.sinks.current.enabled": False,
+        },
+    )
+    assert disabled.get("finance.reminders.current_base_url") is None
+    monkeypatch.setattr(current, "load_settings", lambda: disabled)
+    credential = Path(str(disabled.get("finance.reminders.current_credential_file")))
+    if credential_state == "missing":
+        credential.unlink()
+    else:
+        credential.write_text("export CURRENT_API_URL='unterminated\n")
+    assert not is_enabled(own.uow, "current")
+
+    result = dispatch(operation, {}, own.ctx.role, ctx=own.ctx)
+    assert isinstance(result, DeriveOut)
+    assert own.txns() == ledger_rows
+    assert tuple(own.conn.execute(select(obligation)).mappings()) == obligations
+    assert rows(own.conn) == delivery
+    unavailable = current.spec(own.uow)
+    assert unavailable.hosts == ()
+    assert spec_digest(unavailable) != available_digest
+    assert current.sync_reminders(own.ctx) == current.SyncResult(
+        "pending", "configuration_error"
+    )
+    assert not is_enabled(own.uow, "current")
+    assert rows(own.conn) == delivery and current_stub.requests == []
 
 
 @pytest.mark.parametrize(

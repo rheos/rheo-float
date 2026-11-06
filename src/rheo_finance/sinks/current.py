@@ -126,7 +126,12 @@ def configuration(settings: Settings) -> Configuration | None:
 
 def spec(_uow: UnitOfWork) -> SinkSpec:
     settings = load_settings()
-    config = configuration(settings)
+    try:
+        config = configuration(settings)
+    except CurrentError:
+        # Unavailable outbound configuration must not block local derivation.
+        # No host is allowed until configuration can be resolved again.
+        config = None
     credential = settings.get("finance.reminders.current_credential_file")
     failure = False
     try:

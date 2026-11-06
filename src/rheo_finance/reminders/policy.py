@@ -15,7 +15,7 @@ from rheo_finance.operations import OperationError
 from rheo_finance.tier import Tier
 
 _DIGITS = re.compile(r"\d{6,}")
-_CARD = re.compile(r"(?<!\w)(?:[0-9xX*][ -]?){12,18}[0-9xX*](?!\w)")
+_CARD = re.compile(r"(?:[\dxX*\u2022][ \u00a0\u2009\u202f-]?){12,18}[\dxX*\u2022]")
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 

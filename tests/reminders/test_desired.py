@@ -346,6 +346,90 @@ def test_builder_rejects_restricted_shapes_even_when_label_is_registered(
         )
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "9999 9999 9999 9991",
+        "xxxx-xxxx-xxxx-9991",
+        "XXXX XXXX XXXX 9991",
+        "****-****-****-9991",
+        "9999 9999 9999 1",
+        "9999 9999 9999 9999 991",
+    ],
+    ids=[
+        "grouped",
+        "masked-x",
+        "masked-upper-x",
+        "masked-star",
+        "13-digits",
+        "19-digits",
+    ],
+)
+@pytest.mark.parametrize(
+    "prefix,suffix",
+    [("Sample", ""), ("", "Sample"), ("Sample", "Vendor")],
+    ids=["prefix", "suffix", "both-sides"],
+)
+def test_builder_refuses_card_shapes_attached_to_registered_label_words(
+    shape: str, prefix: str, suffix: str
+) -> None:
+    label = f"{prefix}{shape}{suffix}"
+    policy = PayloadPolicy(
+        payee_label=label,
+        amount=M("12.50"),
+        due_date=D(2026, 5, 20),
+        period="bill-2026-05",
+    )
+    with pytest.raises(PayloadRefused, match="^restricted shape in reminder payload$"):
+        build_payload(policy, registered_payees={label})
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "９９９９ ９９９９ ９９９９ ９９９１",
+        "٩٩٩٩-٩٩٩٩-٩٩٩٩-٩٩٩١",
+        "9999 ９９９９ ٩٩٩٩ 9991",
+        "xxxx-xxxx-xxxx-９９９１",
+        "9999\u00a09999\u00a09999\u00a09991",
+        "9999\u20099999\u20099999\u20099991",
+        "9999\u202f9999\u202f9999\u202f9991",
+        "••••-••••-••••-9991",
+        "••••\u00a0••••\u00a0••••\u00a09991",
+        "９９９９\u2009٩٩٩٩\u00a09999\u202f9991",
+    ],
+    ids=[
+        "fullwidth",
+        "arabic-decimal",
+        "mixed-decimal",
+        "masked-decimal",
+        "nbsp-groups",
+        "thin-space-groups",
+        "narrow-nbsp-groups",
+        "bullet-mask",
+        "bullet-nbsp-groups",
+        "mixed-decimal-space-groups",
+    ],
+)
+@pytest.mark.parametrize(
+    "prefix,suffix",
+    [("Sample", ""), ("", "Sample"), ("Sample", "Vendor")],
+    ids=["prefix", "suffix", "both-sides"],
+)
+def test_builder_refuses_unicode_decimal_card_shapes_in_registered_labels(
+    shape: str, prefix: str, suffix: str
+) -> None:
+    label = f"{prefix}{shape}{suffix}"
+    policy = PayloadPolicy(
+        payee_label=label,
+        amount=M("12.50"),
+        due_date=D(2026, 5, 20),
+        period="bill-2026-05",
+    )
+    with pytest.raises(PayloadRefused, match="^restricted shape in reminder payload$"):
+        build_payload(policy, registered_payees={label})
+
+
 @pytest.mark.parametrize("amount", ["-0.01", "NaN", "Infinity", "0.001"])
 def test_policy_refuses_invalid_amounts(amount: str) -> None:
     with pytest.raises(ValidationError):
@@ -357,11 +441,26 @@ def test_policy_refuses_invalid_amounts(amount: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Sample 999999",
+        "Sample9999 9999 9999 9991",
+        "Samplexxxx-xxxx-xxxx-9991",
+        "Sample９９９９ ９９９９ ９９９９ ９９９１",
+    ],
+    ids=[
+        "digit-run",
+        "attached-grouped-card",
+        "attached-masked-card",
+        "attached-unicode-card",
+    ],
+)
 def test_operation_applies_payload_policy_without_leaking_bad_input(
     rolled_back_context: Callable[[Role], FinanceContext],
     owner_conn: Connection,
+    label: str,
 ) -> None:
-    label = "Sample 999999"
     add(owner_conn, label=label)
     with pytest.raises(PayloadRefused) as caught:
         desired(context(rolled_back_context))

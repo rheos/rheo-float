@@ -339,7 +339,9 @@ def test_status_json_under_the_reader_carries_the_status_lines(
     assert list(lines) == [1, 2, 3, 4, 7, 9, 10]
     assert lines[1] == f"{STAMP}, database current"
     assert lines[2] == "last import: vancity 2026-02-20"
-    assert lines[3] == "documents: 1 unparsed, 0 rejected, 1 needs manual entry"
+    assert lines[3] == (
+        "documents: 1 unparsed, 0 rejected, 1 needs manual entry, 0 bill gaps"
+    )
     assert lines[4].startswith("missing account-months: ")
     assert lines[7] == "sinks off: " + " ".join(SINKS)
     assert lines[9] == "1 account with no data: Spare"

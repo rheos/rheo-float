@@ -20,6 +20,7 @@ from rheo_finance.cli import alias as alias_cli
 from rheo_finance.cli import approve as approve_cli
 from rheo_finance.cli import confirm as confirm_cli
 from rheo_finance.cli import decision as decision_cli
+from rheo_finance.cli import jobs as jobs_cli
 from rheo_finance.cli import ledger as ledger_cli
 from rheo_finance.cli import lines as lines_cli
 from rheo_finance.cli import owed as owed_cli
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     db.add_parser(commands)
     init_data.add_parser(commands)
     ledger_cli.add_parser(commands)
+    jobs_cli.add_parser(commands)
     owed_cli.add_parser(commands)
     lines_cli.add_parser(commands)
     alias_cli.add_parser(commands)

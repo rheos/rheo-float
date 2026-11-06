@@ -74,6 +74,7 @@ from sqlalchemy.sql.elements import Label
 
 from rheo_finance.derive.coverage import State
 from rheo_finance.documents.registry import SkipReason
+from rheo_finance.jobs.views import report_job_select
 from rheo_finance.manual.accounts import INTERNAL_ACCOUNT
 from rheo_finance.reports.line_views import (
     report_crypto_movement_select,
@@ -488,6 +489,7 @@ def report_open_item_select() -> Select[tuple[object, ...]]:
 
 # Each view this module defines, by name, for the frozen-SQL guard test.
 VIEW_SELECTS: Final[dict[str, Callable[[], Select[tuple[object, ...]]]]] = {
+    "report_job": report_job_select,
     "report_txn": report_txn_select,
     "report_queue_counts": report_queue_counts_select,
     "report_crypto_movement": report_crypto_movement_select,

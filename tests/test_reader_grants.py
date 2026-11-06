@@ -69,6 +69,7 @@ REPORT_VIEWS = frozenset(
         "report_txn",
         "report_crypto_movement",
         "report_queue_counts",
+        "report_job",
     }
 )
 # Inputs for reader operations whose input model has required fields; {} otherwise.

@@ -33,6 +33,12 @@ VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
 VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
 
 PINNED = {
+    "0041_job_identity.py": (
+        "c3386f821386953cafafcc294c0b21c8248bfadd2b4d8fa474b17961c3c2419d"
+    ),
+    "0040_job_run.py": (
+        "1873f641521cefc411de739f95e5c64f2da437207deb684be713437eb345b478"
+    ),
     "0039_reader_boundaries.py": (
         "4e418d04c9f550f6d7809aaac11d6b2c13d2b32310425eaf0687a756169c53b9"
     ),

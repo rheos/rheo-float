@@ -43,6 +43,31 @@ def _tiers(table: Table, tiers: dict[str, Tier]) -> None:
         register_column(table.name, name, tier)
 
 
+# --- job output state (migration 0040) ---------------------------------------------
+
+job_run = Table(
+    "job_run", metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("seq", BigInteger, nullable=False, unique=True),
+    Column("job", Text, nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True), nullable=False),
+    Column("ok", Boolean),
+    Column("detail_code", Text, nullable=False),
+    Column("input_digest", Text),
+)
+_tiers(job_run, {column.name: P for column in job_run.columns})
+
+report_job = Table(
+    "report_job", metadata,
+    Column("job", Text),
+    Column("last_success", DateTime(timezone=True)),
+    Column("last_detail", Text),
+    info={"is_view": True},
+)
+_tiers(report_job, {column.name: P for column in report_job.columns})
+
+
 # --- Current reminder state (migration 0036) ---------------------------------------
 
 sink_ticket = Table(

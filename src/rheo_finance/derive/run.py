@@ -182,9 +182,10 @@ STATE: Final = frozenset(
         "rate_coverage",
         "notice",
         "sink_ticket",
+        "job_run",
     }
 )
-OUTPUT_STATE: Final = frozenset({"notice", "sink_ticket"})
+OUTPUT_STATE: Final = frozenset({"notice", "sink_ticket", "job_run"})
 # Owned by the file operation (``finance.document.file``), not by a derive.
 FILE_OWNED: Final = frozenset({"document", "archive_skip"})
 

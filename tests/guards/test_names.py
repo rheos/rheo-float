@@ -357,7 +357,11 @@ def test_a_jobs_package_declares_its_jobs() -> None:
 
 def test_a_jobs_package_with_no_jobs_found_fails(tmp_path: Path) -> None:
     root = copy_package(tmp_path)
-    assert job_registry_problems(root, []) == []  # no jobs package yet
+    # Isolate the planted absent/empty registry from the shipped jobs package.
+    import shutil
+
+    shutil.rmtree(root / "jobs")
+    assert job_registry_problems(root, []) == []
     plant(root, "jobs/tick.py", "def tick() -> None: ...\n")
     assert job_registry_problems(root, []) == [
         "rheo_finance.jobs exists but no module in it declares JOBS",

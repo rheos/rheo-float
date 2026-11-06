@@ -292,6 +292,8 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           "Env file holding GMAIL_USER and GMAIL_APP_PASSWORD. Unset until you set"
           " it; mail intake over IMAP needs it.", tier=_INTERNAL),
     # reports and jobs
+    _spec("finance.jobs.tick_minutes", INT, 15,
+          "Minutes between scheduled job moments."),
     _spec("finance.owed.window_days", INT, 14, "Days ahead `owed` looks."),
     _spec("finance.owed.max_rows", INT, 15, "Rows `owed` prints."),
     _spec("finance.backup.stale_days", INT, 7,

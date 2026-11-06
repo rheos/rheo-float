@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import csv
 import dataclasses
 import datetime as dt
@@ -17,8 +18,9 @@ from sqlalchemy import create_engine, event, insert, select
 from sqlalchemy.pool import NullPool
 
 from conftest import DatabaseUnderTest
-from rheo_finance import catalogue, composition, operations
-from rheo_finance.alias import DraftOut
+from rheo_finance import alias, catalogue, composition, operations
+from rheo_finance.alias import DraftOut, draft_names
+from rheo_finance.alias_store import AliasFacts, AliasLine
 from rheo_finance.cli.main import main
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import FinanceContext, FinancePaths
@@ -244,6 +246,44 @@ def test_alias_operation_contract_and_restricted_output(ctx: FinanceContext) -> 
     out = operations.dispatch("finance.alias.draft", {}, Role.OWNER, ctx=ctx)
     assert isinstance(out, DraftOut)
     assert out.names == [name.casefold() for name in NAMES]
+
+
+def test_alias_policy_accepts_typed_repository_facts_without_a_database() -> None:
+    class MemoryRepository:
+        def facts(self) -> AliasFacts:
+            return AliasFacts(
+                patterns=("Mapped Cedar",),
+                lines=tuple(
+                    AliasLine(description, Decimal("1.25"), "chequing", "Sample")
+                    for description in (
+                        f"EMT Transfer - Debit Payee: {NAMES[0]}",
+                        f"Interac e-Transfer from {NAMES[1]}",
+                        "Interac e-Transfer from INVENTED   ALDER",
+                        "Interac e-Transfer from MAPPED CEDAR",
+                        "Grocery purchase",
+                    )
+                ),
+            )
+
+    assert draft_names(MemoryRepository()).names == [name.casefold() for name in NAMES]
+
+
+def test_alias_policy_has_no_direct_sql_or_schema_dependency() -> None:
+    assert alias.__file__ is not None
+    tree = ast.parse(Path(alias.__file__).read_text())
+    imports = [
+        name
+        for node in ast.walk(tree)
+        for name in (
+            [item.name for item in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else []
+        )
+    ]
+    forbidden = ("sqlalchemy", "rheo_finance.storage", "rheo_finance.db")
+    assert not [name for name in imports if name.startswith(forbidden)]
 
 
 @pytest.mark.parametrize("role", [Role.MEMBER, Role.SERVICE])

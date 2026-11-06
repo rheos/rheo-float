@@ -9,15 +9,13 @@ from __future__ import annotations
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, text
 
+from rheo_finance.alias_store import AliasRepository, PostgresAliasRepository
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
-from rheo_finance.db import READER_ROLE
 from rheo_finance.manual.payees import names_any
-from rheo_finance.operations import OperationSpec, RoleRefused, register
+from rheo_finance.operations import OperationSpec, register
 from rheo_finance.reference.patterns import classify, etransfer_name
-from rheo_finance.storage.schema import account, payee, txn
 from rheo_finance.text import compared, normalize_description
 from rheo_finance.tier import Tier
 
@@ -31,32 +29,25 @@ class DraftOut(BaseModel):
     names: Annotated[list[str], Tiered(Tier.RESTRICTED)]
 
 
-def draft(_ctx: FinanceContext, uow: UnitOfWork, _data: DraftIn) -> DraftOut:
-    # Check the actual connection, even when the caller claims the owner role.
-    if uow.scalar(text("SELECT current_user")) == READER_ROLE:
-        raise RoleRefused("finance.alias.draft refuses the reader connection")
-    patterns = tuple(
-        pattern
-        for row in uow.execute(select(payee.c.patterns))
-        for pattern in row.patterns
-    )
+def draft_names(repository: AliasRepository) -> DraftOut:
+    facts = repository.facts()
     names: dict[str, str] = {}
-    for row in uow.execute(
-        select(
-            txn.c.description_norm, txn.c.amount, account.c.kind, account.c.institution
-        ).join(account, account.c.id == txn.c.account_id)
-    ):
+    for row in facts.lines:
         description = normalize_description(row.description_norm or "")
         hints = classify(
             description,
-            account_kind=row.kind,
+            account_kind=row.account_kind,
             issuer=row.institution,
             credit=row.amount > 0,
         )
         printed = etransfer_name(description, hints)
-        if printed and not names_any(patterns, printed):
+        if printed and not names_any(facts.patterns, printed):
             names.setdefault(compared(printed), printed)
     return DraftOut(names=[names[key] for key in sorted(names)])
+
+
+def draft(_ctx: FinanceContext, uow: UnitOfWork, _data: DraftIn) -> DraftOut:
+    return draft_names(PostgresAliasRepository(uow))
 
 
 register(
